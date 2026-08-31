@@ -1,0 +1,31 @@
+{
+  "name": "cargo-conductor",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Orchestrate cargo across Claude, Codex, and Cursor so concurrent agent sessions share work instead of fighting locks.",
+  "type": "module",
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "bin": {
+    "cargo-conductor": "./dist/bin/cargo-conductor.js"
+  },
+  "scripts": {
+    "build": "agent-bundle build --output artifact",
+    "check": "npm run validate && npm run build && npm run typecheck && npm run test",
+    "dev": "agent-bundle dev",
+    "test": "rstest tests",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "validate": "agent-bundle validate"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/server": "2.0.0",
+    "zod": "4.4.3"
+  },
+  "devDependencies": {
+    "@rstest/core": "0.11.10",
+    "@types/node": "^22.18.0",
+    "agent-bundle": "https://pkg.pr.new/ScriptedAlchemy/agent-bundle/agent-bundle@560124af",
+    "typescript": "^5.9.0"
+  }
+}

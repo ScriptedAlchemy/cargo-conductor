@@ -1,0 +1,8 @@
+.agent-bundle/
+.runtime/
+.worktrees/
+artifact/
+dist/
+node_modules/
+.env
+state/

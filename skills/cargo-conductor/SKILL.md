@@ -1,0 +1,24 @@
+---
+name: cargo-conductor
+description: Orchestrate cargo through the conductor daemon — do not kill in-flight builds, scope with -p, and await tickets instead of re-running identical checks.
+---
+# cargo-conductor
+
+Use this Skill whenever an agent is about to run `cargo` (check, test, build,
+clippy, fmt, nextest) or is waiting on someone else's cargo.
+
+## Rules
+
+- Do not kill in-flight `cargo` processes. Attach or await the existing ticket.
+- Scope work with `-p <crate>` instead of workspace-wide `--all-features` when
+  a single crate answers the question.
+- Prefer `conductor status`, `conductor last`, and the `conductor_status` MCP
+  tool over `ps`/`pgrep` probes.
+- If the daemon is unreachable, fail open: run the original cargo command.
+
+## Workflow
+
+1. Check `conductor status` (or `conductor_status`) before starting cargo.
+2. Reuse an in-flight identical or covering run instead of launching another.
+3. After a scoped change, wait on that ticket rather than re-running the same
+   command in another subagent.
