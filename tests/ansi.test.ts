@@ -62,6 +62,28 @@ describe('AnsiStreamStripper', () => {
     expect(out.toString('utf8')).toBe('✓ done');
   });
 
+  it('reclassifies an overlong unterminated OSC-like run as data instead of eating it', () => {
+    const stripper = new AnsiStreamStripper();
+    const payload = 'x'.repeat(5_000);
+    // Within the hold budget the run is still a candidate escape sequence.
+    expect(pushText(stripper, `before${ESC}]${payload.slice(0, 3_000)}`)).toBe('before');
+    // Crossing the budget must surface the buffered payload (introducer
+    // dropped), not delete it as an unterminated OSC body.
+    expect(pushText(stripper, payload.slice(3_000))).toBe(payload);
+    // Later bytes of the run keep flowing as plain data.
+    expect(pushText(stripper, 'tail')).toBe('tail');
+  });
+
+  it('never emits ESC even when an overlong run ends mid-terminator', () => {
+    const stripper = new AnsiStreamStripper();
+    const payload = 'y'.repeat(5_000);
+    const first = pushText(stripper, `${ESC}]${payload}${ESC}`);
+    expect(first).toBe(payload);
+    expect(first).not.toContain(ESC);
+    // The held ESC pairs with the arriving backslash into a complete ST.
+    expect(pushText(stripper, '\\after')).toBe('after');
+  });
+
   it('flush drops an unfinished sequence without emitting ESC', () => {
     const stripper = new AnsiStreamStripper();
     expect(pushText(stripper, `end${ESC}[3`)).toBe('end');
