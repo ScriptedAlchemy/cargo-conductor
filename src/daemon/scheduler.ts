@@ -45,6 +45,15 @@ export interface AdmissionLoadInput {
   readonly running: number;
   readonly thresholdPerCore: number;
   readonly minConcurrent: number;
+  /**
+   * PSI `some avg10` CPU stall percentage, when the platform provides it.
+   * Loadavg is a slow 1-minute EMA that also counts uninterruptible I/O
+   * waits; PSI reacts within seconds and measures actual scheduling
+   * starvation, so whichever signal trips first defers admission.
+   */
+  readonly cpuStallPercent?: number | null;
+  /** Stall percentage above which admission defers; null disables the PSI arm. */
+  readonly cpuStallThreshold?: number | null;
 }
 
 /**
@@ -52,8 +61,21 @@ export interface AdmissionLoadInput {
  * never throttles below minConcurrent running builds, so a loaded machine
  * still makes progress and the gate cannot deadlock the queue.
  */
-export const shouldDeferAdmission = (input: AdmissionLoadInput): boolean =>
-  input.running >= Math.max(1, input.minConcurrent) && input.loadPerCore > input.thresholdPerCore;
+export const shouldDeferAdmission = (input: AdmissionLoadInput): boolean => {
+  if (input.running < Math.max(1, input.minConcurrent)) {
+    return false;
+  }
+  if (input.loadPerCore > input.thresholdPerCore) {
+    return true;
+  }
+  return (
+    input.cpuStallPercent !== undefined &&
+    input.cpuStallPercent !== null &&
+    input.cpuStallThreshold !== undefined &&
+    input.cpuStallThreshold !== null &&
+    input.cpuStallPercent > input.cpuStallThreshold
+  );
+};
 
 /** Index of the candidate to run next, or -1 when empty. Ties go to the older (lower) id. */
 export const selectNextIndex = (candidates: readonly ScheduleCandidate[]): number => {

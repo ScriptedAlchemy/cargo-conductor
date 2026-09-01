@@ -5,7 +5,12 @@ import * as Effect from 'effect/Effect';
 import * as Exit from 'effect/Exit';
 import * as Option from 'effect/Option';
 
-import { awaitTicket, fetchTicket, submitBackground, type TicketSocketError } from '../client/tickets.js';
+import {
+  awaitTicketWithProgress,
+  fetchTicket,
+  submitBackground,
+  type TicketSocketError,
+} from '../client/tickets.js';
 import type { RequestRecord } from '../daemon/protocol.js';
 import { consumerRendersColor, describeRequestRecord, displayRequestRecord } from '../query.js';
 import { ConductorResult } from '../result.js';
@@ -122,7 +127,11 @@ const requestForConsumer = (request: RequestRecord | null): RequestRecord | null
 export const defaultTicketOperations: TicketOperations = {
   await: async (input, context) => {
     const waited = await runTicketEffect(
-      awaitTicket(input.ticket, input.maxWaitMs ?? 30_000),
+      // Progress heartbeats go to stderr so a terminal `conductor await`
+      // shows phase/elapsed/estimate while stdout stays machine-readable.
+      awaitTicketWithProgress(input.ticket, input.maxWaitMs ?? 30_000, (line) => {
+        process.stderr.write(line);
+      }),
       context.signal,
     );
     return {
