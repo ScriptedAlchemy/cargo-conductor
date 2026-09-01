@@ -1,0 +1,603 @@
+import * as Effect from 'effect/Effect';
+import * as Metric from 'effect/Metric';
+
+import { batchExitShared } from './batch.js';
+import { attachModeMetric, jobOutcomeMetric } from './broker-metrics.js';
+import { hasLibKind, parseCargoJsonLine } from './cargo-json.js';
+import { attachModeFor } from './coverage.js';
+import {
+  addDiagnostic,
+  attachmentReceives,
+  demandSatisfied,
+  diagnosticFinishFields,
+  diagnosticsForAttachment,
+  guarded,
+  makeDiagnosticAccumulator,
+  requeueReasonFor,
+} from './job-state.js';
+import type { Attachment, ExitInfo, Job } from './job-state.js';
+import type { LedgerApi } from './ledger.js';
+import type { AttachMode, FinishedStatus } from './protocol.js';
+import type { ReplayAudience, ReplayChunk } from './replay.js';
+import type { TicketDirectory } from './ticket-directory.js';
+
+/**
+ * The attachment/replay/demux state machine: everything that fans a
+ * leader's lifecycle out to the tickets riding it. Registration, gate
+ * checks, and detachment run in single synchronous frames so they can never
+ * interleave with settlement — the same atomicity the broker closure
+ * provided before this extraction.
+ */
+
+export interface AttachmentRuntimeDeps {
+  readonly ledger: LedgerApi;
+  readonly directory: TicketDirectory;
+}
+
+export interface AttachmentRuntime {
+  readonly emitChunk: (
+    job: Job,
+    channel: 'stdout' | 'stderr',
+    data: Uint8Array,
+    audience?: ReplayAudience,
+  ) => Effect.Effect<void>;
+  readonly notifyAttachmentStarted: (attachment: Attachment, atMs: number) => Effect.Effect<boolean>;
+  readonly finishAttachment: (
+    attachment: Attachment,
+    atMs: number,
+    exit: Omit<ExitInfo, 'ticket' | 'waitMs' | 'runMs'>,
+  ) => Effect.Effect<void>;
+  readonly finishAttachmentWithNote: (
+    attachment: Attachment,
+    atMs: number,
+    note: string,
+    exit: Omit<ExitInfo, 'ticket' | 'waitMs' | 'runMs'>,
+  ) => Effect.Effect<void>;
+  readonly tryRegisterAttachment: (
+    laneKey: string,
+    attachment: Attachment,
+  ) => Effect.Effect<{ readonly leader: Job; readonly mode: AttachMode } | null>;
+  readonly removeAttachment: (job: Job, attachment: Attachment) => Effect.Effect<boolean>;
+  readonly releaseSatisfiedAttachments: (job: Job) => Effect.Effect<void>;
+  readonly completeAttachRegistration: (
+    leader: Job,
+    attachment: Attachment,
+    mode: AttachMode,
+    atMs: number,
+  ) => Effect.Effect<void>;
+  readonly handleStdoutLine: (job: Job, line: string) => Effect.Effect<void>;
+  readonly detachAll: (job: Job) => Effect.Effect<readonly Attachment[]>;
+  readonly settleAttachments: (
+    requeue: ((attachment: Attachment, reason: string) => Effect.Effect<void>) | null,
+    job: Job,
+    status: FinishedStatus,
+    exitCode: number | null,
+    signal: string | null,
+    error: string | null,
+    atMs: number,
+  ) => Effect.Effect<void>;
+}
+
+export const makeAttachmentRuntime = (deps: AttachmentRuntimeDeps): AttachmentRuntime => {
+  const { ledger, directory } = deps;
+
+  /**
+   * Fans one output chunk to the leader, the replay buffer, the leader-view
+   * tail, and every attachment the filter admits. Coverage attachments see
+   * only chunks relevant to their scope in demux mode; identity attachments
+   * always see everything.
+   */
+  const emitChunk = (
+    job: Job,
+    channel: 'stdout' | 'stderr',
+    data: Uint8Array,
+    audience: ReplayAudience = { kind: 'all' },
+  ): Effect.Effect<void> =>
+    Effect.gen(function* () {
+      const encodedData = Buffer.from(data).toString('base64');
+      const liveAttachments = yield* Effect.sync(() => {
+        job.replay.push(channel, data, audience, encodedData);
+        job.tail.push(data);
+        const live: Attachment[] = [];
+        for (const attachment of job.attachments.values()) {
+          if (!attachmentReceives(attachment, audience)) {
+            continue;
+          }
+          if (attachment.live) {
+            live.push(attachment);
+          } else {
+            attachment.pendingLive.push({
+              channel,
+              data: Buffer.from(data),
+              encodedData,
+              audience,
+            });
+          }
+        }
+        return live;
+      });
+      yield* guarded(
+        job.callbacks.onOutput({ ticket: job.ticket, channel, data: encodedData }),
+      );
+      yield* Effect.forEach(
+        liveAttachments,
+        (attachment) =>
+          Effect.sync(() => attachment.tail.push(data)).pipe(
+            Effect.andThen(
+              guarded(
+                attachment.callbacks.onOutput({
+                  ticket: attachment.ticket,
+                  channel,
+                  data: encodedData,
+                }),
+              ),
+            ),
+          ),
+        { discard: true },
+      );
+    });
+
+  const emitChunks = (
+    attachment: Attachment,
+    chunks: readonly ReplayChunk[],
+  ): Effect.Effect<void> =>
+    Effect.forEach(
+      chunks,
+      (chunk) =>
+        Effect.sync(() => attachment.tail.push(chunk.data)).pipe(
+          Effect.andThen(
+            guarded(
+              attachment.callbacks.onOutput({
+                ticket: attachment.ticket,
+                channel: chunk.channel,
+                data: chunk.encodedData,
+              }),
+            ),
+          ),
+        ),
+      { discard: true },
+    );
+
+  /**
+   * Replay the leader's buffered output, then drain anything that arrived
+   * during the replay; `live` flips true in the same sync frame that
+   * observes an empty pending queue, so no chunk is lost or reordered.
+   */
+  const replayThenGoLive = (job: Job, attachment: Attachment): Effect.Effect<void> =>
+    Effect.gen(function* () {
+      const snapshot = job.replay.snapshot();
+      if (snapshot.droppedBytes > 0) {
+        const notice = Buffer.from(
+          `[cargo-conductor] replay truncated: ${snapshot.droppedBytes} earlier output bytes dropped\n`,
+        );
+        const encodedNotice = notice.toString('base64');
+        yield* Effect.sync(() => attachment.tail.push(notice));
+        yield* guarded(
+          attachment.callbacks.onOutput({
+            ticket: attachment.ticket,
+            channel: 'stderr',
+            data: encodedNotice,
+          }),
+        );
+      }
+      yield* emitChunks(
+        attachment,
+        snapshot.chunks.filter((chunk) => attachmentReceives(attachment, chunk.audience)),
+      );
+      while (true) {
+        const drained = yield* Effect.sync(() => {
+          const batch = [...attachment.pendingLive];
+          attachment.pendingLive.length = 0;
+          if (batch.length === 0) {
+            attachment.live = true;
+          }
+          return batch;
+        });
+        if (drained.length === 0) {
+          return;
+        }
+        yield* emitChunks(attachment, drained);
+      }
+    });
+
+  /**
+   * At-most-once start notification per attachment; returns whether this
+   * caller won. The winner owns the follow-up (replay for running-leader
+   * attachments, direct live flag for queued-leader ones), so replayed and
+   * live chunks can never interleave.
+   */
+  const notifyAttachmentStarted = (
+    attachment: Attachment,
+    atMs: number,
+  ): Effect.Effect<boolean> =>
+    Effect.gen(function* () {
+      const won = yield* Effect.sync(() => {
+        if (attachment.startNotified) {
+          return false;
+        }
+        attachment.startNotified = true;
+        attachment.startedAtMs = atMs;
+        return true;
+      });
+      if (won) {
+        yield* guarded(
+          attachment.callbacks.onStarted({
+            ticket: attachment.ticket,
+            waitMs: Math.max(0, atMs - attachment.createdAtMs),
+          }),
+        );
+      }
+      return won;
+    });
+
+  const finishAttachment = (
+    attachment: Attachment,
+    atMs: number,
+    exit: Omit<ExitInfo, 'ticket' | 'waitMs' | 'runMs'>,
+  ): Effect.Effect<void> =>
+    Effect.gen(function* () {
+      const startedAtMs = attachment.startedAtMs;
+      yield* ledger.markFinished(attachment.id, {
+        status: exit.status,
+        atMs,
+        exitCode: exit.exitCode,
+        signal: exit.signal,
+        outputTail: attachment.tail.toString(),
+        error: exit.error,
+        ...diagnosticFinishFields(attachment.diagnostics),
+      });
+      yield* Metric.update(jobOutcomeMetric, exit.status);
+      yield* directory.notifyWaiters(attachment.ticket);
+      const pending = yield* Effect.sync(() => {
+        const batch = [...attachment.pendingLive];
+        attachment.pendingLive.length = 0;
+        return batch;
+      });
+      yield* emitChunks(attachment, pending);
+      yield* guarded(
+        attachment.callbacks.onExit({
+          ticket: attachment.ticket,
+          status: exit.status,
+          exitCode: exit.exitCode,
+          signal: exit.signal,
+          waitMs: Math.max(
+            0,
+            (startedAtMs ?? attachment.attachedAtMs) - attachment.createdAtMs,
+          ),
+          runMs: startedAtMs === null ? 0 : Math.max(0, atMs - startedAtMs),
+          error: exit.error,
+        }),
+      );
+    });
+
+  /** Deliver the at-most-once start notice plus one conductor stderr note, then finish. */
+  const finishAttachmentWithNote = (
+    attachment: Attachment,
+    atMs: number,
+    note: string,
+    exit: Omit<ExitInfo, 'ticket' | 'waitMs' | 'runMs'>,
+  ): Effect.Effect<void> =>
+    Effect.gen(function* () {
+      yield* notifyAttachmentStarted(attachment, atMs);
+      const noteData = Buffer.from(note);
+      const encodedNote = noteData.toString('base64');
+      yield* Effect.sync(() => attachment.tail.push(noteData));
+      yield* guarded(
+        attachment.callbacks.onOutput({
+          ticket: attachment.ticket,
+          channel: 'stderr',
+          data: encodedNote,
+        }),
+      );
+      yield* finishAttachment(attachment, atMs, exit);
+    });
+
+  /**
+   * Atomically registers `attachment` on a compatible in-flight leader in
+   * the lane. Runs in one sync frame: the gate check and the registration
+   * cannot interleave with settlement.
+   */
+  const tryRegisterAttachment = (
+    laneKey: string,
+    attachment: Attachment,
+  ): Effect.Effect<{ readonly leader: Job; readonly mode: AttachMode } | null> =>
+    Effect.sync(() => {
+      const register = (job: Job, mode: AttachMode): { leader: Job; mode: AttachMode } => {
+        attachment.mode = mode;
+        attachment.attachedAtMs = Date.now();
+        if (job.demux !== null) {
+          attachment.diagnostics = diagnosticsForAttachment(job.demux, attachment);
+        }
+        job.attachments.set(attachment.ticket, attachment);
+        directory.setAttachment(job, attachment);
+        return { leader: job, mode };
+      };
+      let coverageCandidate: Job | null = null;
+      for (const entry of directory.entries()) {
+        if (entry.kind !== 'leader') {
+          continue;
+        }
+        const job = entry.job;
+        if (job.laneKey !== laneKey || !job.attachGate.open) {
+          continue;
+        }
+        const mode = attachModeFor(job.intent, attachment.intent);
+        if (mode === 'identity') {
+          return register(job, 'identity');
+        }
+        if (mode === 'coverage' && coverageCandidate === null) {
+          coverageCandidate = job;
+        }
+      }
+      return coverageCandidate === null ? null : register(coverageCandidate, 'coverage');
+    });
+
+  /** Sync-removes one attachment from its leader; returns false if already gone. */
+  const removeAttachment = (job: Job, attachment: Attachment): Effect.Effect<boolean> =>
+    Effect.sync(() => {
+      const present = job.attachments.delete(attachment.ticket);
+      if (present) {
+        directory.remove(attachment.ticket);
+      }
+      return present;
+    });
+
+  /** Early release of coverage attachments whose demand is fully proven or disproven. */
+  const releaseSatisfiedAttachments = (job: Job): Effect.Effect<void> =>
+    Effect.gen(function* () {
+      const demux = job.demux;
+      if (demux === null) {
+        return;
+      }
+      const decided = yield* Effect.sync(() => {
+        const releases: { attachment: Attachment; failed: string | null }[] = [];
+        for (const attachment of job.attachments.values()) {
+          if (attachment.mode === 'identity') {
+            continue;
+          }
+          const errored = attachment.intent.packages.find((name) =>
+            demux.libErrors.has(name),
+          );
+          if (errored !== undefined) {
+            releases.push({ attachment, failed: errored });
+          } else if (demandSatisfied(attachment.intent, demux)) {
+            releases.push({ attachment, failed: null });
+          }
+        }
+        for (const release of releases) {
+          job.attachments.delete(release.attachment.ticket);
+          directory.remove(release.attachment.ticket);
+        }
+        return releases;
+      });
+      if (decided.length > 0) {
+        yield* Effect.logDebug('released attachments early', {
+          count: decided.length,
+          leader: job.ticket,
+        });
+      }
+      const atMs = Date.now();
+      yield* Effect.forEach(
+        decided,
+        ({ attachment, failed }) =>
+          finishAttachmentWithNote(
+            attachment,
+            atMs,
+            failed === null
+              ? `[cargo-conductor] released early: requested packages compiled cleanly under ${job.ticket}\n`
+              : `[cargo-conductor] released early: ${failed} failed to compile under ${job.ticket}\n`,
+            failed === null
+              ? { status: 'done', exitCode: 0, signal: null, error: null }
+              : {
+                  status: 'failed',
+                  exitCode: 101,
+                  signal: null,
+                  error: `compile errors in ${failed}`,
+                },
+          ),
+        { discard: true },
+      );
+    });
+
+  /**
+   * Follow-up after tryRegisterAttachment wins: ledger the attach, and if
+   * the leader is already running, deliver the start notice and replay
+   * catch-up, then re-check early release — the demand may already be
+   * proven by units that finished before this attachment arrived.
+   */
+  const completeAttachRegistration = (
+    leader: Job,
+    attachment: Attachment,
+    mode: AttachMode,
+    atMs: number,
+  ): Effect.Effect<void> =>
+    Effect.gen(function* () {
+      yield* Effect.logDebug('registered attachment', {
+        leader: leader.ticket,
+        mode,
+      });
+      yield* ledger.markAttached(attachment.id, { atMs, leaderTicket: leader.ticket, mode });
+      yield* Metric.update(attachModeMetric, mode);
+      if (leader.startedAtMs === null) {
+        return;
+      }
+      yield* ledger.markRunning(attachment.id, leader.startedAtMs);
+      const won = yield* notifyAttachmentStarted(attachment, leader.startedAtMs);
+      if (won) {
+        yield* replayThenGoLive(leader, attachment);
+      }
+      yield* releaseSatisfiedAttachments(leader);
+    });
+
+  /** Routes one line of the leader's JSON stdout stream. */
+  const handleStdoutLine = (job: Job, line: string): Effect.Effect<void> => {
+    const demux = job.demux;
+    if (demux === null) {
+      return emitChunk(job, 'stdout', Buffer.from(`${line}\n`));
+    }
+    const event = parseCargoJsonLine(line);
+    if (event === null) {
+      // Non-JSON stdout (test binaries, stray prints): leader and identity
+      // attachments only — it cannot be attributed to a coverage scope.
+      return emitChunk(job, 'stdout', Buffer.from(`${line}\n`), { kind: 'identity' });
+    }
+    switch (event.kind) {
+      case 'artifact': {
+        if (event.packageName === null) {
+          return Effect.void;
+        }
+        const packageName = event.packageName;
+        return Effect.sync(() => {
+          const kinds = demux.unitKinds.get(packageName) ?? new Set<string>();
+          for (const kind of event.targetKinds) {
+            kinds.add(kind);
+          }
+          demux.unitKinds.set(packageName, kinds);
+        }).pipe(Effect.andThen(releaseSatisfiedAttachments(job)));
+      }
+      case 'message': {
+        const packageName = event.packageName;
+        const recordDiagnostics = Effect.sync(() => {
+          const order = demux.nextDiagnosticOrder;
+          demux.nextDiagnosticOrder += 1;
+          addDiagnostic(demux.globalDiagnostics, event.level, event.rendered, order);
+          const scoped =
+            packageName === null
+              ? demux.unscopedDiagnostics
+              : (demux.packageDiagnostics.get(packageName) ??
+                makeDiagnosticAccumulator());
+          addDiagnostic(scoped, event.level, event.rendered, order);
+          if (packageName !== null) {
+            demux.packageDiagnostics.set(packageName, scoped);
+          }
+          const audience: ReplayAudience =
+            packageName === null ? { kind: 'all' } : { kind: 'package', packageName };
+          for (const attachment of job.attachments.values()) {
+            if (!attachmentReceives(attachment, audience)) {
+              continue;
+            }
+            const diagnostics = attachment.diagnostics ?? makeDiagnosticAccumulator();
+            addDiagnostic(diagnostics, event.level, event.rendered, order);
+            attachment.diagnostics = diagnostics;
+          }
+        });
+        const record =
+          event.level === 'error' && packageName !== null && hasLibKind(event.targetKinds)
+            ? Effect.sync(() => {
+                demux.libErrors.add(packageName);
+              })
+            : Effect.void;
+        const rendered = event.rendered;
+        const forward =
+          rendered === null || rendered.length === 0
+            ? Effect.void
+            : emitChunk(
+                job,
+                'stderr',
+                Buffer.from(rendered.endsWith('\n') ? rendered : `${rendered}\n`),
+                packageName === null
+                  ? { kind: 'all' }
+                  : { kind: 'package', packageName },
+              );
+        return recordDiagnostics.pipe(
+          Effect.andThen(record),
+          Effect.andThen(forward),
+          Effect.andThen(releaseSatisfiedAttachments(job)),
+        );
+      }
+      case 'build-finished':
+      case 'other':
+        return Effect.void;
+      default: {
+        const exhaustive: never = event;
+        return exhaustive;
+      }
+    }
+  };
+
+  /**
+   * Closes the attachment gate and detaches every attachment in one sync
+   * frame; nothing can attach to `job` afterwards.
+   */
+  const detachAll = (job: Job): Effect.Effect<readonly Attachment[]> =>
+    Effect.sync(() => {
+      job.attachGate.open = false;
+      const detached = [...job.attachments.values()];
+      job.attachments.clear();
+      for (const attachment of detached) {
+        directory.remove(attachment.ticket);
+      }
+      return detached;
+    });
+
+  /**
+   * Mirrors or requeues every attachment after the leader reached `status`.
+   * `requeue` is the lane machine's re-entry point; null (daemon shutdown)
+   * finishes detached attachments as killed instead.
+   */
+  const settleAttachments = (
+    requeue: ((attachment: Attachment, reason: string) => Effect.Effect<void>) | null,
+    job: Job,
+    status: FinishedStatus,
+    exitCode: number | null,
+    signal: string | null,
+    error: string | null,
+    atMs: number,
+  ): Effect.Effect<void> =>
+    Effect.gen(function* () {
+      const detached = yield* detachAll(job);
+      if (detached.length === 0) {
+        return;
+      }
+      for (const attachment of detached) {
+        // A failed leader can still prove a coverage demand: the demanded
+        // units may have compiled cleanly before an unrelated unit failed.
+        const provenDespiteFailure =
+          status === 'failed' &&
+          attachment.mode !== 'identity' &&
+          job.demux !== null &&
+          demandSatisfied(attachment.intent, job.demux);
+        // Folded test composites run with --no-fail-fast and share their
+        // exit: a failed composite IS the participant's failure. Compile
+        // batches requeue instead (the failure may be a foreign package).
+        const mirrors =
+          status === 'done' ||
+          (status === 'failed' &&
+            (attachment.mode === 'identity' ||
+              (attachment.mode === 'batch' && batchExitShared(job.intent))));
+        if (provenDespiteFailure) {
+          yield* finishAttachmentWithNote(
+            attachment,
+            atMs,
+            `[cargo-conductor] ${job.ticket} failed elsewhere, but your requested packages compiled cleanly\n`,
+            { status: 'done', exitCode: 0, signal: null, error: null },
+          );
+        } else if (mirrors) {
+          yield* notifyAttachmentStarted(attachment, atMs);
+          yield* finishAttachment(attachment, atMs, { status, exitCode, signal, error });
+        } else if (requeue !== null) {
+          yield* requeue(attachment, requeueReasonFor(attachment.mode, status));
+        } else {
+          yield* finishAttachment(
+            attachment,
+            atMs,
+            { status: 'killed', exitCode: null, signal: null, error: 'daemon shutdown' },
+          );
+        }
+      }
+    });
+
+  return {
+    emitChunk,
+    notifyAttachmentStarted,
+    finishAttachment,
+    finishAttachmentWithNote,
+    tryRegisterAttachment,
+    removeAttachment,
+    releaseSatisfiedAttachments,
+    completeAttachRegistration,
+    handleStdoutLine,
+    detachAll,
+    settleAttachments,
+  };
+};
