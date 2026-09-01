@@ -37,7 +37,7 @@ export default defineConfig({
     description:
       'Coalesce, schedule, and stream cargo so concurrent agent sessions share compiles instead of fighting locks.',
     name: 'cargo-hauler',
-    version: '0.2.0',
+    version: '0.2.1',
   },
   runtime: { node: '22.19.0' },
   scripts: {

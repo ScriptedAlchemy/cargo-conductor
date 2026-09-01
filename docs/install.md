@@ -102,7 +102,7 @@ export PATH="$HOME/.local/bin:$PATH"
 resolves elsewhere (or when the directory is not on `PATH` at all).
 
 The generated shim is self-contained
-([issue #2](https://github.com/ScriptedAlchemy/cargo-conductor/issues/2): it
+([issue #2](https://github.com/ScriptedAlchemy/cargo-hauler/issues/2): it
 used to call a bare `hauler` that nothing puts on PATH):
 
 - It embeds the absolute `node <script>` invocation of the CLI that ran
