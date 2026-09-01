@@ -23,6 +23,7 @@ const configAt = (stateDir: string): DaemonConfigShape => ({
   batchEnabled: false,
   loadThresholdPerCore: null,
   loadMinConcurrent: 2,
+  cpuStallThreshold: null,
 });
 
 describe('spawnDetachedDaemon', () => {

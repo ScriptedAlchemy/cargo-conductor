@@ -34,6 +34,14 @@ export interface DaemonConfigShape {
   readonly loadThresholdPerCore: number | null;
   /** Admissions the load clamp never throttles below (floor 1). */
   readonly loadMinConcurrent: number;
+  /**
+   * PSI `some avg10` CPU stall percentage above which admission defers.
+   * On by default where /proc/pressure exists because stall share, unlike
+   * loadavg, reacts within seconds to the contention that makes concurrent
+   * test suites miss deadlines. CARGO_CONDUCTOR_CPU_PRESSURE_THRESHOLD
+   * overrides; any value <= 0 disables the arm.
+   */
+  readonly cpuStallThreshold: number | null;
 }
 
 export class DaemonConfig extends Context.Service<DaemonConfig, DaemonConfigShape>()(
@@ -41,6 +49,7 @@ export class DaemonConfig extends Context.Service<DaemonConfig, DaemonConfigShap
 ) {}
 
 const defaultMaxConcurrent = 5;
+const defaultCpuStallThreshold = 75;
 
 export const resolveDaemonConfig = (
   env: Readonly<Record<string, string | undefined>> = process.env,
@@ -53,6 +62,7 @@ export const resolveDaemonConfig = (
   const parsedJobs = Number.parseInt(env.CARGO_CONDUCTOR_JOBS_GRANT ?? '', 10);
   const parsedLoadThreshold = Number.parseFloat(env.CARGO_CONDUCTOR_LOAD_THRESHOLD ?? '');
   const parsedLoadMin = Number.parseInt(env.CARGO_CONDUCTOR_LOAD_MIN ?? '', 10);
+  const parsedCpuStall = Number.parseFloat(env.CARGO_CONDUCTOR_CPU_PRESSURE_THRESHOLD ?? '');
   // Divide the cores between the admitted builds so N concurrent cargos do
   // not each assume they own the whole machine (rheo's grant idea).
   const defaultJobsGrant = Math.max(4, Math.floor(availableParallelism() / maxConcurrent));
@@ -73,6 +83,12 @@ export const resolveDaemonConfig = (
       Number.isFinite(parsedLoadThreshold) && parsedLoadThreshold > 0 ? parsedLoadThreshold : null,
     loadMinConcurrent:
       Number.isInteger(parsedLoadMin) && parsedLoadMin >= 1 ? parsedLoadMin : 2,
+    cpuStallThreshold:
+      env.CARGO_CONDUCTOR_CPU_PRESSURE_THRESHOLD === undefined
+        ? defaultCpuStallThreshold
+        : Number.isFinite(parsedCpuStall) && parsedCpuStall > 0
+          ? parsedCpuStall
+          : null,
   };
 };
 

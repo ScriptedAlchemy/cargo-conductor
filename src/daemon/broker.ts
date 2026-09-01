@@ -42,6 +42,7 @@ import type {
 } from './protocol.js';
 import { ReplayBuffer } from './replay.js';
 import type { ReplayAudience, ReplayChunk } from './replay.js';
+import { cpuSomeAvg10 } from './pressure.js';
 import { selectNextIndex, shouldDeferAdmission } from './scheduler.js';
 import { Topology } from './topology.js';
 import { findConfiguredTargetDir, locateWorkspaceRoot } from './workspace.js';
@@ -1483,16 +1484,20 @@ export const BrokerLive: Layer.Layer<
     // (the job is still 'queued' while gated).
     const loadGateDeadlineMs = 120_000;
     const waitForLoadHeadroom: Effect.Effect<void> =
-      config.loadThresholdPerCore === null
+      config.loadThresholdPerCore === null && config.cpuStallThreshold === null
         ? Effect.void
         : Effect.gen(function* () {
-            const thresholdPerCore = config.loadThresholdPerCore ?? 0;
+            // A disabled loadavg arm never trips; PSI can gate on its own.
+            const thresholdPerCore = config.loadThresholdPerCore ?? Number.POSITIVE_INFINITY;
             const deadline = Date.now() + loadGateDeadlineMs;
             while (Date.now() < deadline) {
               const running = yield* Ref.get(admittedCount);
               const loadPerCore = loadavg()[0] / availableParallelism();
+              const cpuStallPercent = config.cpuStallThreshold === null ? null : cpuSomeAvg10();
               if (
                 !shouldDeferAdmission({
+                  cpuStallPercent,
+                  cpuStallThreshold: config.cpuStallThreshold,
                   loadPerCore,
                   minConcurrent: config.loadMinConcurrent,
                   running,
@@ -1502,7 +1507,7 @@ export const BrokerLive: Layer.Layer<
                 return;
               }
               yield* Effect.logDebug(
-                `admission deferred: load/core ${loadPerCore.toFixed(2)} > ${thresholdPerCore} with ${running} running`,
+                `admission deferred: load/core ${loadPerCore.toFixed(2)} (threshold ${thresholdPerCore}), cpu stall ${cpuStallPercent?.toFixed(1) ?? 'n/a'}% (threshold ${config.cpuStallThreshold ?? 'off'}) with ${running} running`,
               );
               yield* Effect.sleep('2 seconds');
             }
