@@ -315,6 +315,49 @@ export const formatCompactNumber = (value: number): string => {
   return `${rounded}${unit.suffix}`;
 };
 
+/**
+ * Remaining-time hint for a running row. Estimates come from prior runs of
+ * the same intent, so estimate ≈ elapsed is the common steady state right
+ * before finish — rendering it reads as a countdown stuck at "now" (a live
+ * dashboard showed elapsed 13s with "~13s" beside it). The hint renders only
+ * when the estimate exceeds elapsed by a meaningful margin: at least
+ * {@link remainingMinMs} and at least {@link remainingMinFraction} of the
+ * estimate. Otherwise null hides it.
+ */
+export const remainingMinMs = 5_000;
+export const remainingMinFraction = 0.1;
+
+export const remainingEstimateMs = (elapsedMs: number, estimateMs: unknown): number | null => {
+  if (typeof estimateMs !== 'number' || estimateMs <= 0 || elapsedMs < 0) {
+    return null;
+  }
+  const remaining = estimateMs - elapsedMs;
+  return remaining >= remainingMinMs && remaining >= estimateMs * remainingMinFraction
+    ? remaining
+    : null;
+};
+
+/** Last path component (repo folder name); the full path belongs in the title. */
+export const pathBasename = (path: string): string => {
+  const segments = path.split('/').filter((segment) => segment.length > 0);
+  const last = segments[segments.length - 1];
+  return last === undefined ? path : last;
+};
+
+/**
+ * Kache sub-panels collapse when empty, like the top-level sections: an idle
+ * machine renders no "No recent heartbeats." placeholder column.
+ */
+export type KacheColumn = 'roots' | 'crates';
+
+export const kacheColumns = (counts: {
+  readonly roots: number;
+  readonly crates: number;
+}): readonly KacheColumn[] => [
+  ...(counts.roots > 0 ? (['roots'] as const) : []),
+  ...(counts.crates > 0 ? (['crates'] as const) : []),
+];
+
 export const shortenPath = (path: string, maxLength = 38): string => {
   const homed = path.replace(/^\/(?:home|Users)\/[^/]+/u, '~');
   if (homed.length <= maxLength) {
