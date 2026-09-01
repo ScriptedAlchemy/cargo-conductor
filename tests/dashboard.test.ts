@@ -252,7 +252,7 @@ describe('ranAsFor', () => {
   });
 
   it('shows the bare program name even when the exec argv used an absolute path', () => {
-    const absolute = ['/home/zack/.cargo/bin/cargo', 'test', '-p', 'aa'];
+    const absolute = ['/home/alice/.cargo/bin/cargo', 'test', '-p', 'aa'];
     expect(ranAsFor(argv, absolute)).toEqual({
       command: 'cargo test -p aa',
       extraPackages: 0,
@@ -262,9 +262,9 @@ describe('ranAsFor', () => {
 
 describe('argvText', () => {
   it('strips the directory from the program while the title keeps it', () => {
-    const argv = ['/home/zack/.cargo/bin/cargo', 'test', '-p', 'tracedecay-graph-db'];
+    const argv = ['/home/alice/.cargo/bin/cargo', 'test', '-p', 'tracedecay-graph-db'];
     expect(argvText(argv)).toBe('cargo test -p tracedecay-graph-db');
-    expect(argvTitle(argv)).toBe('/home/zack/.cargo/bin/cargo test -p tracedecay-graph-db');
+    expect(argvTitle(argv)).toBe('/home/alice/.cargo/bin/cargo test -p tracedecay-graph-db');
   });
 
   it('passes plain commands through untouched', () => {
@@ -297,8 +297,8 @@ describe('display formatting', () => {
   });
 
   it('shortens home-prefixed and overly long paths', () => {
-    expect(shortenPath('/home/zack/proj/repo')).toBe('~/proj/repo');
-    expect(shortenPath('/fast/some/deeply/nested/workspace/checkout/target/debug', 20)).toBe(
+    expect(shortenPath('/home/alice/proj/repo')).toBe('~/proj/repo');
+    expect(shortenPath('/srv/some/deeply/nested/workspace/checkout/target/debug', 20)).toBe(
       '…/target/debug',
     );
   });

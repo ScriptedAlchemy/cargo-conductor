@@ -16,6 +16,7 @@ import type {
   StatusResultMessage,
   SystemLoadReport,
 } from './daemon/protocol.js';
+import { colorEnabled, stripAnsi } from './lib/ansi.js';
 import { shortId } from './lib/id.js';
 import { countWord } from './lib/text.js';
 
@@ -59,6 +60,35 @@ export const describeRequestRecord = (
       : ` (${countWord(request.errorCount, 'error')}, ${countWord(request.warningCount, 'warning')})`;
   return `${request.ticket} ${request.status}${counts}`;
 };
+
+/**
+ * Whether this process's consumer renders ANSI color. Ledger records store
+ * cargo output verbatim (color included); color is a display concern decided
+ * here, per consumer: an interactive TTY (or FORCE_COLOR/CLICOLOR_FORCE)
+ * keeps the bytes, while pipes, MCP stdio transports, NO_COLOR, and
+ * TERM=dumb get stripped text — a JSON-stringified ESC would otherwise show
+ * up as literal `\u001b[…` noise for a consumer that cannot paint it.
+ */
+export const consumerRendersColor = (
+  env: Readonly<Record<string, string | undefined>> = process.env,
+  isTty: boolean = process.stdout.isTTY === true,
+): boolean => colorEnabled(env, isTty);
+
+/** Projects one record for a consumer: verbatim with color, stripped without. */
+export const displayRequestRecord = (record: RequestRecord, color: boolean): RequestRecord =>
+  color
+    ? record
+    : {
+        ...record,
+        outputTail: record.outputTail === null ? null : stripAnsi(record.outputTail),
+        diagnostics: record.diagnostics === null ? null : record.diagnostics.map(stripAnsi),
+      };
+
+export const displayRequestRecords = (
+  records: readonly RequestRecord[],
+  color: boolean,
+): readonly RequestRecord[] =>
+  color ? records : records.map((record) => displayRequestRecord(record, color));
 
 const stoppedSummary = (recentCount: number): string => {
   if (recentCount === 0) {

@@ -94,6 +94,35 @@ export const resolveRealCargo = (
   );
 };
 
+export type ShimPathStatus =
+  | { readonly kind: 'wins' }
+  | { readonly kind: 'shadowed'; readonly by: string }
+  | { readonly kind: 'not-on-path' };
+
+/**
+ * Where a fresh PATH lookup of `cargo` lands relative to the installed shim.
+ * rustup's `~/.cargo/bin` commonly precedes `~/.local/bin`, in which case
+ * the shim never runs — surface that at install time instead of letting the
+ * operator discover it from an idle dashboard.
+ */
+export const shimPathStatus = (
+  shimPath: string,
+  env: Readonly<Record<string, string | undefined>> = process.env,
+): ShimPathStatus => {
+  const shim = canonical(shimPath);
+  for (const entry of (env.PATH ?? '').split(delimiter)) {
+    if (entry.length === 0) {
+      continue;
+    }
+    const candidate = join(entry, 'cargo');
+    if (!existsSync(candidate)) {
+      continue;
+    }
+    return canonical(candidate) === shim ? { kind: 'wins' } : { kind: 'shadowed', by: candidate };
+  }
+  return { kind: 'not-on-path' };
+};
+
 export const installCargoShim = (options: InstallShimOptions): InstallShimResult => {
   const destDir = options.destDir ?? defaultShimDir();
   mkdirSync(destDir, { recursive: true });

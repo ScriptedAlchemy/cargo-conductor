@@ -1,13 +1,15 @@
-import { fstatSync, mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, fstatSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { describe, expect, it } from '@rstest/core';
 import * as Effect from 'effect/Effect';
+import * as Schedule from 'effect/Schedule';
 
-import type { DaemonConfigShape } from '../src/daemon/config.js';
+import { resolveDaemonConfig, type DaemonConfigShape } from '../src/daemon/config.js';
 import { daemonIsAbsent, spawnDetachedDaemon } from '../src/client/ensure-daemon.js';
 import { pingDaemon } from '../src/daemon/control.js';
+import { runDaemon } from '../src/daemon/main.js';
 
 const configAt = (stateDir: string): DaemonConfigShape => ({
   stateDir,
@@ -51,6 +53,36 @@ describe('spawnDetachedDaemon', () => {
       expect(() => fstatSync(logFd)).toThrow();
     } finally {
       rmSync(stateDir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('daemon start without a machine-specific mount', () => {
+  it('starts in a fresh temp state dir that does not exist yet (no /fast anywhere)', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'cc-portable-state-'));
+    // Deliberately not pre-created: the daemon must build its own state dir.
+    const stateDir = join(root, 'nested', 'state');
+    const config = resolveDaemonConfig({
+      CARGO_CONDUCTOR_STATE_DIR: stateDir,
+      CARGO_CONDUCTOR_KACHE_INDEX: '',
+    });
+    try {
+      const pong = await Effect.runPromise(
+        Effect.scoped(
+          Effect.gen(function* () {
+            yield* Effect.forkScoped(runDaemon(config));
+            const reply = yield* pingDaemon(config.socketPath, 500).pipe(
+              Effect.retry(Schedule.spaced('50 millis').pipe(Schedule.upTo({ times: 100 }))),
+            );
+            // Assert while the daemon is still up; scope close removes it.
+            expect(existsSync(config.socketPath)).toBe(true);
+            return reply;
+          }),
+        ),
+      );
+      expect(pong.type).toBe('pong');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
     }
   });
 });

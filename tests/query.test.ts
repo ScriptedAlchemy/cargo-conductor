@@ -10,7 +10,14 @@ import { resolveDaemonConfig } from '../src/daemon/config.js';
 import { pingDaemon, requestOverSocket } from '../src/daemon/control.js';
 import { createLedgerApi, openLedgerDatabase } from '../src/daemon/ledger.js';
 import { runDaemon } from '../src/daemon/main.js';
-import { describeRequestRecord, loadConductorSnapshot } from '../src/query.js';
+import type { RequestRecord } from '../src/daemon/protocol.js';
+import {
+  consumerRendersColor,
+  describeRequestRecord,
+  displayRequestRecord,
+  displayRequestRecords,
+  loadConductorSnapshot,
+} from '../src/query.js';
 
 import { withTempDir } from './harness.js';
 
@@ -32,6 +39,68 @@ describe('ticket summaries', () => {
         warningCount: null,
       }),
     ).toBe('cc-10 done');
+  });
+});
+
+const esc = '\u001b';
+
+const coloredRecord: RequestRecord = {
+  argv: ['cargo', 'check'],
+  attachMode: null,
+  attachedTo: null,
+  background: false,
+  createdAtMs: 1,
+  cwd: '/ws',
+  diagnostics: [`${esc}[1m${esc}[38;5;9merror[E0432]${esc}[0m: unresolved import\n`],
+  error: null,
+  errorCount: 1,
+  estimateMs: null,
+  execArgv: null,
+  exitCode: 101,
+  finishedAtMs: 2,
+  holdStop: false,
+  host: 'cursor',
+  id: 1,
+  intentJson: null,
+  intentKey: null,
+  laneKey: '["/ws","/ws/target"]',
+  outputTail: `${esc}[0m\n ${esc}[1m${esc}[94m--> ${esc}[0msrc/lib.rs:3:5\n`,
+  queuedAtMs: 1,
+  runMs: 1,
+  session: null,
+  signal: null,
+  startedAtMs: 1,
+  status: 'failed',
+  targetDir: '/ws/target',
+  ticket: 'cc-1',
+  waitMs: 0,
+  warningCount: 0,
+  workspaceRoot: '/ws',
+};
+
+describe('display projection', () => {
+  it('strips stored ANSI for a no-color consumer, leaving other fields intact', () => {
+    const projected = displayRequestRecord(coloredRecord, false);
+    expect(projected.outputTail).toBe('\n --> src/lib.rs:3:5\n');
+    expect(projected.diagnostics).toEqual(['error[E0432]: unresolved import\n']);
+    expect(JSON.stringify(projected)).not.toContain('\\u001b');
+    expect(projected.argv).toEqual(coloredRecord.argv);
+    expect(projected.exitCode).toBe(101);
+  });
+
+  it('passes records through verbatim for a color-capable consumer', () => {
+    expect(displayRequestRecord(coloredRecord, true)).toBe(coloredRecord);
+    expect(displayRequestRecords([coloredRecord], true)).toEqual([coloredRecord]);
+    const stripped = displayRequestRecords([coloredRecord], false);
+    expect(stripped[0]?.outputTail).not.toContain(esc);
+  });
+
+  it('decides consumer color from TTY-ness and the color env conventions', () => {
+    expect(consumerRendersColor({}, true)).toBe(true);
+    expect(consumerRendersColor({}, false)).toBe(false);
+    expect(consumerRendersColor({ NO_COLOR: '1' }, true)).toBe(false);
+    expect(consumerRendersColor({ FORCE_COLOR: '1' }, false)).toBe(true);
+    expect(consumerRendersColor({ TERM: 'dumb' }, true)).toBe(false);
   });
 });
 

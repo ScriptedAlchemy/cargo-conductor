@@ -11,7 +11,8 @@ import {
   submitBackground,
   type TicketSocketError,
 } from '../client/tickets.js';
-import { describeRequestRecord } from '../query.js';
+import type { RequestRecord } from '../daemon/protocol.js';
+import { consumerRendersColor, describeRequestRecord, displayRequestRecord } from '../query.js';
 import { ConductorResult } from '../result.js';
 
 import {
@@ -114,6 +115,15 @@ const runTicketEffect = async <A,>(
   throw Cause.squash(exit.cause);
 };
 
+/**
+ * Records cross from storage (ANSI kept) to a consumer here, in the process
+ * that owns the consumer: the CLI's terminal or pipe, or an MCP server's
+ * stdio transport (never a TTY, so MCP structured content is always
+ * stripped).
+ */
+const requestForConsumer = (request: RequestRecord | null): RequestRecord | null =>
+  request === null ? null : displayRequestRecord(request, consumerRendersColor());
+
 export const defaultTicketOperations: TicketOperations = {
   await: async (input, context) => {
     const waited = await runTicketEffect(
@@ -126,7 +136,7 @@ export const defaultTicketOperations: TicketOperations = {
     );
     return {
       operation: 'await',
-      request: waited.request,
+      request: requestForConsumer(waited.request),
       summary: waited.timedOut
         ? `${input.ticket} still pending`
         : describeRequestRecord(input.ticket, waited.request),
@@ -146,7 +156,7 @@ export const defaultTicketOperations: TicketOperations = {
     const request = await runTicketEffect(fetchTicket(input.ticket), context.signal);
     return {
       operation: 'result',
-      request,
+      request: requestForConsumer(request),
       summary: describeRequestRecord(input.ticket, request),
       ticket: input.ticket,
     };

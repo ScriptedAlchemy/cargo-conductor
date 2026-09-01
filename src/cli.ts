@@ -10,7 +10,12 @@ import { buildRelevantEnv } from './client/env.js';
 import { runExecClient, type RunExecOptions, type RunExecResult } from './client/exec.js';
 import { ExecUsageError, parseExecArgv } from './client/parse.js';
 import { resolveConductorArgv } from './hooks/paths.js';
-import { defaultShimDir, installCargoShim } from './shim/install.js';
+import {
+  defaultShimDir,
+  installCargoShim,
+  shimPathStatus,
+  type ShimPathStatus,
+} from './shim/install.js';
 
 export type { ConductorOperations };
 
@@ -59,6 +64,26 @@ const selfConductorArgv = (): readonly string[] => {
     // Keep the resolved path when realpath cannot refine it.
   }
   return [process.execPath, absolute];
+};
+
+/**
+ * PATH honesty at install time: a shim nobody's PATH reaches (rustup's
+ * ~/.cargo/bin usually precedes ~/.local/bin) silently bypasses the broker.
+ */
+const describeShimPathStatus = (status: ShimPathStatus, destDir: string): string => {
+  const prepend = `export PATH="${destDir}:$PATH"`;
+  switch (status.kind) {
+    case 'wins':
+      return 'cargo now resolves through the shim; scripted cargo goes through the broker.';
+    case 'shadowed':
+      return `warning: PATH resolves cargo to ${status.by} before the shim. Put ${destDir} earlier on PATH (e.g. ${prepend} in your shell profile) or the shim never runs.`;
+    case 'not-on-path':
+      return `warning: ${destDir} is not on PATH. Add it ahead of rustup's ~/.cargo/bin (e.g. ${prepend} in your shell profile) so scripted cargo goes through the broker.`;
+    default: {
+      const exhaustive: never = status;
+      throw new Error(`unhandled shim PATH status: ${JSON.stringify(exhaustive)}`);
+    }
+  }
 };
 
 const defaultWriteStdout = (data: Uint8Array): void => {
@@ -138,7 +163,8 @@ export const runCli = async (
         force,
         realCargo,
       });
-      write(`Installed cargo shim at ${installed.path}\nPrepend ${destDir} to PATH to catch cargo inside scripts.\n`);
+      write(`Installed cargo shim at ${installed.path}\n`);
+      write(`${describeShimPathStatus(shimPathStatus(installed.path), destDir)}\n`);
       return 0;
     } catch (error) {
       write(`${error instanceof Error ? error.message : String(error)}\n`);

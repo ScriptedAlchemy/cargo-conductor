@@ -167,7 +167,7 @@ describe('schema forward compatibility (issue #4)', () => {
         entryCount: 3,
         eventsFreshMs: 750,
         indexSizeBytes: 4_096,
-        recentHeartbeatRoots: [{ count: 2, root: '/fast/projects/alpha' }],
+        recentHeartbeatRoots: [{ count: 2, root: '/srv/projects/alpha' }],
         topCrates: [{ crate: 'alpha', ms: 12_000, profile: 'release' }],
       },
       lanes: [],

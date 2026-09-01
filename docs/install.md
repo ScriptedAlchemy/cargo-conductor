@@ -70,10 +70,19 @@ open the portable target in the workbench playground).
 Hooks cannot see `cargo` spawned from scripts. Install a shim:
 
 ```sh
-conductor install-shim --dir ~/.local/bin
+conductor install-shim            # defaults to ~/.local/bin
+conductor install-shim --dir DIR  # or pick another user-writable dir
 ```
 
-Prepend that directory to `PATH` so scripted cargo goes through the broker.
+The shim only works if its directory resolves `cargo` **before** rustup's
+`~/.cargo/bin` on `PATH`. Prepend it in your shell profile:
+
+```sh
+export PATH="$HOME/.local/bin:$PATH"
+```
+
+`install-shim` checks this after installing and warns when `cargo` still
+resolves elsewhere (or when the directory is not on `PATH` at all).
 
 The generated shim is self-contained
 ([issue #2](https://github.com/ScriptedAlchemy/cargo-conductor/issues/2): it
@@ -102,5 +111,11 @@ sits. The daemon uses `CARGO_CONDUCTOR_CARGO_BIN` when set, otherwise
 
 ## State
 
-Daemon socket and ledger live under `/fast/cache/cargo-conductor/` unless
-`CARGO_CONDUCTOR_STATE_DIR` is set.
+Daemon socket and ledger live under a per-user cache directory:
+`$XDG_CACHE_HOME/cargo-conductor` when `XDG_CACHE_HOME` is set, otherwise
+`~/.cache/cargo-conductor` on Linux, `~/Library/Caches/cargo-conductor` on
+macOS, and `%LOCALAPPDATA%\cargo-conductor` on Windows. Set
+`CARGO_CONDUCTOR_STATE_DIR` to relocate it (a RAM disk or other fast mount is
+optional, never required). `CARGO_CONDUCTOR_KACHE_INDEX` likewise overrides
+the kache index location, which defaults to `kache/index.db` under the same
+cache base and is simply reported unavailable when absent.

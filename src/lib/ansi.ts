@@ -40,6 +40,9 @@ export const stripAnsi = (text: string): string => text.replace(ansiSequencePatt
  */
 const maxHeldLength = 4_096;
 
+/** The escape introducer of an unterminated run reclassified as data. */
+const introducerPattern = /^\u001b[[\]]?/u;
+
 /**
  * Strips ANSI from a byte stream chunk by chunk. A sequence split across
  * chunk boundaries is held back until its final byte arrives, so partial
@@ -53,12 +56,23 @@ export class AnsiStreamStripper {
   push(data: Uint8Array): Buffer {
     const text = this.#held + Buffer.from(data).toString('latin1');
     const partial = trailingPartialPattern.exec(text);
-    const holdFrom =
-      partial !== null && text.length - partial.index <= maxHeldLength
-        ? partial.index
-        : text.length;
-    this.#held = text.slice(holdFrom);
-    return Buffer.from(stripAnsi(text.slice(0, holdFrom)), 'latin1');
+    if (partial === null) {
+      this.#held = '';
+      return Buffer.from(stripAnsi(text), 'latin1');
+    }
+    if (text.length - partial.index <= maxHeldLength) {
+      this.#held = text.slice(partial.index);
+      return Buffer.from(stripAnsi(text.slice(0, partial.index)), 'latin1');
+    }
+    // Overlong unterminated run: data, not ANSI. Emit the payload verbatim
+    // (stripAnsi would eat an unterminated OSC body whole), dropping only
+    // the escape introducer; a trailing ESC may be the start of a real ST
+    // terminator, so it stays held — no emission ever contains an ESC byte.
+    const run = text.slice(partial.index).replace(introducerPattern, '');
+    const holdsEsc = run.endsWith('\u001b');
+    this.#held = holdsEsc ? '\u001b' : '';
+    const payload = holdsEsc ? run.slice(0, -1) : run;
+    return Buffer.from(stripAnsi(text.slice(0, partial.index)) + payload, 'latin1');
   }
 
   /** Emits whatever a held partial sequence strips down to (usually nothing). */
