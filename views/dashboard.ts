@@ -45,6 +45,9 @@ interface RequestRow {
   readonly waitMs?: unknown;
   readonly runMs?: unknown;
   readonly createdAtMs?: unknown;
+  readonly startedAtMs?: unknown;
+  readonly estimateMs?: unknown;
+  readonly workspaceRoot?: unknown;
 }
 
 interface LaneRow {
@@ -127,7 +130,7 @@ const admissionMeter = (runningCount: number, maxConcurrent: number): string => 
   );
 };
 
-const setCount = (id: string, count: number): void => {
+const setCount = (id: string, count: number | string): void => {
   const element = document.querySelector<HTMLSpanElement>(`#${id}`);
   if (element !== null) {
     element.textContent = `(${count})`;
@@ -171,10 +174,36 @@ const commandCell = (row: RequestRow): string => {
 const durationCell = (value: unknown): string =>
   typeof value === 'number' ? formatMs(value) : '—';
 
+const ticketCell = (value: unknown): string =>
+  value == null ? '—' : `<span class="ticket">${escapeHtml(String(value))}</span>`;
+
+const whoCell = (row: RequestRow): string => {
+  const host = typeof row.host === 'string' ? row.host : null;
+  const session = typeof row.session === 'string' ? row.session : null;
+  if (host === null && session === null) {
+    return '—';
+  }
+  const label = session === null || session === host ? (host ?? '') : `${host ?? '?'} · ${session}`;
+  return `<span class="who" title="${escapeHtml(label)}">${escapeHtml(label)}</span>`;
+};
+
+/** Elapsed (or waited) time so far, with the cost-model estimate alongside. */
+const progressCell = (sinceMs: unknown, estimateMs: unknown, nowMs: number): string => {
+  if (typeof sinceMs !== 'number') {
+    return '—';
+  }
+  const elapsed = `<span class="dur">${escapeHtml(formatMs(Math.max(0, nowMs - sinceMs)))}</span>`;
+  return typeof estimateMs === 'number' && estimateMs > 0
+    ? `${elapsed} <span class="est">/ ~${escapeHtml(formatMs(estimateMs))}</span>`
+    : elapsed;
+};
+
+const terminalStatuses = new Set(['done', 'failed', 'killed']);
+
 const render = (structured: StructuredContent | null): void => {
   const nowMs = Date.now();
   const active = asRows(structured?.active);
-  const recent = asRows(structured?.recent).slice(0, 20);
+  const recent = asRows(structured?.recent);
   const lanes = asLanes(structured?.lanes);
   const running = active.filter((row) => row.status === 'running');
   const queued = active.filter((row) => row.status === 'queued' || row.status === 'requested');
@@ -188,44 +217,56 @@ const render = (structured: StructuredContent | null): void => {
     stat('attached', String(attached.length)) +
     admissionMeter(running.length, maxConcurrent);
 
-  lanesEl.innerHTML = table(
-    ['workspace', 'target dir', 'queued', 'running'],
-    lanes.map((lane) => [
-      pathCell(lane.workspaceRoot),
-      pathCell(lane.targetDir),
-      text(typeof lane.queued === 'number' ? lane.queued : null),
-      typeof lane.runningTicket === 'string' ? escapeHtml(lane.runningTicket) : '—',
-    ]),
-  );
-
   inflightEl.innerHTML = table(
-    ['ticket', 'status', 'command', 'session'],
+    ['ticket', 'command', 'workspace', 'who', 'elapsed'],
     running.map((row) => [
-      text(row.ticket),
-      pill(row.status),
+      ticketCell(row.ticket),
       commandCell(row),
-      text(row.session ?? row.host ?? null),
+      pathCell(row.workspaceRoot),
+      whoCell(row),
+      progressCell(row.startedAtMs ?? row.createdAtMs, row.estimateMs, nowMs),
     ]),
   );
 
   const queueRows = queued.concat(attached.filter((row) => row.status !== 'running'));
   queueEl.innerHTML = table(
-    ['ticket', 'status', 'command', 'attached'],
+    ['ticket', 'command', 'workspace', 'who', 'waiting', 'attached'],
     queueRows.map((row) => [
-      text(row.ticket),
-      pill(row.status),
+      ticketCell(row.ticket),
       commandCell(row),
+      pathCell(row.workspaceRoot),
+      whoCell(row),
+      progressCell(row.createdAtMs, row.estimateMs, nowMs),
       attachChip(row) || '—',
     ]),
   );
 
+  // A lane with nothing queued or running is history, not signal.
+  const activeLanes = lanes.filter(
+    (lane) =>
+      (typeof lane.queued === 'number' && lane.queued > 0) ||
+      typeof lane.runningTicket === 'string',
+  );
+  lanesEl.innerHTML = table(
+    ['workspace', 'running', 'queued'],
+    activeLanes.map((lane) => [
+      pathCell(lane.workspaceRoot),
+      typeof lane.runningTicket === 'string'
+        ? `<span class="ticket">${escapeHtml(lane.runningTicket)}</span>`
+        : '—',
+      text(typeof lane.queued === 'number' ? lane.queued : null),
+    ]),
+  );
+
+  const finished = recent.filter(
+    (row) => typeof row.status === 'string' && terminalStatuses.has(row.status),
+  ).slice(0, 20);
   historyEl.innerHTML = table(
-    ['ticket', 'status', 'host', 'session', 'age', 'wait', 'run', 'command'],
-    recent.map((row) => [
-      text(row.ticket),
+    ['ticket', 'status', 'who', 'age', 'wait', 'run', 'command'],
+    finished.map((row) => [
+      ticketCell(row.ticket),
       pill(row.status),
-      text(row.host),
-      text(row.session),
+      whoCell(row),
       typeof row.createdAtMs === 'number' ? relativeTime(row.createdAtMs, nowMs) : '—',
       durationCell(row.waitMs),
       durationCell(row.runMs),
@@ -233,10 +274,10 @@ const render = (structured: StructuredContent | null): void => {
     ]),
   );
 
-  setCount('count-lanes', lanes.length);
+  setCount('count-lanes', activeLanes.length === lanes.length ? lanes.length : `${activeLanes.length} active · ${lanes.length} seen`);
   setCount('count-inflight', running.length);
   setCount('count-queue', queueRows.length);
-  setCount('count-history', recent.length);
+  setCount('count-history', finished.length);
   statusEl.textContent =
     typeof structured?.summary === 'string' ? structured.summary : 'Updated.';
 };

@@ -29,8 +29,7 @@
       header { display: flex; justify-content: space-between; align-items: baseline; gap: 16px; }
       h1 { margin: 0; font-size: 1.3rem; letter-spacing: 0.03em; }
       #status { color: var(--muted); font-size: 0.9rem; }
-      .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-top: 18px; }
-      .span { grid-column: 1 / -1; }
+      .grid { display: grid; grid-template-columns: 1fr; gap: 14px; margin-top: 18px; }
       section {
         border: 1px solid var(--line);
         background: var(--panel);
@@ -59,15 +58,28 @@
         font-family: var(--mono);
         font-size: 0.8rem;
         display: inline-block;
-        max-width: 420px;
+        max-width: 520px;
         overflow: hidden;
         text-overflow: ellipsis;
         white-space: nowrap;
         vertical-align: bottom;
       }
       .ranas { color: var(--accent); font-size: 0.76rem; margin-top: 2px; }
-      .ranas .cmd { max-width: 360px; font-size: 0.76rem; }
+      .ranas .cmd { max-width: 460px; font-size: 0.76rem; }
       .pkgcount { color: var(--muted); }
+      .ticket { font-family: var(--mono); font-size: 0.8rem; white-space: nowrap; }
+      .who {
+        color: var(--muted);
+        font-size: 0.82rem;
+        white-space: nowrap;
+        max-width: 150px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        display: inline-block;
+        vertical-align: bottom;
+      }
+      .dur { font-family: var(--mono); font-size: 0.8rem; white-space: nowrap; }
+      .est { color: var(--muted); font-size: 0.76rem; white-space: nowrap; }
       .chip {
         display: inline-block;
         border: 1px solid var(--line);
@@ -111,13 +123,9 @@
         <div id="status">Connecting…</div>
       </header>
       <div class="grid">
-        <section class="span">
+        <section>
           <h2>Contention</h2>
           <div id="contention" class="stats"></div>
-        </section>
-        <section class="span">
-          <h2>Lanes <span class="count" id="count-lanes"></span></h2>
-          <div id="lanes"></div>
         </section>
         <section>
           <h2>In flight <span class="count" id="count-inflight"></span></h2>
@@ -127,7 +135,11 @@
           <h2>Queue <span class="count" id="count-queue"></span></h2>
           <div id="queue"></div>
         </section>
-        <section class="span">
+        <section>
+          <h2>Lanes <span class="count" id="count-lanes"></span></h2>
+          <div id="lanes"></div>
+        </section>
+        <section>
           <h2>History <span class="count" id="count-history"></span></h2>
           <div id="history"></div>
         </section>
