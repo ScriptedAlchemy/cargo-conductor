@@ -1,6 +1,6 @@
 import { join } from 'node:path';
 
-import { conductorStateRoot } from '../status.js';
+import { resolveStateDir } from '../status.js';
 
 /** Absolute `node …/conductor.mjs` when the plugin root is known; otherwise PATH `conductor`. */
 export const resolveConductorArgv = (
@@ -19,7 +19,7 @@ export const resolveConductorArgv = (
 
 export const resolveHookStateDir = (
   env: Readonly<Record<string, string | undefined>> = process.env,
-): string => env.CARGO_CONDUCTOR_STATE_DIR ?? conductorStateRoot;
+): string => resolveStateDir(env);
 
 export const resolveHookSocketPath = (
   env: Readonly<Record<string, string | undefined>> = process.env,

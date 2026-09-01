@@ -203,14 +203,20 @@ All settings are environment variables read by the daemon (and hooks):
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `CARGO_CONDUCTOR_STATE_DIR` | `/fast/cache/cargo-conductor` | Home of the unix socket, SQLite ledger, daemon log, pid lock, and `hook-events.jsonl` |
+| `CARGO_CONDUCTOR_STATE_DIR` | per-user cache dir (see below) | Home of the unix socket, SQLite ledger, daemon log, pid lock, and `hook-events.jsonl` |
 | `CARGO_CONDUCTOR_CARGO_BIN` | `$CARGO_HOME/bin/cargo` | Real cargo binary for daemon-spawned work (bare `cargo` as last resort); the daemon never resolves `cargo` through PATH, where the shim may sit |
 | `CARGO_CONDUCTOR_MAX_CONCURRENT` | `5` | Machine-wide cap on concurrently running cargo processes (admission permits) |
 | `CARGO_CONDUCTOR_REPLAY_BUFFER_BYTES` | `4194304` | Leader output retained in memory for late-attacher replay |
-| `CARGO_CONDUCTOR_KACHE_INDEX` | `/fast/cache/kache/index.db` | kache index for per-crate compile-time priors (empty string disables) |
+| `CARGO_CONDUCTOR_KACHE_INDEX` | `<user cache>/kache/index.db` | kache index for per-crate compile-time priors (empty string disables; a missing file just reports kache as unavailable) |
 | `CARGO_CONDUCTOR_JOBS_GRANT` | `max(4, cores / max concurrent)` | `CARGO_BUILD_JOBS` injected into each spawned cargo (`0` disables; caller-set `-j`/env wins) |
 | `CARGO_CONDUCTOR_BATCH` | enabled | Set to `0` to disable the batch composer |
 | `CARGO_CONDUCTOR_STOP_WAIT_MS` | `30000` | Bounded wait per stop-hold hook invocation |
+
+Daemon state defaults to a per-user cache directory: `$XDG_CACHE_HOME/cargo-conductor`
+when `XDG_CACHE_HOME` is set, otherwise `~/.cache/cargo-conductor` on Linux,
+`~/Library/Caches/cargo-conductor` on macOS, and `%LOCALAPPDATA%\cargo-conductor`
+on Windows. Set `CARGO_CONDUCTOR_STATE_DIR` to move it (e.g. onto a RAM disk);
+no machine-specific mount is ever required.
 
 ## Guarantees and caveats
 
@@ -239,7 +245,8 @@ All settings are environment variables read by the daemon (and hooks):
   bounded-wait design tolerates being cut off; see
   [docs/install.md](docs/install.md) and [docs/codex-hooks.md](docs/codex-hooks.md).
 - Requires Node >= 22.19 (`node:sqlite` without native deps). Daemon state
-  lives under `/fast/cache/cargo-conductor` by default.
+  lives under the per-user cache dir by default (`CARGO_CONDUCTOR_STATE_DIR`
+  overrides; see [Configuration](#configuration)).
 
 ## Development
 

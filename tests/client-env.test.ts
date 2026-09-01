@@ -7,7 +7,7 @@ describe('buildRelevantEnv', () => {
     const env = {
       CARGO_TARGET_DIR: '/tmp/t',
       CC: 'clang',
-      HOME: '/home/zack',
+      HOME: '/home/alice',
       PATH: '/usr/bin',
       PROMPT_COMMAND: 'noise',
       RUSTFLAGS: '-C debuginfo=1',

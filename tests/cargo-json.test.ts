@@ -4,7 +4,7 @@ import { hasLibKind, packageNameFromId, parseCargoJsonLine } from '../src/daemon
 
 describe('packageNameFromId', () => {
   it('parses spec-url package ids', () => {
-    expect(packageNameFromId('path+file:///fast/projects/tracedecay#tracedecay-core@0.1.0')).toBe(
+    expect(packageNameFromId('path+file:///srv/projects/tracedecay#tracedecay-core@0.1.0')).toBe(
       'tracedecay-core',
     );
     expect(packageNameFromId('registry+https://github.com/rust-lang/crates.io-index#serde@1.0.219')).toBe(
