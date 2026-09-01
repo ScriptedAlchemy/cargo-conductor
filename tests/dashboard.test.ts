@@ -34,9 +34,11 @@ import {
   runMetricsView,
   sectionOrder,
   shortenPath,
+  subcommandMetricsView,
   subcommandTimings,
   terminalStatuses,
   ticketDetailFrom,
+  waitMetricsView,
 } from '../views/dashboard-lib.js';
 
 const repoRoot = fileURLToPath(new URL('..', import.meta.url));
@@ -546,6 +548,88 @@ describe('subcommandTimings (metrics split by subcommand)', () => {
     // A blended p50 over all five runs would be 5s; the honest check p50 is 3s.
     expect(check?.p50Ms).toBe(3_000);
     expect(timings).toHaveLength(2);
+  });
+});
+
+describe('waitMetricsView (daemon summary + fallback)', () => {
+  it('prefers daemon summary quantiles when provided', () => {
+    const metrics = waitMetricsView(
+      {
+        count: 12,
+        max: 9_000,
+        quantiles: [
+          [0.5, 1_000],
+          [0.9, 4_000],
+          [0.95, 8_000],
+        ],
+      },
+      [400, 600, 800],
+    );
+    expect(metrics).toEqual({
+      source: 'daemon-1h',
+      count: 12,
+      p50Ms: 1_000,
+      p90Ms: 4_000,
+      p95Ms: 8_000,
+      maxMs: 9_000,
+    });
+  });
+
+  it('falls back to visible finished rows when summary is absent', () => {
+    const metrics = waitMetricsView(undefined, [5_000, 1_000, 3_000]);
+    expect(metrics).toEqual({
+      source: 'visible-window',
+      count: 3,
+      p50Ms: 3_000,
+      p90Ms: null,
+      p95Ms: null,
+      maxMs: 5_000,
+    });
+  });
+});
+
+describe('subcommandMetricsView (daemon-lifetime + fallback)', () => {
+  it('prefers daemon per-kind histograms when available', () => {
+    const view = subcommandMetricsView(
+      {
+        check: {
+          buckets: [
+            [1_000, 2],
+            [5_000, 3],
+          ],
+          count: 3,
+          min: 800,
+          max: 4_500,
+          sum: 8_000,
+        },
+        test: {
+          buckets: [
+            [60_000, 1],
+            [120_000, 1],
+          ],
+          count: 1,
+          min: 60_000,
+          max: 60_000,
+          sum: 60_000,
+        },
+      },
+      [{ argv: ['cargo', 'build'], runMs: 2_000 }],
+    );
+    expect(view.source).toBe('daemon-lifetime');
+    expect(view.rows).toEqual([
+      { count: 3, maxMs: 4_500, meanMs: 8_000 / 3, p50Ms: 1_000, subcommand: 'check' },
+      { count: 1, maxMs: 60_000, meanMs: 60_000, p50Ms: 60_000, subcommand: 'test' },
+    ]);
+  });
+
+  it('falls back to visible-window subcommand timings for older daemons', () => {
+    const rows = [
+      { argv: ['cargo', 'check', '-p', 'aa'], runMs: 1_000 },
+      { argv: ['cargo', 'test', '-p', 'aa'], runMs: 60_000 },
+    ];
+    const view = subcommandMetricsView(undefined, rows);
+    expect(view.source).toBe('visible-window');
+    expect(view.rows).toEqual(subcommandTimings(rows));
   });
 });
 

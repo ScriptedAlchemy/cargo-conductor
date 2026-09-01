@@ -31,12 +31,13 @@ import {
   runMetricsView,
   sectionOrder,
   shortenPath,
-  subcommandTimings,
+  subcommandMetricsView,
   terminalStatuses,
   ticketDetailFrom,
   type RunHistogramShape,
   type StatusPoll,
   type TicketDetail,
+  waitMetricsView,
 } from './dashboard-lib.js';
 
 interface JsonRpcMessage {
@@ -83,8 +84,14 @@ interface StructuredContent {
 
 interface StatusMetricsShape {
   readonly cargo_run_ms?: RunHistogramShape;
+  readonly cargo_run_ms_by_kind?: Readonly<Record<string, RunHistogramShape>>;
   readonly attach_mode?: Readonly<Record<string, unknown>>;
   readonly job_outcome?: Readonly<Record<string, unknown>>;
+  readonly wait_ms_summary?: {
+    readonly count?: unknown;
+    readonly max?: unknown;
+    readonly quantiles?: unknown;
+  };
 }
 
 interface RequestRow {
@@ -683,9 +690,8 @@ const MetricsSection = ({
   const waits = finished
     .map((row) => row.waitMs)
     .filter((value): value is number => typeof value === 'number')
-    .sort((left, right) => left - right);
-  const waitP50 = waits.length === 0 ? null : waits[Math.floor((waits.length - 1) * 0.5)];
-  const waitMax = waits.length === 0 ? null : waits[waits.length - 1];
+  const waitMetrics = waitMetricsView(metrics?.wait_ms_summary, waits);
+  const waitPercentilesVisible = waitMetrics.count >= percentileMinSamples;
   const outcomes = frequencyEntries(metrics?.job_outcome);
   const outcomeTotal = frequencyTotal(metrics?.job_outcome);
   const attachEntries = frequencyEntries(metrics?.attach_mode);
@@ -694,7 +700,7 @@ const MetricsSection = ({
   // Check and test are different populations: the since-start histogram
   // cannot be split retroactively, so the split comes from the visible
   // finished rows, each line carrying its own honest n.
-  const bySubcommand = subcommandTimings(finished);
+  const bySubcommand = subcommandMetricsView(metrics?.cargo_run_ms_by_kind, finished);
   const savings = attachSavings(rows);
   const savedText =
     savings.savedExactMs > 0
@@ -739,11 +745,32 @@ const MetricsSection = ({
           />
         )}
         <Stat label="run mean" value={runs.meanMs === null ? '—' : formatMs(runs.meanMs)} />
-        <Stat
-          label={`wait p50 (last ${waits.length})`}
-          value={waitP50 === null ? '—' : formatMs(waitP50)}
-        />
-        <Stat label="wait max" value={waitMax === null ? '—' : formatMs(waitMax)} />
+        {waitMetrics.source === 'daemon-1h' ? (
+          <Stat
+            label="wait p50/p90/p95 (1h window)"
+            title={`daemon summary window; hidden until ${percentileMinSamples} samples (have ${waitMetrics.count})`}
+            value={
+              !waitPercentilesVisible
+                ? `n<${percentileMinSamples}`
+                : [waitMetrics.p50Ms, waitMetrics.p90Ms, waitMetrics.p95Ms]
+                    .map((value) => (value === null ? '—' : formatMs(value)))
+                    .join(' · ')
+            }
+          />
+        ) : (
+          <Stat
+            label={`wait p50 (last ${waitMetrics.count})`}
+            title={`visible finished rows; hidden until ${percentileMinSamples} samples (have ${waitMetrics.count})`}
+            value={
+              waitMetrics.count === 0
+                ? '—'
+                : !waitPercentilesVisible || waitMetrics.p50Ms === null
+                  ? `n<${percentileMinSamples}`
+                  : formatMs(waitMetrics.p50Ms)
+            }
+          />
+        )}
+        <Stat label="wait max" value={waitMetrics.maxMs === null ? '—' : formatMs(waitMetrics.maxMs)} />
         {attachTotal > 0 ? (
           <Stat
             label="runs avoided (attach)"
@@ -773,16 +800,25 @@ const MetricsSection = ({
           )}
         </div>
       )}
-      {bySubcommand.length === 0 ? null : (
+      {bySubcommand.rows.length === 0 ? null : (
         <div className="subcommand-split">
           <h3>
-            By command <span>(last {finished.length} finished — separate populations, not the histogram above)</span>
+            By command{' '}
+            <span>
+              {bySubcommand.source === 'daemon-lifetime'
+                ? '(daemon-lifetime — separate populations, not the histogram above)'
+                : `(last ${finished.length} finished — separate populations, not the histogram above)`}
+            </span>
           </h3>
-          {bySubcommand.map((timing) => (
+          {bySubcommand.rows.map((timing) => (
             <div className="compact-row" key={timing.subcommand}>
               <span className="cmd">cargo {timing.subcommand}</span>
               <span className="row-value">
-                n={timing.count} · p50 {formatMs(timing.p50Ms)} · max {formatMs(timing.maxMs)}
+                n={timing.count} · p50{' '}
+                {timing.count < percentileMinSamples
+                  ? `n<${percentileMinSamples}`
+                  : formatMs(timing.p50Ms)}{' '}
+                · max {formatMs(timing.maxMs)}
               </span>
             </div>
           ))}

@@ -128,7 +128,7 @@ describe('schema forward compatibility (issue #4)', () => {
     expect('futureDaemonField' in parsed).toBe(false);
   });
 
-  it('accepts optional daemon metric snapshots in status results', () => {
+  it('accepts status metrics without the additive optional fields', () => {
     const parsed = statusResultSchema.parse({
       active: [],
       daemon: 'running',
@@ -156,6 +156,58 @@ describe('schema forward compatibility (issue #4)', () => {
 
     expect(parsed.metrics?.cargo_run_ms.count).toBe(1);
     expect(parsed.metrics?.job_outcome.done).toBe(1);
+    expect(parsed.metrics?.wait_ms_summary).toBeUndefined();
+    expect(parsed.metrics?.cargo_run_ms_by_kind).toBeUndefined();
+  });
+
+  it('accepts status metrics with wait summary and per-kind histograms', () => {
+    const parsed = statusResultSchema.parse({
+      active: [],
+      daemon: 'running',
+      lanes: [],
+      maxConcurrent: 5,
+      metrics: {
+        attach_mode: { identity: 1 },
+        cargo_run_ms: {
+          buckets: [[1_000, 1], [null, 1]],
+          count: 1,
+          max: 12,
+          min: 12,
+          sum: 12,
+        },
+        cargo_run_ms_by_kind: {
+          check: {
+            buckets: [[1_000, 1], [null, 1]],
+            count: 1,
+            max: 12,
+            min: 12,
+            sum: 12,
+          },
+        },
+        job_outcome: { done: 1 },
+        wait_ms_summary: {
+          count: 1,
+          max: 500,
+          min: 500,
+          quantiles: [[0.5, 500], [0.9, 500], [0.95, 500]],
+          sum: 500,
+        },
+      },
+      operation: 'status',
+      pid: 42,
+      recent: [],
+      socketPath: '/tmp/cc/daemon.sock',
+      startedAtMs: 1,
+      stateRoot: '/tmp/cc',
+      summary: 'running',
+    });
+
+    expect(parsed.metrics?.cargo_run_ms_by_kind?.check?.count).toBe(1);
+    expect(parsed.metrics?.wait_ms_summary?.quantiles).toEqual([
+      [0.5, 500],
+      [0.9, 500],
+      [0.95, 500],
+    ]);
   });
 
   it('round-trips kache status results while an old daemon schema strips it', () => {

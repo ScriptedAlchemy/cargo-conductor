@@ -181,6 +181,63 @@ export const runMetricsView = (runs: RunHistogramShape | undefined): RunMetricsV
   };
 };
 
+export interface WaitSummaryShape {
+  readonly count?: unknown;
+  readonly max?: unknown;
+  readonly quantiles?: unknown;
+}
+
+export interface WaitMetricsView {
+  readonly source: 'daemon-1h' | 'visible-window';
+  readonly count: number;
+  readonly p50Ms: number | null;
+  readonly p90Ms: number | null;
+  readonly p95Ms: number | null;
+  readonly maxMs: number | null;
+}
+
+const summaryQuantile = (summary: WaitSummaryShape, target: number): number | null => {
+  if (!Array.isArray(summary.quantiles)) {
+    return null;
+  }
+  for (const entry of summary.quantiles) {
+    if (!Array.isArray(entry) || entry.length !== 2) {
+      continue;
+    }
+    const quantile = entry[0];
+    const value = entry[1];
+    if (typeof quantile === 'number' && quantile === target) {
+      return typeof value === 'number' ? value : null;
+    }
+  }
+  return null;
+};
+
+export const waitMetricsView = (
+  summary: WaitSummaryShape | undefined,
+  waits: readonly number[],
+): WaitMetricsView => {
+  if (summary !== undefined && typeof summary.count === 'number' && summary.count >= 0) {
+    return {
+      source: 'daemon-1h',
+      count: summary.count,
+      p50Ms: summaryQuantile(summary, 0.5),
+      p90Ms: summaryQuantile(summary, 0.9),
+      p95Ms: summaryQuantile(summary, 0.95),
+      maxMs: typeof summary.max === 'number' ? summary.max : null,
+    };
+  }
+  const sorted = [...waits].sort((left, right) => left - right);
+  return {
+    source: 'visible-window',
+    count: sorted.length,
+    p50Ms: sorted.length === 0 ? null : sorted[Math.floor((sorted.length - 1) * 0.5)],
+    p90Ms: null,
+    p95Ms: null,
+    maxMs: sorted.length === 0 ? null : sorted[sorted.length - 1],
+  };
+};
+
 /** Entries of a frequency metric with zero and non-numeric counts dropped. */
 export const frequencyEntries = (
   record: Readonly<Record<string, unknown>> | undefined,
@@ -601,6 +658,45 @@ export const subcommandTimings = (
       (left, right) =>
         right.count - left.count || left.subcommand.localeCompare(right.subcommand),
     );
+};
+
+export interface SubcommandMetricsView {
+  readonly source: 'daemon-lifetime' | 'visible-window';
+  readonly rows: readonly SubcommandTiming[];
+}
+
+export const subcommandMetricsView = (
+  byKind: Readonly<Record<string, RunHistogramShape>> | undefined,
+  rows: readonly {
+    readonly intentJson?: unknown;
+    readonly argv?: unknown;
+    readonly runMs?: unknown;
+  }[],
+): SubcommandMetricsView => {
+  if (byKind !== undefined) {
+    const fromDaemon = Object.entries(byKind)
+      .map(([subcommand, histogram]): SubcommandTiming | null => {
+        const count = typeof histogram.count === 'number' ? histogram.count : 0;
+        if (count <= 0) {
+          return null;
+        }
+        const maxMs = typeof histogram.max === 'number' ? histogram.max : null;
+        const meanMs =
+          typeof histogram.sum === 'number' && count > 0 ? histogram.sum / count : null;
+        const p50Ms = histogramPercentile(histogram, 0.5);
+        if (maxMs === null || meanMs === null || p50Ms === null) {
+          return null;
+        }
+        return { subcommand, count, p50Ms, maxMs, meanMs };
+      })
+      .filter((row): row is SubcommandTiming => row !== null)
+      .sort(
+        (left, right) =>
+          right.count - left.count || left.subcommand.localeCompare(right.subcommand),
+      );
+    return { source: 'daemon-lifetime', rows: fromDaemon };
+  }
+  return { source: 'visible-window', rows: subcommandTimings(rows) };
 };
 
 export interface DiagnosticBadge {

@@ -11,7 +11,14 @@ import * as ChildProcessSpawner from 'effect/unstable/process/ChildProcessSpawne
 
 import * as Cause from 'effect/Cause';
 
-import { attachModeMetric, cargoRunMetric, jobOutcomeMetric } from './broker-metrics.js';
+import {
+  attachModeMetric,
+  cargoRunByKindMetric,
+  cargoRunKinds,
+  cargoRunMetric,
+  jobOutcomeMetric,
+  waitMsSummary,
+} from './broker-metrics.js';
 import { DaemonConfig } from './config.js';
 import { CostModel } from './cost.js';
 import { createSystemIoSampler } from './disk-stats.js';
@@ -28,7 +35,13 @@ import type {
 import { laneKeyFor, makeLaneRuntime } from './lane-exec.js';
 import { Ledger } from './ledger.js';
 import type { SessionCompletedRecord, SessionPendingRecord } from './ledger.js';
-import type { AttachMode, LaneStatus, RequestRecord, StatusReport } from './protocol.js';
+import type {
+  AttachMode,
+  HistogramMetricSnapshot,
+  LaneStatus,
+  RequestRecord,
+  StatusReport,
+} from './protocol.js';
 import { makeTicketDirectory } from './ticket-directory.js';
 import { Topology } from './topology.js';
 import { findConfiguredTargetDir, locateWorkspaceRoot } from './workspace.js';
@@ -428,13 +441,37 @@ export const BrokerLive: Layer.Layer<
 
     const report = (recentLimit = 50): Effect.Effect<StatusReport> =>
       Effect.gen(function* () {
+        const histogramSnapshot = (snapshot: {
+          readonly buckets: ReadonlyArray<readonly [number, number]>;
+          readonly count: number;
+          readonly min: number;
+          readonly max: number;
+          readonly sum: number;
+        }): HistogramMetricSnapshot => ({
+          buckets: snapshot.buckets.map(([boundary, count]) => [
+            Number.isFinite(boundary) ? boundary : null,
+            count,
+          ] as const),
+          count: snapshot.count,
+          min: snapshot.count === 0 ? null : snapshot.min,
+          max: snapshot.count === 0 ? null : snapshot.max,
+          sum: snapshot.sum,
+        });
         yield* ledger.ingestPassthroughSpool(config.stateDir);
         const laneStatuses: readonly LaneStatus[] = yield* lanesRuntime.laneStatuses();
         const active = yield* ledger.activeRequests();
         const recent = yield* ledger.recentRequests(recentLimit);
         const cargoRun = yield* Metric.value(cargoRunMetric);
+        const cargoRunByKind = yield* Effect.forEach(
+          cargoRunKinds,
+          (kind) =>
+            Metric.value(cargoRunByKindMetric(kind)).pipe(
+              Effect.map((snapshot) => [kind, histogramSnapshot(snapshot)] as const),
+            ),
+        );
         const jobOutcome = yield* Metric.value(jobOutcomeMetric);
         const attachMode = yield* Metric.value(attachModeMetric);
+        const waitSummary = yield* Metric.value(waitMsSummary);
         const kache = yield* costModel.kacheStatus;
         // Devices worth watching right now: the conductor's own state disk
         // plus whatever disks the in-flight builds are writing to.
@@ -467,18 +504,20 @@ export const BrokerLive: Layer.Layer<
               : {}),
           },
           metrics: {
-            cargo_run_ms: {
-              buckets: cargoRun.buckets.map(([boundary, count]) => [
-                Number.isFinite(boundary) ? boundary : null,
-                count,
-              ] as const),
-              count: cargoRun.count,
-              min: cargoRun.count === 0 ? null : cargoRun.min,
-              max: cargoRun.count === 0 ? null : cargoRun.max,
-              sum: cargoRun.sum,
-            },
+            cargo_run_ms: histogramSnapshot(cargoRun),
+            cargo_run_ms_by_kind: Object.fromEntries(cargoRunByKind),
             job_outcome: Object.fromEntries(jobOutcome.occurrences),
             attach_mode: Object.fromEntries(attachMode.occurrences),
+            wait_ms_summary: {
+              count: waitSummary.count,
+              min: waitSummary.count === 0 ? null : waitSummary.min,
+              max: waitSummary.count === 0 ? null : waitSummary.max,
+              sum: waitSummary.sum,
+              quantiles: waitSummary.quantiles.map(([quantile, value]) => [
+                quantile,
+                value ?? null,
+              ] as const),
+            },
           },
         };
       });

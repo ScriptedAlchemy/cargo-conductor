@@ -71,8 +71,22 @@ describe('conductor daemon', () => {
             min: expect.anything(),
             sum: expect.any(Number),
           },
+          cargo_run_ms_by_kind: expect.any(Object),
           job_outcome: expect.objectContaining({ done: expect.any(Number) }),
+          wait_ms_summary: {
+            count: expect.any(Number),
+            max: expect.anything(),
+            min: expect.anything(),
+            quantiles: expect.arrayContaining([
+              [0.5, expect.anything()],
+              [0.9, expect.anything()],
+              [0.95, expect.anything()],
+            ]),
+            sum: expect.any(Number),
+          },
         });
+        expect(report.metrics?.cargo_run_ms_by_kind?.check?.count ?? 0).toBeGreaterThanOrEqual(1);
+        expect(report.metrics?.wait_ms_summary?.count ?? 0).toBeGreaterThanOrEqual(1);
 
         const db = openLedgerDatabase(fixture.config.databasePath);
         const ledger = createLedgerApi(db);

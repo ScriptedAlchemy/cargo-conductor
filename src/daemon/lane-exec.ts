@@ -22,7 +22,13 @@ import {
   maxBatchPackages,
   withExtraPackages,
 } from './batch.js';
-import { attachModeMetric, cargoRunMetric, jobOutcomeMetric } from './broker-metrics.js';
+import {
+  attachModeMetric,
+  cargoRunByKindMetric,
+  cargoRunMetric,
+  jobOutcomeMetric,
+  waitMsSummary,
+} from './broker-metrics.js';
 import type { DaemonConfigShape } from './config.js';
 import type { CostModelApi } from './cost.js';
 import { executeCargo, TailBuffer } from './executor.js';
@@ -434,6 +440,8 @@ export const makeLaneRuntime = (deps: LaneRuntimeDeps): Effect.Effect<LaneRuntim
             return;
           }
           const startedAtMs = job.startedAtMs;
+          const waitMs = Math.max(0, (startedAtMs ?? atMs) - job.queuedAtMs);
+          const runMs = startedAtMs === null ? 0 : Math.max(0, atMs - startedAtMs);
           yield* ledger.markFinished(job.id, {
             status,
             atMs,
@@ -444,6 +452,9 @@ export const makeLaneRuntime = (deps: LaneRuntimeDeps): Effect.Effect<LaneRuntim
             ...diagnosticFinishFields(job.demux?.globalDiagnostics ?? null),
           });
           yield* Metric.update(jobOutcomeMetric, status);
+          if (startedAtMs !== null) {
+            yield* Metric.update(waitMsSummary, waitMs);
+          }
           yield* directory.notifyWaiters(job.ticket);
           yield* completeExit(job);
           yield* guarded(
@@ -452,8 +463,8 @@ export const makeLaneRuntime = (deps: LaneRuntimeDeps): Effect.Effect<LaneRuntim
               status,
               exitCode,
               signal,
-              waitMs: Math.max(0, (startedAtMs ?? atMs) - job.queuedAtMs),
-              runMs: startedAtMs === null ? 0 : Math.max(0, atMs - startedAtMs),
+              waitMs,
+              runMs,
               error,
             }),
           );
@@ -553,6 +564,7 @@ export const makeLaneRuntime = (deps: LaneRuntimeDeps): Effect.Effect<LaneRuntim
         }).pipe(
           Effect.withSpan('cargo.exec'),
           Effect.trackDuration(cargoRunMetric),
+          Effect.trackDuration(cargoRunByKindMetric(job.intent.subcommand)),
           Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
         );
         const finishedAtMs = Date.now();

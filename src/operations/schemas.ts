@@ -71,17 +71,28 @@ const laneStatusSchema = z.object({
 }) satisfies z.ZodType<LaneStatus>;
 
 const frequencyMetricSchema = z.record(z.string(), z.number().int().nonnegative());
+const histogramMetricSchema = z.object({
+  buckets: z.array(z.tuple([z.number().nullable(), z.number().int().nonnegative()])),
+  count: z.number().int().nonnegative(),
+  max: z.number().nullable(),
+  min: z.number().nullable(),
+  sum: z.number(),
+});
 
 const statusMetricsSchema = z.object({
   attach_mode: frequencyMetricSchema,
-  cargo_run_ms: z.object({
-    buckets: z.array(z.tuple([z.number().nullable(), z.number().int().nonnegative()])),
-    count: z.number().int().nonnegative(),
-    max: z.number().nullable(),
-    min: z.number().nullable(),
-    sum: z.number(),
-  }),
+  cargo_run_ms: histogramMetricSchema,
+  cargo_run_ms_by_kind: z.record(z.string(), histogramMetricSchema).optional(),
   job_outcome: frequencyMetricSchema,
+  wait_ms_summary: z
+    .object({
+      count: z.number().int().nonnegative(),
+      max: z.number().nullable(),
+      min: z.number().nullable(),
+      quantiles: z.array(z.tuple([z.number(), z.number().nullable()])),
+      sum: z.number(),
+    })
+    .optional(),
 }) satisfies z.ZodType<StatusMetrics>;
 
 const systemLoadSchema = z.object({

@@ -202,8 +202,16 @@ export interface HistogramMetricSnapshot {
 
 export interface StatusMetrics {
   readonly cargo_run_ms: HistogramMetricSnapshot;
+  readonly cargo_run_ms_by_kind?: Readonly<Record<string, HistogramMetricSnapshot>>;
   readonly job_outcome: Readonly<Record<string, number>>;
   readonly attach_mode: Readonly<Record<string, number>>;
+  readonly wait_ms_summary?: {
+    readonly count: number;
+    readonly min: number | null;
+    readonly max: number | null;
+    readonly sum: number;
+    readonly quantiles: ReadonlyArray<readonly [number, number | null]>;
+  };
 }
 
 export interface KacheHeartbeatRoot {
