@@ -122,21 +122,9 @@ export class ConnectionOutputBuffer {
       this.#bufferedOutputMessages >= this.#options.maxOutputMessages ||
       this.#bufferedOutputBytes + this.#noticeBytes(message) > this.#options.maxOutputBytes
     ) {
-      const index = this.#lastOutputIndex();
-      if (index === -1) {
+      if (!this.#evictLastOutput()) {
         return;
       }
-      const removed = this.#pending[index];
-      if (removed === undefined) {
-        return;
-      }
-      this.#droppedPayloadBytes +=
-        removed.message.type === 'output'
-          ? Buffer.byteLength(removed.message.data, 'base64')
-          : 0;
-      this.#pending.splice(index, 1);
-      this.#bufferedOutputMessages -= 1;
-      this.#bufferedOutputBytes -= removed.outputBytes;
     }
     const notice = this.#makeNotice(message);
     const envelope = { message: notice, outputBytes: notice.data.length };
@@ -156,6 +144,33 @@ export class ConnectionOutputBuffer {
     truncation.message = notice;
     truncation.outputBytes = notice.data.length;
     this.#bufferedOutputBytes += truncation.outputBytes;
+    // The dropped-byte counter grows the notice over time; shed buffered
+    // output (never the notice itself) so the swap cannot exceed the byte
+    // budget the initial insertion honored.
+    while (this.#bufferedOutputBytes > this.#options.maxOutputBytes) {
+      if (!this.#evictLastOutput()) {
+        return;
+      }
+    }
+  }
+
+  #evictLastOutput(): boolean {
+    const index = this.#lastOutputIndex();
+    if (index === -1) {
+      return false;
+    }
+    const removed = this.#pending[index];
+    if (removed === undefined) {
+      return false;
+    }
+    this.#droppedPayloadBytes +=
+      removed.message.type === 'output'
+        ? Buffer.byteLength(removed.message.data, 'base64')
+        : 0;
+    this.#pending.splice(index, 1);
+    this.#bufferedOutputMessages -= 1;
+    this.#bufferedOutputBytes -= removed.outputBytes;
+    return true;
   }
 
   #noticeBytes(message: OutputMessage): number {
@@ -176,7 +191,8 @@ export class ConnectionOutputBuffer {
 
   #lastOutputIndex(): number {
     for (let index = this.#pending.length - 1; index >= 0; index -= 1) {
-      if (this.#pending[index]?.message.type === 'output') {
+      const envelope = this.#pending[index];
+      if (envelope?.message.type === 'output' && envelope !== this.#truncation) {
         return index;
       }
     }
