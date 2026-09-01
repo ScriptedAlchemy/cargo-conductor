@@ -1,3 +1,5 @@
+import { Effect, Schedule, Stream, type Duration } from 'effect';
+
 import { namedPackagesInArgv } from '../src/lib/argv.js';
 import { packageVersion } from '../src/lib/version.js';
 
@@ -48,6 +50,66 @@ export const sectionOrder = (_counts: SectionCounts): readonly DashboardSection[
   'lanes',
   'history',
 ];
+
+/** One dashboard polling emission: the last good status plus this poll's outcome. */
+export interface StatusPoll<A> {
+  /** Latest successfully fetched status, held across failed polls. */
+  readonly value: A | null;
+  /** Failure message of the most recent poll; null when it succeeded. */
+  readonly error: string | null;
+  /** Wall-clock ms of the last successful poll; null before the first. */
+  readonly updatedAtMs: number | null;
+}
+
+type PollOutcome<A> =
+  | { readonly _tag: 'Ok'; readonly value: A }
+  | { readonly _tag: 'Err'; readonly message: string };
+
+/**
+ * Polls `fetch` on a fixed cadence forever. One rejected or timed-out
+ * iteration must not terminate the stream — `Stream.fromEffectSchedule`
+ * over a failing effect ends the stream, freezing the widget on stale data
+ * until a manual Retry — so each poll is folded into a {@link StatusPoll}
+ * that keeps the last good value and carries the error alongside it while
+ * the cadence continues.
+ */
+export const pollStatus = <A, E, R>(
+  fetch: Effect.Effect<A, E, R>,
+  options: {
+    readonly describeError: (error: E) => string;
+    readonly interval: Duration.Input;
+    readonly nowMs?: () => number;
+  },
+): Stream.Stream<StatusPoll<A>, never, R> => {
+  const now = options.nowMs ?? Date.now;
+  const attempt = fetch.pipe(
+    Effect.match({
+      onFailure: (error): PollOutcome<A> => ({ _tag: 'Err', message: options.describeError(error) }),
+      onSuccess: (value): PollOutcome<A> => ({ _tag: 'Ok', value }),
+    }),
+  );
+  return Stream.fromEffectSchedule(attempt, Schedule.spaced(options.interval)).pipe(
+    Stream.mapAccum(
+      (): StatusPoll<A> => ({ error: null, updatedAtMs: null, value: null }),
+      (state, outcome) => {
+        switch (outcome._tag) {
+          case 'Ok': {
+            const next: StatusPoll<A> = { error: null, updatedAtMs: now(), value: outcome.value };
+            return [next, [next]] as const;
+          }
+          case 'Err': {
+            const next: StatusPoll<A> = { ...state, error: outcome.message };
+            return [next, [next]] as const;
+          }
+          default: {
+            const exhaustive: never = outcome;
+            return exhaustive;
+          }
+        }
+      },
+    ),
+  );
+};
 
 export interface RunHistogramShape {
   readonly buckets?: unknown;

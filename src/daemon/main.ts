@@ -9,6 +9,7 @@ import * as References from 'effect/References';
 import type * as SocketServer from 'effect/unstable/socket/SocketServer';
 
 import { packageVersion } from '../lib/version.js';
+import { isNamedPipePath } from '../status.js';
 
 import { Broker, BrokerLive } from './broker.js';
 import { DaemonConfig, resolveDaemonConfig } from './config.js';
@@ -44,11 +45,14 @@ const daemonProgram = Effect.gen(function* () {
   const config = yield* DaemonConfig;
   yield* acquireSingletonLock;
   // We hold the singleton lock, so an existing socket file is a leftover
-  // from a crashed daemon and safe to remove.
-  yield* Effect.addFinalizer(() =>
-    Effect.sync(() => rmSync(config.socketPath, { force: true })).pipe(Effect.ignore),
-  );
-  yield* Effect.sync(() => rmSync(config.socketPath, { force: true }));
+  // from a crashed daemon and safe to remove. A Windows named pipe is not a
+  // filesystem entry (it vanishes with its server), so there is nothing to
+  // remove — and rmSync on a `\\.\pipe\` path must not run.
+  const removeStaleSocket = isNamedPipePath(config.socketPath)
+    ? Effect.void
+    : Effect.sync(() => rmSync(config.socketPath, { force: true }));
+  yield* Effect.addFinalizer(() => removeStaleSocket.pipe(Effect.ignore));
+  yield* removeStaleSocket;
   const ledger = yield* Ledger;
   const reaped = yield* ledger.reapOrphans(Date.now(), 'orphaned by daemon restart');
   const broker = yield* Broker;

@@ -1,6 +1,6 @@
 import { join } from 'node:path';
 
-import { resolveStateDir } from '../status.js';
+import { daemonSocketPath, resolveStateDir } from '../status.js';
 
 /** Absolute `node …/conductor.mjs` when the plugin root is known; otherwise PATH `conductor`. */
 export const resolveConductorArgv = (
@@ -23,4 +23,5 @@ export const resolveHookStateDir = (
 
 export const resolveHookSocketPath = (
   env: Readonly<Record<string, string | undefined>> = process.env,
-): string => join(resolveHookStateDir(env), 'daemon.sock');
+  platform: NodeJS.Platform = process.platform,
+): string => daemonSocketPath(resolveHookStateDir(env), platform);

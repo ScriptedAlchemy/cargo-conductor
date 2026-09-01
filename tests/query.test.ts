@@ -11,8 +11,8 @@ import { pingDaemon, requestOverSocket } from '../src/daemon/control.js';
 import { createLedgerApi, openLedgerDatabase } from '../src/daemon/ledger.js';
 import { runDaemon } from '../src/daemon/main.js';
 import type { RequestRecord } from '../src/daemon/protocol.js';
+import { defaultInspectOperations } from '../src/operations/inspect.js';
 import {
-  consumerRendersColor,
   describeRequestRecord,
   displayRequestRecord,
   displayRequestRecords,
@@ -79,8 +79,8 @@ const coloredRecord: RequestRecord = {
 };
 
 describe('display projection', () => {
-  it('strips stored ANSI for a no-color consumer, leaving other fields intact', () => {
-    const projected = displayRequestRecord(coloredRecord, false);
+  it('strips stored ANSI unconditionally, leaving other fields intact', () => {
+    const projected = displayRequestRecord(coloredRecord);
     expect(projected.outputTail).toBe('\n --> src/lib.rs:3:5\n');
     expect(projected.diagnostics).toEqual(['error[E0432]: unresolved import\n']);
     expect(JSON.stringify(projected)).not.toContain('\\u001b');
@@ -88,19 +88,10 @@ describe('display projection', () => {
     expect(projected.exitCode).toBe(101);
   });
 
-  it('passes records through verbatim for a color-capable consumer', () => {
-    expect(displayRequestRecord(coloredRecord, true)).toBe(coloredRecord);
-    expect(displayRequestRecords([coloredRecord], true)).toEqual([coloredRecord]);
-    const stripped = displayRequestRecords([coloredRecord], false);
+  it('never leaves an ESC byte in a projected record list', () => {
+    const stripped = displayRequestRecords([coloredRecord]);
     expect(stripped[0]?.outputTail).not.toContain(esc);
-  });
-
-  it('decides consumer color from TTY-ness and the color env conventions', () => {
-    expect(consumerRendersColor({}, true)).toBe(true);
-    expect(consumerRendersColor({}, false)).toBe(false);
-    expect(consumerRendersColor({ NO_COLOR: '1' }, true)).toBe(false);
-    expect(consumerRendersColor({ FORCE_COLOR: '1' }, false)).toBe(true);
-    expect(consumerRendersColor({ TERM: 'dumb' }, true)).toBe(false);
+    expect(JSON.stringify(stripped)).not.toContain('\\u001b');
   });
 });
 
@@ -156,6 +147,64 @@ describe('loadConductorSnapshot', () => {
       expect(snapshot.recent[0]?.status).toBe('done');
       expect(snapshot.summary).toContain('1 recorded request');
     } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps ESC out of structured operation results even under inherited FORCE_COLOR', async () => {
+    // MCP servers and the CLI both serialize operation results to JSON,
+    // where an ESC byte is literal `\u001b[…` noise. An environment that
+    // forces color on (FORCE_COLOR/CLICOLOR_FORCE) must not reintroduce it.
+    const { config, root } = isolatedConfig();
+    const saved = {
+      CARGO_CONDUCTOR_STATE_DIR: process.env.CARGO_CONDUCTOR_STATE_DIR,
+      CLICOLOR_FORCE: process.env.CLICOLOR_FORCE,
+      FORCE_COLOR: process.env.FORCE_COLOR,
+    };
+    try {
+      const db = openLedgerDatabase(config.databasePath);
+      const ledger = createLedgerApi(db);
+      Effect.runSync(
+        ledger.createRequest({
+          argv: ['cargo', 'check'],
+          createdAtMs: 1_000,
+          cwd: '/repo',
+          host: 'cursor',
+          intentJson: null,
+          intentKey: 'k',
+          laneKey: '/repo::/repo/target',
+          session: 's',
+          targetDir: '/repo/target',
+          workspaceRoot: '/repo',
+        }),
+      );
+      Effect.runSync(
+        ledger.markFinished(1, {
+          atMs: 2_000,
+          exitCode: 101,
+          outputTail: `${esc}[1m${esc}[31merror${esc}[0m: it broke\n`,
+          status: 'failed',
+        }),
+      );
+      db.close();
+
+      process.env.CARGO_CONDUCTOR_STATE_DIR = config.stateDir;
+      process.env.FORCE_COLOR = '1';
+      process.env.CLICOLOR_FORCE = '1';
+      const context = { signal: new AbortController().signal };
+      const last = await defaultInspectOperations.last({}, context);
+      expect(last.request?.outputTail).toBe('error: it broke\n');
+      expect(JSON.stringify(last)).not.toContain('\\u001b');
+      const status = await defaultInspectOperations.status({}, context);
+      expect(JSON.stringify(status)).not.toContain('\\u001b');
+    } finally {
+      for (const [name, value] of Object.entries(saved)) {
+        if (value === undefined) {
+          delete process.env[name];
+        } else {
+          process.env[name] = value;
+        }
+      }
       rmSync(root, { recursive: true, force: true });
     }
   });

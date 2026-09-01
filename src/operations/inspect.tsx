@@ -4,7 +4,6 @@ import * as Effect from 'effect/Effect';
 
 import { APP_RESOURCE_URI } from '../constants.js';
 import {
-  consumerRendersColor,
   displayRequestRecord,
   displayRequestRecords,
   loadConductorSnapshot,
@@ -58,7 +57,7 @@ export const defaultInspectOperations: InspectOperations = {
     return {
       daemon: snapshot.daemon,
       operation: 'last',
-      request: request === null ? null : displayRequestRecord(request, consumerRendersColor()),
+      request: request === null ? null : displayRequestRecord(request),
       summary: request === null ? 'no conductor requests recorded' : `${request.ticket} ${request.status}`,
     };
   },
@@ -69,7 +68,7 @@ export const defaultInspectOperations: InspectOperations = {
     return {
       daemon: snapshot.daemon,
       operation: 'log',
-      requests: displayRequestRecords(snapshot.recent, consumerRendersColor()),
+      requests: displayRequestRecords(snapshot.recent),
       summary:
         snapshot.recent.length === 0
           ? 'no conductor requests recorded'
@@ -80,12 +79,11 @@ export const defaultInspectOperations: InspectOperations = {
     const snapshot = await Effect.runPromise(loadSnapshot(input.limit ?? 20), {
       signal: context.signal,
     });
-    const color = consumerRendersColor();
     return {
       ...snapshot,
-      active: displayRequestRecords(snapshot.active, color),
+      active: displayRequestRecords(snapshot.active),
       operation: 'status',
-      recent: displayRequestRecords(snapshot.recent, color),
+      recent: displayRequestRecords(snapshot.recent),
     };
   },
 };

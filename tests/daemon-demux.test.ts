@@ -320,7 +320,7 @@ describe('json demux early release', () => {
       }),
     ));
 
-  it('stores ANSI verbatim; the consumer seam strips only for no-color environments', () =>
+  it('stores ANSI verbatim; structured operation results strip it unconditionally', () =>
     withDaemon(5, (fixture) =>
       Effect.gen(function* () {
         const esc = '\u001b';
@@ -359,9 +359,11 @@ describe('json demux early release', () => {
         db.close();
         expect(durable?.outputTail).toContain(`${esc}[38;5;9merror[E0432]`);
 
-        // The operations seam projects records per consumer: NO_COLOR gets
-        // zero ESC (so JSON surfaces never show `\u001b[…`), FORCE_COLOR
-        // keeps the CSI sequences even without a TTY.
+        // The operations seam projects records for JSON consumers: the CLI
+        // prints JSON.stringify(result) and MCP structured content is
+        // JSON-RPC, where an ESC byte is literal `\u001b[…` noise. Stripping
+        // is unconditional — an inherited FORCE_COLOR must not reintroduce
+        // ESC bytes into structured results.
         const previousEnv = {
           forceColor: process.env.FORCE_COLOR,
           noColor: process.env.NO_COLOR,
@@ -382,10 +384,12 @@ describe('json demux early release', () => {
 
           delete process.env.NO_COLOR;
           process.env.FORCE_COLOR = '1';
-          const colored = yield* Effect.promise(() =>
+          const forced = yield* Effect.promise(() =>
             defaultTicketOperations.result({ ticket: exit.ticket }, context),
           );
-          expect(colored.request?.diagnostics?.join('')).toContain(`${esc}[38;5;9merror[E0432]`);
+          expect(forced.request?.diagnostics?.join('')).toContain('error[E0432]: unresolved import');
+          expect(forced.request?.diagnostics?.join('')).not.toContain(esc);
+          expect(JSON.stringify(forced.request)).not.toContain('\\u001b');
         } finally {
           restoreEnv('CARGO_CONDUCTOR_STATE_DIR', previousEnv.stateDir);
           restoreEnv('NO_COLOR', previousEnv.noColor);

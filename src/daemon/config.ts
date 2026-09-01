@@ -2,25 +2,9 @@ import { availableParallelism } from 'node:os';
 import { join } from 'node:path';
 
 import * as Context from 'effect/Context';
-import * as Data from 'effect/Data';
 import * as Layer from 'effect/Layer';
 
-import { defaultKacheIndexPath, resolveStateDir } from '../status.js';
-
-/**
- * cargo-conductor's daemon transport is a Unix domain socket (and its
- * jobserver a POSIX FIFO, its shim a POSIX shell script). On win32 Node
- * requires `\\.\pipe\` names for local IPC, which nothing here provides
- * yet, so the honest posture is one clear refusal up front rather than a
- * cryptic EACCES/ENOENT from `net.listen` on a filesystem path.
- */
-export class UnsupportedPlatformError extends Data.TaggedError('UnsupportedPlatform')<{
-  readonly platform: NodeJS.Platform;
-}> {
-  override get message(): string {
-    return `cargo-conductor does not support ${this.platform} yet: the daemon uses Unix domain sockets and POSIX FIFOs. Windows is not yet supported.`;
-  }
-}
+import { daemonSocketPath, defaultKacheIndexPath, resolveStateDir } from '../status.js';
 
 /** Filesystem layout and concurrency settings for one daemon instance. */
 export interface DaemonConfigShape {
@@ -71,9 +55,6 @@ export const resolveDaemonConfig = (
   env: Readonly<Record<string, string | undefined>> = process.env,
   platform: NodeJS.Platform = process.platform,
 ): DaemonConfigShape => {
-  if (platform === 'win32') {
-    throw new UnsupportedPlatformError({ platform });
-  }
   const stateDir = resolveStateDir(env);
   const parsedMax = Number.parseInt(env.CARGO_CONDUCTOR_MAX_CONCURRENT ?? '', 10);
   const parsedReplay = Number.parseInt(env.CARGO_CONDUCTOR_REPLAY_BUFFER_BYTES ?? '', 10);
@@ -88,7 +69,7 @@ export const resolveDaemonConfig = (
   const defaultJobsGrant = Math.max(4, Math.floor(availableParallelism() / maxConcurrent));
   return {
     stateDir,
-    socketPath: join(stateDir, 'daemon.sock'),
+    socketPath: daemonSocketPath(stateDir, platform),
     databasePath: join(stateDir, 'ledger.db'),
     lockTargetPath: join(stateDir, 'daemon.pid'),
     logPath: join(stateDir, 'daemon.log'),

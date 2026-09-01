@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
@@ -54,6 +55,30 @@ export const resolveStateDir = (
   return override !== undefined && override.length > 0
     ? override
     : defaultStateDir(env);
+};
+
+const namedPipePrefix = '\\\\.\\pipe\\';
+
+/** Whether a daemon endpoint is a Windows named pipe rather than a filesystem path. */
+export const isNamedPipePath = (path: string): boolean => path.startsWith(namedPipePrefix);
+
+/**
+ * The daemon control endpoint for a state dir. On darwin/linux it is a unix
+ * domain socket file inside the state dir. Windows IPC cannot bind a
+ * filesystem `.sock` path — `net.Server.listen` needs a `\\.\pipe\` name —
+ * so win32 derives a named pipe from the state dir (case-folded, since
+ * Windows paths are case-insensitive), keeping the endpoint stable per
+ * user/state-dir so every client reaches the same daemon.
+ */
+export const daemonSocketPath = (
+  stateDir: string,
+  platform: NodeJS.Platform = process.platform,
+): string => {
+  if (platform !== 'win32') {
+    return join(stateDir, 'daemon.sock');
+  }
+  const digest = createHash('sha256').update(stateDir.toLowerCase()).digest('hex').slice(0, 16);
+  return `${namedPipePrefix}cargo-conductor-${digest}`;
 };
 
 /**

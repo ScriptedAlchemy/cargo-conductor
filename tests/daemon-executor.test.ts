@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it } from '@rstest/core';
 import * as Deferred from 'effect/Deferred';
 import * as Effect from 'effect/Effect';
 
+import { buildRelevantEnv } from '../src/client/env.js';
 import type { ExecuteCargoOptions, ExecutionResult } from '../src/daemon/executor.js';
 import { executeCargo, TailBuffer } from '../src/daemon/executor.js';
 
@@ -188,6 +189,24 @@ describe('executeCargo', () => {
       argv: [script, 'color'],
       cwd: dir,
       env: { NO_COLOR: '1' },
+      killSignal: unusedKill(),
+      tailBytes: 4096,
+      onOutput: () => Effect.void,
+    });
+
+    expect(result.outcome).toBe('done');
+    expect(result.outputTail).toContain('color:never');
+  });
+
+  it('sees a caller NO_COLOR through the client env transport end to end', async () => {
+    const { dir, script } = makeWorkspace();
+
+    // The exact env `conductor exec` ships: NO_COLOR must survive the
+    // relevance filter, or the executor falls back to forcing color.
+    const result = await runExecute({
+      argv: [script, 'color'],
+      cwd: dir,
+      env: buildRelevantEnv({ HOME: '/home/alice', NO_COLOR: '1', TERM: 'xterm-256color' }),
       killSignal: unusedKill(),
       tailBytes: 4096,
       onOutput: () => Effect.void,
