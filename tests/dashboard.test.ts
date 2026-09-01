@@ -440,6 +440,12 @@ describe('display formatting', () => {
     expect(formatMs(200_000)).toBe('3m 20s');
   });
 
+  it('carries rounded seconds into the minute instead of rendering 60s', () => {
+    // A live dashboard showed "17m 60s" for 1079.6 seconds.
+    expect(formatMs(1_079_600)).toBe('18m');
+    expect(formatMs(119_800)).toBe('2m');
+  });
+
   it('compacts large counts while keeping small counts exact', () => {
     expect(formatCompactNumber(999)).toBe('999');
     expect(formatCompactNumber(1_200)).toBe('1.2k');

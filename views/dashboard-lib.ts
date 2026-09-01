@@ -431,8 +431,11 @@ export const formatMs = (ms: number): string => {
   if (seconds < 60) {
     return `${seconds.toFixed(1)}s`;
   }
-  const minutes = Math.floor(seconds / 60);
-  const rest = Math.round(seconds - minutes * 60);
+  // Round to whole seconds before splitting so 17m 59.6s carries to 18m
+  // instead of rendering the impossible "17m 60s".
+  const wholeSeconds = Math.round(seconds);
+  const minutes = Math.floor(wholeSeconds / 60);
+  const rest = wholeSeconds - minutes * 60;
   return rest === 0 ? `${minutes}m` : `${minutes}m ${rest}s`;
 };
 
