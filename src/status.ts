@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
@@ -56,12 +57,47 @@ export const resolveStateDir = (
 };
 
 /**
- * Default kache index when CARGO_CONDUCTOR_KACHE_INDEX is unset: kache's
- * sibling directory under the same per-user cache base. A missing file is
- * fine — kache status degrades to unavailable and priors to defaults.
+ * kache's configured store root, read from its own config
+ * (`$XDG_CONFIG_HOME/kache/config.toml`, else `~/.config/kache/config.toml`):
+ * the `local_store` key under `[cache]`. Guessing a sibling cache directory
+ * would silently lose kache costs/status on any machine whose store lives
+ * elsewhere (a dedicated fast disk is common); kache itself is the authority
+ * for where its index is. The tolerant line match is deliberate — the value
+ * is one quoted path and a TOML parser dependency buys nothing here.
+ */
+const kacheConfiguredStore = (
+  env: Readonly<Record<string, string | undefined>>,
+  home: string,
+  read: (path: string) => string,
+): string | null => {
+  const configHome =
+    env.XDG_CONFIG_HOME !== undefined && env.XDG_CONFIG_HOME.length > 0
+      ? env.XDG_CONFIG_HOME
+      : join(home, '.config');
+  let content: string;
+  try {
+    content = read(join(configHome, 'kache', 'config.toml'));
+  } catch {
+    return null;
+  }
+  const match = /^\s*local_store\s*=\s*"([^"]+)"/mu.exec(content);
+  return match === null || match[1].length === 0 ? null : match[1];
+};
+
+/**
+ * Default kache index when CARGO_CONDUCTOR_KACHE_INDEX is unset: the store
+ * kache's own config names, else kache's sibling directory under the same
+ * per-user cache base. A missing file is fine — kache status degrades to
+ * unavailable and priors to defaults.
  */
 export const defaultKacheIndexPath = (
   env: Readonly<Record<string, string | undefined>> = process.env,
   platform: NodeJS.Platform = process.platform,
   home: string = homedir(),
-): string => join(userCacheDir(env, platform, home), 'kache', 'index.db');
+  read: (path: string) => string = (path) => readFileSync(path, 'utf8'),
+): string => {
+  const configured = kacheConfiguredStore(env, home, read);
+  return configured !== null
+    ? join(configured, 'index.db')
+    : join(userCacheDir(env, platform, home), 'kache', 'index.db');
+};

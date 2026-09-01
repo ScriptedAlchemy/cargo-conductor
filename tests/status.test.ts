@@ -58,14 +58,50 @@ describe('portable state root', () => {
 });
 
 describe('portable kache index default', () => {
+  const noKacheConfig = (): string => {
+    throw new Error('ENOENT');
+  };
+
   it('defaults to a kache sibling under the same user cache base', () => {
-    expect(defaultKacheIndexPath({}, 'linux', '/home/alice')).toBe(
+    expect(defaultKacheIndexPath({}, 'linux', '/home/alice', noKacheConfig)).toBe(
       join('/home/alice', '.cache', 'kache', 'index.db'),
     );
-    expect(defaultKacheIndexPath({}, 'linux', '/home/alice')).toBe(
+    expect(defaultKacheIndexPath({}, 'linux', '/home/alice', noKacheConfig)).toBe(
       join(userCacheDir({}, 'linux', '/home/alice'), 'kache', 'index.db'),
     );
-    expect(resolveDaemonConfig({}).kacheIndexPath.startsWith(`/fast${sep}`)).toBe(false);
+    // Config resolution and the default helper agree wherever this test
+    // machine's kache actually lives — the default is never a hardcode, it
+    // is either kache's own configured store or the portable sibling.
+    expect(resolveDaemonConfig({}).kacheIndexPath).toBe(defaultKacheIndexPath({}));
+  });
+
+  it("prefers the store kache's own config names over the portable guess", () => {
+    const read = (path: string): string => {
+      expect(path).toBe(join('/home/alice', '.config', 'kache', 'config.toml'));
+      return '[cache]\nlocal_store = "/mnt/big/kache"\nexplain_miss = true\n';
+    };
+    expect(defaultKacheIndexPath({}, 'linux', '/home/alice', read)).toBe(
+      join('/mnt/big/kache', 'index.db'),
+    );
+  });
+
+  it('honors XDG_CONFIG_HOME when locating the kache config', () => {
+    const read = (path: string): string => {
+      expect(path).toBe(join('/tmp/xdg-config', 'kache', 'config.toml'));
+      return 'local_store = "/scratch/kache"\n';
+    };
+    expect(
+      defaultKacheIndexPath({ XDG_CONFIG_HOME: '/tmp/xdg-config' }, 'linux', '/home/alice', read),
+    ).toBe(join('/scratch/kache', 'index.db'));
+  });
+
+  it('falls back to the portable sibling when the config is malformed or empty', () => {
+    expect(
+      defaultKacheIndexPath({}, 'linux', '/home/alice', () => 'not toml at all'),
+    ).toBe(join('/home/alice', '.cache', 'kache', 'index.db'));
+    expect(
+      defaultKacheIndexPath({}, 'linux', '/home/alice', () => 'local_store = ""\n'),
+    ).toBe(join('/home/alice', '.cache', 'kache', 'index.db'));
   });
 
   it('prefers CARGO_CONDUCTOR_KACHE_INDEX and keeps empty string as disable', () => {
