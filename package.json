@@ -1,6 +1,6 @@
 {
   "name": "cargo-hauler",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "license": "MIT",
   "private": true,
   "description": "Orchestrate cargo across Claude, Codex, and Cursor so concurrent agent sessions share work instead of fighting locks.",
@@ -25,6 +25,11 @@
   "bin": {
     "cargo-hauler": "./dist/bin/cargo-hauler.js"
   },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
   "scripts": {
     "build": "agent-bundle build --output artifact",
     "check": "npm run validate && npm run build && npm run typecheck && npm run diagnostics && npm run test",

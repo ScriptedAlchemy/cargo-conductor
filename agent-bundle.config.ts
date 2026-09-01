@@ -1,5 +1,7 @@
 import { defineConfig } from 'agent-bundle/config';
 
+import packageJson from './package.json' with { type: 'json' };
+
 /**
  * cargo-hauler is a generic per-workspace cargo orchestrator.
  * tracedecay is the first customer; identity is (workspace root, target dir).
@@ -37,7 +39,7 @@ export default defineConfig({
     description:
       'Coalesce, schedule, and stream cargo so concurrent agent sessions share compiles instead of fighting locks.',
     name: 'cargo-hauler',
-    version: '0.2.2',
+    version: packageJson.version,
   },
   runtime: { node: '22.19.0' },
   scripts: {

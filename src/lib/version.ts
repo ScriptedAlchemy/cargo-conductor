@@ -1,1 +1,3 @@
-export const packageVersion = '0.2.2';
+import packageJson from '../../package.json' with { type: 'json' };
+
+export const packageVersion: string = packageJson.version;
