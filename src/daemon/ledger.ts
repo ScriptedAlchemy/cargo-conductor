@@ -115,7 +115,7 @@ CREATE INDEX IF NOT EXISTS transitions_request_id_idx ON transitions (request_id
 const requestColumns = `id, created_at_ms, session, host, cwd, workspace_root, target_dir, lane_key,
   argv_json, intent_key, intent_json, status, queued_at_ms, started_at_ms, finished_at_ms, wait_ms,
   run_ms, exit_code, signal, output_tail, error, attached_to, attach_mode, background, hold_stop,
-  estimate_ms`;
+  estimate_ms, exec_argv_json`;
 
 /** Additive column migrations for databases created by earlier builds. */
 const columnMigrations: readonly (readonly [column: string, ddl: string])[] = [
@@ -173,6 +173,10 @@ const toRequestRecord = (row: Row): RequestRecord => {
     background: toNumber(row.background ?? 0) !== 0,
     holdStop: toNumber(row.hold_stop ?? 0) !== 0,
     estimateMs: toNullableNumber(row.estimate_ms),
+    execArgv:
+      row.exec_argv_json == null
+        ? null
+        : (JSON.parse(toText(row.exec_argv_json)) as readonly string[]),
   };
 };
 

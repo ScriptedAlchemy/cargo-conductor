@@ -135,6 +135,38 @@ describe('ledger lifecycle', () => {
   });
 });
 
+describe('exec argv provenance', () => {
+  it('round-trips the spawned invocation recorded at run start', () => {
+    withLedger((ledger) => {
+      const created = Effect.runSync(
+        ledger.createRequest(makeInput({ argv: ['cargo', 'check', '-p', 'aa'] })),
+      );
+      Effect.runSync(ledger.markQueued(created.id, 1_200));
+      const spawned = [
+        'cargo',
+        'check',
+        '-p',
+        'aa',
+        '-p',
+        'bb',
+        '--message-format=json-diagnostic-rendered-ansi',
+      ];
+      Effect.runSync(ledger.markRunning(created.id, 1_700, spawned));
+      const record = Effect.runSync(ledger.getRequest(created.id));
+      expect(record?.argv).toEqual(['cargo', 'check', '-p', 'aa']);
+      expect(record?.execArgv).toEqual(spawned);
+    });
+  });
+
+  it('leaves execArgv null for requests that never ran', () => {
+    withLedger((ledger) => {
+      const created = Effect.runSync(ledger.createRequest(makeInput()));
+      const record = Effect.runSync(ledger.getRequest(created.id));
+      expect(record?.execArgv).toBeNull();
+    });
+  });
+});
+
 describe('ledger queries', () => {
   it('returns recent requests newest first and honors the limit', () => {
     withLedger((ledger) => {

@@ -1,3 +1,13 @@
+import {
+  argvText,
+  escapeHtml,
+  formatMs,
+  ranAsFor,
+  relativeTime,
+  shortenPath,
+  startPolling,
+} from './dashboard-lib.js';
+
 interface JsonRpcMessage {
   readonly jsonrpc?: unknown;
   readonly id?: unknown;
@@ -28,10 +38,19 @@ interface RequestRow {
   readonly session?: unknown;
   readonly host?: unknown;
   readonly argv?: unknown;
+  readonly execArgv?: unknown;
   readonly attachedTo?: unknown;
+  readonly attachMode?: unknown;
   readonly waitMs?: unknown;
   readonly runMs?: unknown;
   readonly createdAtMs?: unknown;
+}
+
+interface LaneRow {
+  readonly workspaceRoot?: unknown;
+  readonly targetDir?: unknown;
+  readonly queued?: unknown;
+  readonly runningTicket?: unknown;
 }
 
 interface PendingRequest {
@@ -41,6 +60,7 @@ interface PendingRequest {
 
 const statusEl = document.querySelector<HTMLDivElement>('#status')!;
 const contentionEl = document.querySelector<HTMLDivElement>('#contention')!;
+const lanesEl = document.querySelector<HTMLDivElement>('#lanes')!;
 const inflightEl = document.querySelector<HTMLDivElement>('#inflight')!;
 const queueEl = document.querySelector<HTMLDivElement>('#queue')!;
 const historyEl = document.querySelector<HTMLDivElement>('#history')!;
@@ -74,11 +94,12 @@ const rpcRequest = (method: string, params: Record<string, unknown>): Promise<To
 
 const asRows = (value: unknown): readonly RequestRow[] => (Array.isArray(value) ? value : []);
 
-const argvText = (argv: unknown): string =>
-  Array.isArray(argv) ? argv.filter((part) => typeof part === 'string').join(' ') : '';
+const asLanes = (value: unknown): readonly LaneRow[] => (Array.isArray(value) ? value : []);
+
+const knownStatuses = new Set(['requested', 'queued', 'running', 'done', 'failed', 'killed']);
 
 const pill = (status: unknown): string => {
-  const value = typeof status === 'string' ? status : 'unknown';
+  const value = typeof status === 'string' && knownStatuses.has(status) ? status : 'unknown';
   return `<span class="pill ${value}">${value}</span>`;
 };
 
@@ -92,50 +113,129 @@ const table = (headers: readonly string[], rows: readonly (readonly string[])[])
 };
 
 const stat = (label: string, value: string): string =>
-  `<div class="stat"><b>${value}</b><span>${label}</span></div>`;
+  `<div class="stat"><b>${escapeHtml(value)}</b><span>${escapeHtml(label)}</span></div>`;
+
+const admissionMeter = (runningCount: number, maxConcurrent: number): string => {
+  const percent =
+    maxConcurrent > 0 ? Math.min(100, Math.round((runningCount / maxConcurrent) * 100)) : 0;
+  return (
+    `<div class="stat meterstat"><b>${runningCount}/${maxConcurrent > 0 ? maxConcurrent : '—'}</b>` +
+    `<span>admission</span>` +
+    `<div class="meter" title="${runningCount} of ${maxConcurrent} admission permits in use">` +
+    `<div class="meter-fill" style="width: ${percent}%"></div></div></div>`
+  );
+};
+
+const setCount = (id: string, count: number): void => {
+  const element = document.querySelector<HTMLSpanElement>(`#${id}`);
+  if (element !== null) {
+    element.textContent = `(${count})`;
+  }
+};
+
+const text = (value: unknown): string => (value == null ? '—' : escapeHtml(String(value)));
+
+const pathCell = (value: unknown): string => {
+  if (typeof value !== 'string' || value.length === 0) {
+    return '—';
+  }
+  return `<span class="path" title="${escapeHtml(value)}">${escapeHtml(shortenPath(value))}</span>`;
+};
+
+const attachChip = (row: RequestRow): string => {
+  if (typeof row.attachedTo !== 'string') {
+    return '';
+  }
+  const mode = typeof row.attachMode === 'string' ? ` ${escapeHtml(row.attachMode)}` : '';
+  return `<span class="chip">→ ${escapeHtml(row.attachedTo)}${mode}</span>`;
+};
+
+const commandCell = (row: RequestRow): string => {
+  const requested = argvText(row.argv);
+  const main = `<span class="cmd" title="${escapeHtml(requested)}">${escapeHtml(requested)}</span>`;
+  const ranAs = ranAsFor(row.argv, row.execArgv);
+  if (ranAs === null) {
+    return main;
+  }
+  const packages =
+    ranAs.extraPackages > 0
+      ? ` <span class="pkgcount">(+${ranAs.extraPackages} pkg${ranAs.extraPackages === 1 ? '' : 's'})</span>`
+      : '';
+  return (
+    `${main}<div class="ranas">ran as: ` +
+    `<span class="cmd" title="${escapeHtml(ranAs.command)}">${escapeHtml(ranAs.command)}</span>${packages}</div>`
+  );
+};
+
+const durationCell = (value: unknown): string =>
+  typeof value === 'number' ? formatMs(value) : '—';
 
 const render = (structured: StructuredContent | null): void => {
+  const nowMs = Date.now();
   const active = asRows(structured?.active);
-  const recent = asRows(structured?.recent);
+  const recent = asRows(structured?.recent).slice(0, 20);
+  const lanes = asLanes(structured?.lanes);
   const running = active.filter((row) => row.status === 'running');
   const queued = active.filter((row) => row.status === 'queued' || row.status === 'requested');
   const attached = active.filter((row) => typeof row.attachedTo === 'string');
   const maxConcurrent = typeof structured?.maxConcurrent === 'number' ? structured.maxConcurrent : 0;
+
   contentionEl.innerHTML =
     stat('daemon', structured?.daemon === 'running' ? 'up' : 'down') +
     stat('pid', structured?.pid == null ? '—' : String(structured.pid)) +
-    stat('running', String(running.length)) +
     stat('queued', String(queued.length)) +
     stat('attached', String(attached.length)) +
-    stat('admission', String(maxConcurrent));
+    admissionMeter(running.length, maxConcurrent);
+
+  lanesEl.innerHTML = table(
+    ['workspace', 'target dir', 'queued', 'running'],
+    lanes.map((lane) => [
+      pathCell(lane.workspaceRoot),
+      pathCell(lane.targetDir),
+      text(typeof lane.queued === 'number' ? lane.queued : null),
+      typeof lane.runningTicket === 'string' ? escapeHtml(lane.runningTicket) : '—',
+    ]),
+  );
+
   inflightEl.innerHTML = table(
     ['ticket', 'status', 'command', 'session'],
     running.map((row) => [
-      String(row.ticket ?? ''),
+      text(row.ticket),
       pill(row.status),
-      argvText(row.argv),
-      String(row.session ?? row.host ?? ''),
+      commandCell(row),
+      text(row.session ?? row.host ?? null),
     ]),
   );
+
+  const queueRows = queued.concat(attached.filter((row) => row.status !== 'running'));
   queueEl.innerHTML = table(
     ['ticket', 'status', 'command', 'attached'],
-    queued.concat(attached.filter((row) => row.status !== 'running')).map((row) => [
-      String(row.ticket ?? ''),
+    queueRows.map((row) => [
+      text(row.ticket),
       pill(row.status),
-      argvText(row.argv),
-      String(row.attachedTo ?? ''),
+      commandCell(row),
+      attachChip(row) || '—',
     ]),
   );
+
   historyEl.innerHTML = table(
-    ['ticket', 'status', 'wait', 'run', 'command'],
-    recent.slice(0, 20).map((row) => [
-      String(row.ticket ?? ''),
+    ['ticket', 'status', 'host', 'session', 'age', 'wait', 'run', 'command'],
+    recent.map((row) => [
+      text(row.ticket),
       pill(row.status),
-      row.waitMs == null ? '—' : `${row.waitMs}ms`,
-      row.runMs == null ? '—' : `${row.runMs}ms`,
-      argvText(row.argv),
+      text(row.host),
+      text(row.session),
+      typeof row.createdAtMs === 'number' ? relativeTime(row.createdAtMs, nowMs) : '—',
+      durationCell(row.waitMs),
+      durationCell(row.runMs),
+      commandCell(row) + attachChip(row),
     ]),
   );
+
+  setCount('count-lanes', lanes.length);
+  setCount('count-inflight', running.length);
+  setCount('count-queue', queueRows.length);
+  setCount('count-history', recent.length);
   statusEl.textContent =
     typeof structured?.summary === 'string' ? structured.summary : 'Updated.';
 };
@@ -172,7 +272,9 @@ window.addEventListener('message', (event: MessageEvent) => {
     if (waiter !== undefined) {
       pending.delete(message.id);
       if (message.error) {
-        waiter.reject(message.error);
+        const reason =
+          typeof message.error.message === 'string' ? message.error.message : 'tool call failed';
+        waiter.reject(new Error(reason));
       } else {
         waiter.resolve(message.result ?? {});
       }
@@ -184,12 +286,23 @@ window.addEventListener('message', (event: MessageEvent) => {
   }
 });
 
+let loading = false;
 const load = async (): Promise<void> => {
-  const response = await rpcRequest('tools/call', {
-    arguments: { limit: 40 },
-    name: 'conductor_status',
-  });
-  applyResult(response);
+  if (loading) {
+    return;
+  }
+  loading = true;
+  try {
+    const response = await rpcRequest('tools/call', {
+      arguments: { limit: 40 },
+      name: 'conductor_status',
+    });
+    applyResult(response);
+  } catch (error) {
+    statusEl.textContent = `Error: ${error instanceof Error ? error.message : String(error)}`;
+  } finally {
+    loading = false;
+  }
 };
 
 void rpcRequest('ui/initialize', {
@@ -199,16 +312,16 @@ void rpcRequest('ui/initialize', {
 })
   .then(() => {
     postMessage({ jsonrpc: '2.0', method: 'ui/notifications/initialized', params: {} });
-    if (statusEl.textContent === 'Connecting…') {
-      statusEl.textContent = 'Waiting for host…';
-    }
+    startPolling(
+      load,
+      (callback, intervalMs) => {
+        setInterval(callback, intervalMs);
+      },
+      5_000,
+    );
   })
   .catch((error: unknown) => {
-    statusEl.textContent = error instanceof Error ? error.message : String(error);
+    statusEl.textContent = `Error: ${error instanceof Error ? error.message : String(error)}`;
   });
-
-setInterval(() => {
-  void load().catch(() => undefined);
-}, 15_000);
 
 export {};

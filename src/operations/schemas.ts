@@ -42,6 +42,7 @@ const requestRecordSchema = z
     background: z.boolean(),
     holdStop: z.boolean(),
     estimateMs: z.number().nullable(),
+    execArgv: z.array(z.string()).nullable(),
   })
   .strict() as z.ZodType<RequestRecord>;
 

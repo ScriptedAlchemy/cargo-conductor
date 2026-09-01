@@ -169,9 +169,11 @@ The same operations project to MCP tools on the `conductor` server:
 | `conductor_request` | Submit a background cargo request |
 
 The MCP App dashboard (`ui://cargo-conductor/dashboard.html`, bound to
-`conductor_status`) shows live queue, in-flight work, a history timeline, and
-contention stats. Status and log surfaces keep working from the ledger when
-the daemon is down.
+`conductor_status`, refreshed every 5s) shows contention stats with an
+admission meter, per-lane queues, in-flight work, the queue with attach chips,
+and a history timeline — including what each request actually ran as when the
+batch composer expanded it. Status and log surfaces keep working from the
+ledger when the daemon is down.
 
 ## Configuration
 

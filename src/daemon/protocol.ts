@@ -48,6 +48,8 @@ export interface RequestRecord {
   /** Leader ticket when this request was served by attaching to another run. */
   readonly attachedTo: string | null;
   readonly attachMode: AttachMode | null;
+  /** The invocation actually spawned (demux flag, batch-folded -p packages); null until run. */
+  readonly execArgv: readonly string[] | null;
   readonly background: boolean;
   readonly holdStop: boolean;
   readonly estimateMs: number | null;
