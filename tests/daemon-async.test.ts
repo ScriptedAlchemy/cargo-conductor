@@ -77,6 +77,71 @@ describe('async tickets', () => {
     }
   });
 
+  it('overlays a live output tail on a running ticket instead of staying blind until settlement', async () => {
+    const fixture = makeFixture(1);
+    const db = openLedgerDatabase(fixture.config.databasePath);
+    const baseLedger = createLedgerApi(db);
+    const costModel = createCostModel({
+      kacheReader: null,
+      seedDurations: baseLedger.recentDurations,
+    });
+    const layer = BrokerLive.pipe(
+      Layer.provideMerge(Layer.succeed(CostModel, costModel)),
+      Layer.provideMerge(
+        Layer.succeed(Topology, {
+          dependencyClosure: () => Effect.succeed(new Set<string>()),
+          editedRecently: () => Effect.succeed(false),
+        }),
+      ),
+      Layer.provideMerge(Layer.succeed(Ledger, baseLedger)),
+      Layer.provideMerge(Layer.succeed(DaemonConfig, fixture.config)),
+      Layer.provideMerge(NodeServices.layer),
+    );
+    const started = Deferred.makeUnsafe<void>();
+
+    try {
+      await Effect.runPromise(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const broker = yield* Broker;
+            const submitted = yield* broker.submit(
+              {
+                argv: ['cargo', 'check', '-p', 'live-tail'],
+                cwd: fixture.ws1,
+                env: {
+                  CARGO_CONDUCTOR_CARGO_BIN: join(fixture.binDir, 'cargo'),
+                  FAKE_SLEEP: '10',
+                },
+              },
+              {
+                onExit: () => Effect.void,
+                onOutput: () => Effect.void,
+                onStarted: () => Effect.asVoid(Deferred.succeed(started, undefined)),
+              },
+            );
+            yield* Deferred.await(started);
+            // The fake cargo prints its banner before sleeping; give the
+            // output pump a beat to land it in the tail buffer.
+            yield* Effect.sleep('300 millis');
+            const record = yield* broker.getTicket(submitted.ticket);
+            expect(record?.status).toBe('running');
+            expect(record?.outputTailLive).toBe(true);
+            expect(record?.outputTail).toContain('fake-out:check -p live-tail');
+            yield* broker.kill(submitted.ticket);
+            // After settlement the ledger tail is authoritative again.
+            const awaited = yield* broker.awaitTicket(submitted.ticket, 10_000);
+            expect(awaited.timedOut).toBe(false);
+            const settled = yield* broker.getTicket(submitted.ticket);
+            expect(settled?.outputTailLive).not.toBe(true);
+          }),
+        ).pipe(Effect.provide(layer)),
+      );
+    } finally {
+      db.close();
+      rmSync(fixture.root, { force: true, recursive: true });
+    }
+  });
+
   it('settles running, queued, and attached rows when the broker scope closes', async () => {
     const fixture = makeFixture(1);
     const db = openLedgerDatabase(fixture.config.databasePath);

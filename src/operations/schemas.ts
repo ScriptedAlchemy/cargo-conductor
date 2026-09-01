@@ -50,6 +50,8 @@ export const requestRecordSchema = z.object({
   intentKey: z.string().nullable(),
   laneKey: z.string(),
   outputTail: z.string().nullable(),
+  /** True when outputTail is a live in-progress snapshot, not the settled tail. */
+  outputTailLive: z.boolean().optional(),
   queuedAtMs: z.number().nullable(),
   runMs: z.number().nullable(),
   session: z.string().nullable(),

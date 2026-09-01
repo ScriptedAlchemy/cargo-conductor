@@ -307,8 +307,28 @@ export const BrokerLive: Layer.Layer<
         );
       });
 
+    /**
+     * The ledger only stores an output tail at settlement, but the in-flight
+     * job (or a follower's attachment view) accumulates one live. Overlay it
+     * so a running ticket's record shows progress instead of nothing — a
+     * long cargo run polled via `conductor result` or the dashboard drawer
+     * should never be blind until the end.
+     */
+    const withLiveTail = (record: RequestRecord | null): RequestRecord | null => {
+      if (record === null || isTerminalStatus(record.status)) {
+        return record;
+      }
+      const entry = directory.get(record.ticket);
+      if (entry === undefined) {
+        return record;
+      }
+      const tail = entry.kind === 'leader' ? entry.job.tail : entry.attachment.tail;
+      const text = tail.toString();
+      return text.length === 0 ? record : { ...record, outputTail: text, outputTailLive: true };
+    };
+
     const getTicket = (ticket: string): Effect.Effect<RequestRecord | null> =>
-      ledger.getRequestByTicket(ticket);
+      ledger.getRequestByTicket(ticket).pipe(Effect.map(withLiveTail));
 
     const recordAttempt = (
       input: AttemptInput,
@@ -347,7 +367,7 @@ export const BrokerLive: Layer.Layer<
               Effect.catchTag('TimeoutError', () =>
                 ledger.getRequestByTicket(ticket).pipe(
                   Effect.map((record) => ({
-                    record,
+                    record: withLiveTail(record),
                     timedOut: record === null || !isTerminalStatus(record.status),
                   })),
                 ),

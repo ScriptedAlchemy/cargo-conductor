@@ -341,15 +341,29 @@ describe('ticket detail (click-through to cargo output)', () => {
     expect(detail?.outputTail).toBe('Finished `dev` profile in 3.2s');
   });
 
-  it('does not fetch for rows that have not finished (no tail exists yet)', async () => {
+  it('fetches for running rows too — the daemon overlays a live output snapshot', async () => {
+    const calls: string[] = [];
     const detail = await resolveTicketDetail(
       { ...statusRow, outputTail: null, status: 'running' },
-      async () => {
-        throw new Error('should not fetch');
+      async (ticket) => {
+        calls.push(ticket);
+        return {
+          ...statusRow,
+          status: 'running',
+          outputTail: '   Compiling tracedecay v0.1.0',
+          outputTailLive: true,
+        };
       },
     );
+    expect(calls).toEqual(['cc-702']);
     expect(detail?.status).toBe('running');
-    expect(detail?.outputTail).toBeNull();
+    expect(detail?.outputTail).toBe('   Compiling tracedecay v0.1.0');
+    expect(detail?.outputTailLive).toBe(true);
+  });
+
+  it('marks outputTailLive false when the record does not carry the flag', () => {
+    const detail = ticketDetailFrom({ ...statusRow, outputTail: 'done' });
+    expect(detail?.outputTailLive).toBe(false);
   });
 
   it('falls back to the row detail when the ledger no longer has the ticket', async () => {

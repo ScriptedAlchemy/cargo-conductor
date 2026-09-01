@@ -55,6 +55,13 @@ export interface RequestRecord {
   readonly exitCode: number | null;
   readonly signal: string | null;
   readonly outputTail: string | null;
+  /**
+   * True when `outputTail` is a live snapshot of an in-progress run's
+   * captured output rather than the final tail the ledger stores at
+   * settlement. Lets agents polling a slow build see progress instead of
+   * staying blind until the end.
+   */
+  readonly outputTailLive?: boolean;
   readonly error: string | null;
   readonly errorCount: number | null;
   readonly warningCount: number | null;

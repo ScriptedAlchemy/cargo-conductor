@@ -1,6 +1,6 @@
 {
   "name": "cargo-conductor",
-  "version": "0.1.18",
+  "version": "0.1.19",
   "license": "MIT",
   "private": true,
   "description": "Orchestrate cargo across Claude, Codex, and Cursor so concurrent agent sessions share work instead of fighting locks.",

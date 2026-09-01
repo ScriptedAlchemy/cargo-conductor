@@ -611,14 +611,22 @@ const DrawerOutput = ({ state }: { readonly state: Exclude<DrawerState, { _tag: 
       // A live daemon nulls outputTail on status rows; the rendered
       // diagnostics the ledger kept are the next-best evidence.
       const text = outputTextFor(state.detail);
-      return text === null ? (
-        <p className="empty">
-          {terminalStatuses.has(state.detail.status)
-            ? 'No output was captured for this ticket.'
-            : 'No output yet — the tail is captured when the run finishes.'}
-        </p>
-      ) : (
-        <pre className="output">{text}</pre>
+      if (text === null) {
+        return (
+          <p className="empty">
+            {terminalStatuses.has(state.detail.status)
+              ? 'No output was captured for this ticket.'
+              : 'No output captured yet — updates live as the run produces it.'}
+          </p>
+        );
+      }
+      return (
+        <>
+          {state.detail.outputTailLive ? (
+            <p className="live-note">live — run still in progress, output updates as it streams</p>
+          ) : null}
+          <pre className="output">{text}</pre>
+        </>
       );
     }
     default: {
@@ -1087,22 +1095,38 @@ const DashboardContent = ({ structured }: { readonly structured: StructuredConte
     }
     const seq = ++drawerSeq.current;
     setDrawer({ _tag: 'Loading', detail: base });
-    resolveTicketDetail(row, fetchTicketRecord).then(
-      (detail) => {
-        if (drawerSeq.current === seq) {
-          setDrawer({ _tag: 'Loaded', detail: detail ?? base });
-        }
-      },
-      (error: unknown) => {
-        if (drawerSeq.current === seq) {
-          setDrawer({
-            _tag: 'Failed',
-            detail: base,
-            message: error instanceof Error ? error.message : String(error),
-          });
-        }
-      },
-    );
+    // While the run is live the daemon overlays an in-progress output tail
+    // onto the result record, so keep re-fetching until the ticket settles
+    // (seq guard cancels the loop when the drawer closes or switches rows).
+    const liveRefreshMs = 3_000;
+    const load = (): void => {
+      resolveTicketDetail(row, fetchTicketRecord).then(
+        (detail) => {
+          if (drawerSeq.current !== seq) {
+            return;
+          }
+          const next = detail ?? base;
+          setDrawer({ _tag: 'Loaded', detail: next });
+          if (!terminalStatuses.has(next.status)) {
+            setTimeout(() => {
+              if (drawerSeq.current === seq) {
+                load();
+              }
+            }, liveRefreshMs);
+          }
+        },
+        (error: unknown) => {
+          if (drawerSeq.current === seq) {
+            setDrawer({
+              _tag: 'Failed',
+              detail: base,
+              message: error instanceof Error ? error.message : String(error),
+            });
+          }
+        },
+      );
+    };
+    load();
   };
   const selectRow = (row: RequestRow): (() => void) | undefined =>
     typeof row.ticket === 'string' ? () => openTicket(row) : undefined;

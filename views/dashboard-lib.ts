@@ -265,6 +265,8 @@ export interface TicketDetail {
   readonly errorCount: number | null;
   readonly warningCount: number | null;
   readonly outputTail: string | null;
+  /** True when outputTail is a live in-progress snapshot from the daemon. */
+  readonly outputTailLive: boolean;
   readonly diagnostics: readonly string[] | null;
 }
 
@@ -303,6 +305,7 @@ export const ticketDetailFrom = (record: unknown): TicketDetail | null => {
     errorCount: numberOrNull(row['errorCount']),
     warningCount: numberOrNull(row['warningCount']),
     outputTail: stringOrNull(row['outputTail']),
+    outputTailLive: row['outputTailLive'] === true,
     diagnostics: stringArrayOrNull(row['diagnostics']),
   };
 };
@@ -340,7 +343,10 @@ export const resolveTicketDetail = async (
   if (fromRow === null) {
     return null;
   }
-  if (fromRow.outputTail !== null || !terminalStatuses.has(fromRow.status)) {
+  // Status rows never carry a tail. Terminal rows fetch once for the settled
+  // tail; non-terminal rows must ALSO fetch — the daemon overlays a live
+  // snapshot of the in-progress output onto the result record.
+  if (fromRow.outputTail !== null) {
     return fromRow;
   }
   const fetched = ticketDetailFrom(await fetchRecord(fromRow.ticket));

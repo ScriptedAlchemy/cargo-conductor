@@ -146,6 +146,29 @@ describe('status/result contract completeness (issue #16)', () => {
     expect(parsed.request?.warningCount).toBe(2);
   });
 
+  it('accepts a live in-progress output tail on the result record', () => {
+    const parsed = resultFetchResultSchema.parse({
+      operation: 'result',
+      request: {
+        ...diagnosedRecord,
+        outputTail: '   Compiling tracedecay v0.1.0',
+        outputTailLive: true,
+        status: 'running',
+      },
+      summary: 'cc-1 running',
+      ticket: 'cc-1',
+    });
+    expect(parsed.request?.outputTailLive).toBe(true);
+    // Older daemons never send the flag; records without it still parse.
+    const withoutFlag = resultFetchResultSchema.parse({
+      operation: 'result',
+      request: diagnosedRecord,
+      summary: 'cc-1 failed',
+      ticket: 'cc-1',
+    });
+    expect(withoutFlag.request?.outputTailLive).toBeUndefined();
+  });
+
   it('accepts diagnosed records in status report active/recent lists', () => {
     const parsed = statusReportSchema.parse({
       active: [{ ...diagnosedRecord, status: 'running' }],
