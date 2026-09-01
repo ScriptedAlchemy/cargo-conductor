@@ -442,7 +442,7 @@ export const makeConnectionHandler =
                   type: 'session-pending-result',
                   id: message.id,
                   requests,
-                } as unknown as ServerMessage);
+                });
               });
             case 'session-completed':
               return Effect.gen(function* () {
@@ -454,7 +454,7 @@ export const makeConnectionHandler =
                   type: 'session-completed-result',
                   id: message.id,
                   requests,
-                } as unknown as ServerMessage);
+                });
               });
             case 'shutdown':
               // Written directly (not via the queue) so the ack is flushed

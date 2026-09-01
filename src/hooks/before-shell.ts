@@ -1,4 +1,4 @@
-import { inspectShellCommand, rewriteShellCommand } from './inspect.js';
+import { prepareShellCommand } from './inspect.js';
 import { resolveConductorArgv } from './paths.js';
 import { probeActiveBuilds } from './probe.js';
 import { appendHookRecord } from './record.js';
@@ -46,7 +46,8 @@ const decideBeforeShell = async (
     return continueResult();
   }
 
-  const inspection = inspectShellCommand(command);
+  const prepared = prepareShellCommand(command);
+  const inspection = prepared.inspection;
   if (inspection.alreadyWrapped || !inspection.hasCargo) {
     return continueResult();
   }
@@ -98,7 +99,7 @@ const decideBeforeShell = async (
     }
   }
 
-  const rewritten = rewriteShellCommand(command, {
+  const rewritten = prepared.rewrite({
     conductorArgv: services.conductorArgv ?? resolveConductorArgv(),
     host,
     session,

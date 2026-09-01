@@ -1,6 +1,6 @@
 {
   "name": "cargo-conductor",
-  "version": "0.1.19",
+  "version": "0.1.20",
   "license": "MIT",
   "private": true,
   "description": "Orchestrate cargo across Claude, Codex, and Cursor so concurrent agent sessions share work instead of fighting locks.",
@@ -36,7 +36,7 @@
     "prepare": "effect-tsgo patch --typescript --no-oxlint"
   },
   "dependencies": {
-    "@agent-bundle/rsc-runtime": "https://pkg.pr.new/ScriptedAlchemy/agent-bundle/@agent-bundle/rsc-runtime@560124af",
+    "@agent-bundle/rsc-runtime": "https://pkg.pr.new/ScriptedAlchemy/agent-bundle/@agent-bundle/rsc-runtime@b3c12f316",
     "@effect/atom-react": "4.0.0-rc.112",
     "@effect/platform-node": "4.0.0-rc.112",
     "@modelcontextprotocol/server": "2.0.0",

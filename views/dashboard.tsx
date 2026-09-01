@@ -390,9 +390,11 @@ const who = (row: RequestRow): ReactNode => {
   if (host === null && session === null) {
     return '—';
   }
-  const label = session === null || session === host ? (host ?? '') : `${host ?? '?'} · ${session}`;
+  const label =
+    session === null || session === host ? (host ?? '') : host === null ? session : `${host} · ${session}`;
+  const title = host === null && session !== null ? `host unavailable · ${session}` : label;
   return (
-    <span className="who" title={label}>
+    <span className="who" title={title}>
       {label}
     </span>
   );
@@ -1375,11 +1377,7 @@ const DashboardContent = ({ structured }: { readonly structured: StructuredConte
 
   return (
     <div className="grid">
-      {sectionOrder({
-        lanes: activeLanes.length,
-        queued: queueRows.length,
-        running: running.length,
-      }).map(renderSection)}
+      {sectionOrder.map(renderSection)}
       <TicketDrawer onClose={closeDrawer} state={drawer} />
     </div>
   );

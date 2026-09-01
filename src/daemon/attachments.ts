@@ -17,8 +17,10 @@ import {
 } from './job-state.js';
 import type { Attachment, ExitInfo, Job } from './job-state.js';
 import type { LedgerApi } from './ledger.js';
-import type { AttachMode, FinishedStatus, SavedComputeSource } from './protocol.js';
+import type { AttachMode, FinishedStatus } from './protocol.js';
 import type { ReplayAudience, ReplayChunk } from './replay.js';
+import { calculateServedSavings } from './savings.js';
+import type { ServedSavings } from './savings.js';
 import type { TicketDirectory } from './ticket-directory.js';
 
 /**
@@ -78,58 +80,23 @@ export interface AttachmentRuntime {
   ) => Effect.Effect<void>;
 }
 
-interface AttachmentSavings {
-  readonly savedComputeMs: number;
-  readonly savedComputeSource: SavedComputeSource;
-  readonly savedLatencyMs: number;
-}
-
 const nonNegativeMs = (value: number): number => Math.max(0, Math.round(value));
 
 const leaderRunMsAt = (job: Job, atMs: number): number | null =>
   job.startedAtMs === null ? null : nonNegativeMs(atMs - job.startedAtMs);
 
-const savedComputeFor = (
-  attachment: Attachment,
-  leaderRunMs: number | null,
-): { readonly savedComputeMs: number; readonly savedComputeSource: SavedComputeSource } => {
-  const estimateMs = nonNegativeMs(attachment.estimateMs);
-  switch (attachment.mode) {
-    case 'identity':
-      return leaderRunMs === null
-        ? { savedComputeMs: estimateMs, savedComputeSource: 'estimate' }
-        : { savedComputeMs: leaderRunMs, savedComputeSource: 'exact' };
-    case 'coverage': {
-      if (leaderRunMs === null) {
-        return { savedComputeMs: estimateMs, savedComputeSource: 'estimate' };
-      }
-      const bounded = Math.min(estimateMs, leaderRunMs);
-      return {
-        savedComputeMs: bounded,
-        savedComputeSource: bounded === leaderRunMs ? 'exact' : 'estimate',
-      };
-    }
-    case 'batch':
-      return { savedComputeMs: estimateMs, savedComputeSource: 'estimate' };
-    default: {
-      const exhaustive: never = attachment.mode;
-      return exhaustive;
-    }
-  }
-};
-
 const servedSavings = (
   attachment: Attachment,
   atMs: number,
   leaderRunMs: number | null,
-): AttachmentSavings => {
-  const compute = savedComputeFor(attachment, leaderRunMs);
-  const actualLatencyMs = Math.round(atMs - attachment.createdAtMs);
-  return {
-    ...compute,
-    savedLatencyMs: Math.round(attachment.estimateMs - actualLatencyMs),
-  };
-};
+): ReturnType<typeof calculateServedSavings> =>
+  calculateServedSavings(
+    attachment.mode,
+    attachment.estimateMs,
+    attachment.createdAtMs,
+    atMs,
+    leaderRunMs,
+  );
 
 export const makeAttachmentRuntime = (deps: AttachmentRuntimeDeps): AttachmentRuntime => {
   const { ledger, directory } = deps;
@@ -287,7 +254,7 @@ export const makeAttachmentRuntime = (deps: AttachmentRuntimeDeps): AttachmentRu
     attachment: Attachment,
     atMs: number,
     exit: Omit<ExitInfo, 'ticket' | 'waitMs' | 'runMs'>,
-    savings: AttachmentSavings | null = null,
+    savings: ServedSavings | null = null,
   ): Effect.Effect<void> =>
     Effect.gen(function* () {
       const startedAtMs = attachment.startedAtMs;
@@ -331,7 +298,7 @@ export const makeAttachmentRuntime = (deps: AttachmentRuntimeDeps): AttachmentRu
     atMs: number,
     note: string,
     exit: Omit<ExitInfo, 'ticket' | 'waitMs' | 'runMs'>,
-    savings: AttachmentSavings | null = null,
+    savings: ServedSavings | null = null,
   ): Effect.Effect<void> =>
     Effect.gen(function* () {
       yield* notifyAttachmentStarted(attachment, atMs);

@@ -3,6 +3,8 @@ import type * as Deferred from 'effect/Deferred';
 import * as Effect from 'effect/Effect';
 import type * as Ref from 'effect/Ref';
 
+import { cargoJsonDemuxFlag } from '../lib/argv.js';
+
 import { hasLibKind } from './cargo-json.js';
 import type { TailBuffer } from './executor.js';
 import type { NormalizedCargoIntent } from './intent-normalizer.js';
@@ -276,7 +278,7 @@ export const planDemux = (
     return { execArgv: argv, demux: null };
   }
   return {
-    execArgv: [...argv, '--message-format=json-diagnostic-rendered-ansi'],
+    execArgv: [...argv, cargoJsonDemuxFlag],
     demux: {
       unitKinds: new Map(),
       libErrors: new Set(),

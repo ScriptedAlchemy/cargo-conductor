@@ -1,3 +1,5 @@
+export const cargoJsonDemuxFlag = '--message-format=json-diagnostic-rendered-ansi';
+
 export const optionParts = (
   argument: string,
 ): readonly [option: string, inlineValue: string | undefined] => {

@@ -4,12 +4,9 @@ import * as Metric from 'effect/Metric';
 
 const cargoRunBoundaries = [1e3, 5e3, 15e3, 3e4, 6e4, 12e4, 3e5];
 
-const cargoRunTimer = (name: string) =>
-  Metric.timer(name, {
-    boundaries: cargoRunBoundaries,
-  });
-
-export const cargoRunMetric = cargoRunTimer('cargo_run_ms');
+export const cargoRunMetric = Metric.timer('cargo_run_ms', {
+  boundaries: cargoRunBoundaries,
+});
 
 export const waitMsSummary = Metric.summary('wait_ms_summary', {
   maxAge: '1 hour',

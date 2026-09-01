@@ -245,6 +245,7 @@ All settings are environment variables read by the daemon (and hooks):
 | `CARGO_CONDUCTOR_KACHE_INDEX` | kache's own configured store (see below) | kache index for per-crate compile-time priors (empty string disables; a missing file just reports kache as unavailable) |
 | `CARGO_CONDUCTOR_JOBS_GRANT` | `max(4, cores / max concurrent)` | `CARGO_BUILD_JOBS` injected into each spawned cargo (`0` disables; caller-set `-j`/env wins) |
 | `CARGO_CONDUCTOR_BATCH` | enabled | Set to `0` to disable the batch composer |
+| `CARGO_CONDUCTOR_BATCH_WINDOW_MS` | `150` | Brief hold for a batchable lane head so near-simultaneous agent requests can fold (`0` disables) |
 | `CARGO_CONDUCTOR_STOP_WAIT_MS` | `30000` | Bounded wait per stop-hold hook invocation |
 
 Daemon state defaults to a per-user cache directory: `$XDG_CACHE_HOME/cargo-conductor`

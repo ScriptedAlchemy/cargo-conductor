@@ -463,16 +463,34 @@ export interface ResultResultMessage {
   readonly request: RequestRecord | null;
 }
 
+export interface SessionPendingRecord {
+  readonly createdAtMs: number;
+  readonly estimateMs: number | null;
+  readonly holdStop: boolean;
+  readonly startedAtMs: number | null;
+  readonly status: RequestStatus;
+  readonly ticket: string;
+}
+
+export interface SessionCompletedRecord {
+  readonly error: string | null;
+  readonly errorCount: number | null;
+  readonly exitCode: number | null;
+  readonly status: FinishedStatus;
+  readonly ticket: string;
+  readonly warningCount: number | null;
+}
+
 export interface SessionPendingResultMessage {
   readonly type: 'session-pending-result';
   readonly id: string;
-  readonly requests: readonly RequestRecord[];
+  readonly requests: readonly SessionPendingRecord[];
 }
 
 export interface SessionCompletedResultMessage {
   readonly type: 'session-completed-result';
   readonly id: string;
-  readonly requests: readonly RequestRecord[];
+  readonly requests: readonly SessionCompletedRecord[];
 }
 
 export type ServerMessage =

@@ -23,6 +23,7 @@ const configAt = (stateDir: string): DaemonConfigShape => ({
   kacheIndexPath: '',
   jobsGrant: 1,
   batchEnabled: false,
+  batchWindowMs: 0,
   loadThresholdPerCore: null,
   loadMinConcurrent: 2,
   cpuStallThreshold: null,

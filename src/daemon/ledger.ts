@@ -6,8 +6,10 @@ import * as Context from 'effect/Context';
 import * as Effect from 'effect/Effect';
 import * as Layer from 'effect/Layer';
 
+import { isRecord } from '../lib/guards.js';
+
 import { DaemonConfig } from './config.js';
-import { formatTicket } from './protocol.js';
+import { formatTicket, parseTicket } from './protocol.js';
 import type {
   AttachmentSavingsModeReport,
   AttachmentSavingsReport,
@@ -18,9 +20,12 @@ import type {
   RequestRecord,
   RequestStatus,
   SavedComputeSource,
+  SessionCompletedRecord,
+  SessionPendingRecord,
   TransitionRecord,
 } from './protocol.js';
 import { passthroughSpoolFileName } from './protocol.js';
+import { calculateServedSavings } from './savings.js';
 
 export interface CreateRequestInput {
   readonly createdAtMs: number;
@@ -69,24 +74,6 @@ export interface AttachRequestInput {
   readonly atMs: number;
   readonly leaderTicket: string;
   readonly mode: AttachMode;
-}
-
-export interface SessionPendingRecord {
-  readonly createdAtMs: number;
-  readonly estimateMs: number | null;
-  readonly holdStop: boolean;
-  readonly startedAtMs: number | null;
-  readonly status: RequestStatus;
-  readonly ticket: string;
-}
-
-export interface SessionCompletedRecord {
-  readonly error: string | null;
-  readonly errorCount: number | null;
-  readonly exitCode: number | null;
-  readonly status: FinishedStatus;
-  readonly ticket: string;
-  readonly warningCount: number | null;
 }
 
 export interface MetricsWindowBySubcommand {
@@ -233,8 +220,6 @@ const columnMigrations: readonly (readonly [column: string, ddl: string])[] = [
 
 const activeStatusFilter = "status IN ('requested', 'queued', 'running')";
 
-const ticketPattern = /^cc-(\d+)$/u;
-
 /**
  * Dashboard windows scan only recent leader-settled rows. Keeping this bounded
  * prevents one status poll from full-scanning a very large ledger.
@@ -333,11 +318,6 @@ const percentileFromSorted = (
 const mean = (values: readonly number[]): number | null =>
   values.length === 0 ? null : values.reduce((sum, value) => sum + value, 0) / values.length;
 
-const parseTicket = (ticket: string): number | null => {
-  const match = ticketPattern.exec(ticket);
-  return match === null ? null : Number(match[1]);
-};
-
 const recordTransition = (
   statement: StatementSync,
   requestId: number,
@@ -356,6 +336,62 @@ const readStatus = (statement: StatementSync, id: number): RequestStatus | null 
 const selectRequestById = (statement: StatementSync, id: number): RequestRecord | null => {
   const row = statement.get(id);
   return row === undefined ? null : toRequestRecord(row);
+};
+
+/**
+ * Older ledgers predate settlement-time savings columns. Their served rider
+ * rows still contain the same counterfactual inputs, so backfill once instead
+ * of showing zero forever after an upgrade.
+ */
+const backfillAttachmentSavings = (db: DatabaseSync): void => {
+  const rows = db
+    .prepare(
+      `SELECT f.id,
+              f.attach_mode,
+              f.estimate_ms,
+              f.created_at_ms,
+              f.finished_at_ms,
+              l.run_ms AS leader_run_ms
+       FROM requests f
+       LEFT JOIN requests l ON ('cc-' || l.id) = f.attached_to
+       WHERE f.attached_to IS NOT NULL
+         AND f.saved_compute_ms IS NULL
+         AND f.status IN ('done', 'failed')
+         AND f.finished_at_ms IS NOT NULL
+         AND f.estimate_ms IS NOT NULL
+         AND f.attach_mode IN ('identity', 'coverage', 'batch')`,
+    )
+    .all() as readonly Row[];
+  if (rows.length === 0) {
+    return;
+  }
+  const update = db.prepare(
+    `UPDATE requests
+     SET saved_compute_ms = ?, saved_compute_source = ?, saved_latency_ms = ?
+     WHERE id = ? AND saved_compute_ms IS NULL`,
+  );
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    for (const row of rows) {
+      const savings = calculateServedSavings(
+        toText(row.attach_mode) as AttachMode,
+        toNumber(row.estimate_ms),
+        toNumber(row.created_at_ms),
+        toNumber(row.finished_at_ms),
+        toNullableNumber(row.leader_run_ms),
+      );
+      update.run(
+        savings.savedComputeMs,
+        savings.savedComputeSource,
+        savings.savedLatencyMs,
+        toNumber(row.id),
+      );
+    }
+    db.exec('COMMIT');
+  } catch (error) {
+    db.exec('ROLLBACK');
+    throw error;
+  }
 };
 
 /**
@@ -388,6 +424,7 @@ export const openLedgerDatabase = (databasePath: string): DatabaseSync => {
       db.exec(ddl);
     }
   }
+  backfillAttachmentSavings(db);
   db.exec(
     'CREATE UNIQUE INDEX IF NOT EXISTS requests_source_attempt_id_idx ON requests (source_attempt_id) WHERE source_attempt_id IS NOT NULL',
   );
@@ -406,9 +443,6 @@ export const openLedgerDatabase = (databasePath: string): DatabaseSync => {
   );
   return db;
 };
-
-const isRecord = (value: unknown): value is Record<string, unknown> =>
-  typeof value === 'object' && value !== null && !Array.isArray(value);
 
 const parsePassthroughSpoolRecord = (line: string): PassthroughSpoolRecord | null => {
   let value: unknown;

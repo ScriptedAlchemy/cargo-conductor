@@ -202,6 +202,18 @@ export const limitInputSchema = z
   })
   .strict();
 
+export const statusInputSchema = z
+  .object({
+    limit: z.number().int().min(1).max(500).optional(),
+    cwd: z.string().min(1).optional(),
+    session: z.string().min(1).optional(),
+    laneKey: z.string().min(1).optional(),
+    tickets: z.array(z.string().min(1)).max(100).optional(),
+    statuses: z.array(requestStatusSchema).max(8).optional(),
+    commandContains: z.string().min(1).optional(),
+  })
+  .strict();
+
 export interface StatusResult {
   readonly active: readonly RequestRecord[];
   readonly daemon: 'running' | 'stopped';
@@ -370,6 +382,7 @@ export interface RequestSubmitResult {
 }
 
 export type LimitInput = z.infer<typeof limitInputSchema>;
+export type StatusInput = z.infer<typeof statusInputSchema>;
 export type DaemonInput = z.infer<typeof daemonInputSchema>;
 export type TicketInput = z.infer<typeof ticketInputSchema>;
 export type RequestInput = z.infer<typeof requestInputSchema>;

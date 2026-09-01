@@ -7,6 +7,7 @@ import {
   resultFetchResultSchema,
   statusReportSchema,
   statusResultSchema,
+  statusInputSchema,
   ticketInputSchema,
 } from '../src/operations/schemas.js';
 
@@ -197,6 +198,26 @@ describe('status/result contract completeness (issue #16)', () => {
 });
 
 describe('schema forward compatibility (issue #4)', () => {
+  it('accepts structured status filters that replace CLI jq workarounds', () => {
+    expect(
+      statusInputSchema.parse({
+        commandContains: 'mcp_suite',
+        cwd: '/tmp/worktree',
+        limit: 100,
+        session: 'session-1',
+        statuses: ['queued', 'running'],
+        tickets: ['cc-260', 'cc-261'],
+      }),
+    ).toEqual({
+      commandContains: 'mcp_suite',
+      cwd: '/tmp/worktree',
+      limit: 100,
+      session: 'session-1',
+      statuses: ['queued', 'running'],
+      tickets: ['cc-260', 'cc-261'],
+    });
+  });
+
   it('strips unknown daemon fields instead of rejecting the record', () => {
     const parsed = requestRecordSchema.parse({
       ...baseRecord,

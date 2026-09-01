@@ -724,6 +724,52 @@ describe('reapOrphans', () => {
 });
 
 describe('ledger migrations', () => {
+  it('backfills savings for riders settled before savings columns were populated', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'cc-ledger-savings-backfill-'));
+    const databasePath = join(directory, 'ledger.db');
+    const initial = openLedgerDatabase(databasePath);
+    let followerId = 0;
+    try {
+      const ledger = createLedgerApi(initial);
+      const leader = Effect.runSync(
+        ledger.createRequest(makeInput({ createdAtMs: 1_000, estimateMs: 900 })),
+      );
+      Effect.runSync(ledger.markQueued(leader.id, 1_050));
+      Effect.runSync(ledger.markRunning(leader.id, 1_100));
+      Effect.runSync(ledger.markFinished(leader.id, { atMs: 2_000, status: 'done' }));
+      const follower = Effect.runSync(
+        ledger.createRequest(makeInput({ createdAtMs: 1_200, estimateMs: 600 })),
+      );
+      followerId = follower.id;
+      Effect.runSync(
+        ledger.markAttached(follower.id, {
+          atMs: 1_250,
+          leaderTicket: leader.ticket,
+          mode: 'identity',
+        }),
+      );
+      Effect.runSync(ledger.markRunning(follower.id, 1_100));
+      // Simulates an older daemon that settled the rider without savings.
+      Effect.runSync(ledger.markFinished(follower.id, { atMs: 2_000, status: 'done' }));
+    } finally {
+      initial.close();
+    }
+    const reopened = openLedgerDatabase(databasePath);
+    try {
+      const record = Effect.runSync(createLedgerApi(reopened).getRequest(followerId));
+      expect(record).toEqual(
+        expect.objectContaining({
+          savedComputeMs: 900,
+          savedComputeSource: 'exact',
+          savedLatencyMs: -200,
+        }),
+      );
+    } finally {
+      reopened.close();
+      rmSync(directory, { force: true, recursive: true });
+    }
+  });
+
   it('adds savings columns to a legacy table and round-trips markFinished', () => {
     const directory = mkdtempSync(join(tmpdir(), 'cc-ledger-migrate-'));
     const databasePath = join(directory, 'ledger.db');

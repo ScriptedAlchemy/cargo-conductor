@@ -52,6 +52,8 @@ export const makeFixture = (maxConcurrent: number): Fixture => {
   const config = resolveDaemonConfig({
     CARGO_CONDUCTOR_STATE_DIR: stateDir,
     CARGO_CONDUCTOR_MAX_CONCURRENT: String(maxConcurrent),
+    CARGO_CONDUCTOR_BATCH_WINDOW_MS: '0',
+    CARGO_CONDUCTOR_CPU_PRESSURE_THRESHOLD: '0',
     // Hermetic tests: no live kache priors.
     CARGO_CONDUCTOR_KACHE_INDEX: '',
   });

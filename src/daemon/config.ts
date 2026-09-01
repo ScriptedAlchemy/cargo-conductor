@@ -28,6 +28,11 @@ export interface DaemonConfigShape {
   /** Merge queued compatible check/build/clippy intents into one cargo. */
   readonly batchEnabled: boolean;
   /**
+   * Brief admission delay for a batchable lane head so near-simultaneous
+   * agent requests can fold before the first process starts (0 disables).
+   */
+  readonly batchWindowMs: number;
+  /**
    * Per-core 1-minute loadavg above which admission defers (opt-in via
    * CARGO_CONDUCTOR_LOAD_THRESHOLD; null disables the clamp entirely).
    */
@@ -50,6 +55,7 @@ export class DaemonConfig extends Context.Service<DaemonConfig, DaemonConfigShap
 
 const defaultMaxConcurrent = 5;
 const defaultCpuStallThreshold = 75;
+const defaultBatchWindowMs = 150;
 
 export const resolveDaemonConfig = (
   env: Readonly<Record<string, string | undefined>> = process.env,
@@ -64,6 +70,7 @@ export const resolveDaemonConfig = (
   const parsedLoadThreshold = Number.parseFloat(env.CARGO_CONDUCTOR_LOAD_THRESHOLD ?? '');
   const parsedLoadMin = Number.parseInt(env.CARGO_CONDUCTOR_LOAD_MIN ?? '', 10);
   const parsedCpuStall = Number.parseFloat(env.CARGO_CONDUCTOR_CPU_PRESSURE_THRESHOLD ?? '');
+  const parsedBatchWindow = Number.parseInt(env.CARGO_CONDUCTOR_BATCH_WINDOW_MS ?? '', 10);
   // Divide the cores between the admitted builds so N concurrent cargos do
   // not each assume they own the whole machine (rheo's grant idea).
   const defaultJobsGrant = Math.max(4, Math.floor(availableParallelism() / maxConcurrent));
@@ -82,6 +89,10 @@ export const resolveDaemonConfig = (
     kacheIndexPath: env.CARGO_CONDUCTOR_KACHE_INDEX ?? defaultKacheIndexPath(env),
     jobsGrant: Number.isInteger(parsedJobs) && parsedJobs >= 0 ? parsedJobs : defaultJobsGrant,
     batchEnabled: env.CARGO_CONDUCTOR_BATCH !== '0',
+    batchWindowMs:
+      Number.isInteger(parsedBatchWindow) && parsedBatchWindow >= 0
+        ? parsedBatchWindow
+        : defaultBatchWindowMs,
     loadThresholdPerCore:
       Number.isFinite(parsedLoadThreshold) && parsedLoadThreshold > 0 ? parsedLoadThreshold : null,
     loadMinConcurrent:

@@ -1,4 +1,3 @@
-import { randomBytes } from 'node:crypto';
 import { appendFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 
@@ -34,6 +33,7 @@ import type {
 } from '../daemon/protocol.js';
 
 import { AnsiStreamStripper, colorEnabled } from '../lib/ansi.js';
+import { shortId } from '../lib/id.js';
 
 import { ensureDaemonRunning, type EnsureDaemonError } from './ensure-daemon.js';
 import { shouldAutoBackground } from './host-cap.js';
@@ -75,8 +75,6 @@ export interface RunExecResult {
 }
 
 const defaultHeartbeatMs = 15_000;
-
-const shortId = (): string => randomBytes(6).toString('hex');
 
 const writeChannel = (io: ExecIo, channel: 'stdout' | 'stderr', data: Uint8Array): void => {
   if (channel === 'stdout') {

@@ -1,6 +1,8 @@
 import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 
+import { optionParts } from '../lib/argv.js';
+
 const cargoConfigFileNames = ['config.toml', 'config'] as const;
 const workspaceRootCacheLimit = 256;
 
@@ -38,13 +40,6 @@ interface WorkspaceTable {
 }
 
 const workspaceRootCache = new Map<string, WorkspaceRootCacheEntry>();
-
-const optionParts = (argument: string): readonly [string, string | undefined] => {
-  const equalsIndex = argument.indexOf('=');
-  return equalsIndex === -1
-    ? [argument, undefined]
-    : [argument.slice(0, equalsIndex), argument.slice(equalsIndex + 1)];
-};
 
 const forEachFlagValue = (
   argv: readonly string[],

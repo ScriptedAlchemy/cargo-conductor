@@ -247,3 +247,40 @@ export const rewriteShellCommand = (command: string, options: RewriteOptions): s
   });
   return changed ? print(ast) : command;
 };
+
+/** Parse once for the beforeTool hook, deferring mutation until it elects to rewrite. */
+export const prepareShellCommand = (
+  command: string,
+): { readonly inspection: InspectedCommand; readonly rewrite: (options: RewriteOptions) => string } => {
+  const ast = parse(command);
+  let alreadyWrapped = false;
+  let destructive = false;
+  let hasCargo = false;
+  walkSimpleCommands(ast, (simple) => {
+    const argv = commandWords(simple).map((word) => word.text);
+    if (isAlreadyWrapped(argv)) {
+      alreadyWrapped = true;
+      return;
+    }
+    const cargoIndex = findCargoIndex(argv);
+    if (cargoIndex === -1) {
+      return;
+    }
+    hasCargo = true;
+    if (isDestructiveArgv(argv.slice(cargoIndex))) {
+      destructive = true;
+    }
+  });
+  return {
+    inspection: { alreadyWrapped, destructive, hasCargo },
+    rewrite: (options) => {
+      let changed = false;
+      walkSimpleCommands(ast, (simple) => {
+        if (rewriteSimpleCommand(simple, options)) {
+          changed = true;
+        }
+      });
+      return changed ? print(ast) : command;
+    },
+  };
+};

@@ -643,6 +643,14 @@ export const makeLaneRuntime = (deps: LaneRuntimeDeps): Effect.Effect<LaneRuntim
 
     const processLaneJob = (lane: Lane, job: Job): Effect.Effect<void> =>
       Effect.gen(function* () {
+        if (
+          config.batchEnabled &&
+          config.batchWindowMs > 0 &&
+          lane.pending.length === 0 &&
+          batchKindFor(job.intent) !== null
+        ) {
+          yield* Effect.sleep(`${config.batchWindowMs} millis`);
+        }
         yield* foldBatch(lane, job);
         yield* processJob(lane, job);
       }).pipe(

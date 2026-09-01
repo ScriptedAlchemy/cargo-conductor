@@ -1,4 +1,9 @@
-import { defineOperation, type RscOperationContext } from '@agent-bundle/rsc-runtime/plugin';
+import {
+  agent,
+  defineOperation,
+  type AgentRequestContext,
+  type RscOperationContext,
+} from '@agent-bundle/rsc-runtime/plugin';
 import * as React from 'react';
 import * as Cause from 'effect/Cause';
 import * as Effect from 'effect/Effect';
@@ -125,6 +130,31 @@ const runTicketEffect = async <A,>(
 const requestForConsumer = (request: RequestRecord | null): RequestRecord | null =>
   request === null ? null : displayRequestRecord(request);
 
+type TicketRequestContext = Pick<AgentRequestContext, 'host' | 'session'> & {
+  readonly invocation: Pick<AgentRequestContext['invocation'], 'kind'>;
+};
+
+export const enrichTicketRequest = (
+  input: RequestInput,
+  requestContext: TicketRequestContext,
+): RequestInput => {
+  const host = input.host
+    ?? (requestContext.host.state === 'available'
+      ? requestContext.host.value.name
+      : requestContext.invocation.kind === 'cli'
+        ? 'cli'
+        : 'mcp');
+  const session = input.session
+    ?? (requestContext.session.state === 'available'
+      ? requestContext.session.value.sessionId
+      : undefined);
+  return {
+    ...input,
+    host,
+    ...(session === undefined ? {} : { session }),
+  };
+};
+
 export const defaultTicketOperations: TicketOperations = {
   await: async (input, context) => {
     const waited = await runTicketEffect(
@@ -146,7 +176,11 @@ export const defaultTicketOperations: TicketOperations = {
     };
   },
   request: async (input, context) => {
-    const ticket = await runTicketEffect(submitBackground(input), context.signal);
+    const requestContext = await agent();
+    const ticket = await runTicketEffect(
+      submitBackground(enrichTicketRequest(input, requestContext)),
+      context.signal,
+    );
     return {
       operation: 'request',
       summary: ticket === null ? 'failed to submit background request' : `${ticket} submitted`,
@@ -195,7 +229,8 @@ export const ticketOperations = (operations: TicketOperations) => [
     id: 'result',
     inputSchema: ticketInputSchema,
     mcp: {
-      description: 'Fetch a durable cargo-conductor ticket result from the ledger.',
+      description:
+        'Fetch one cargo-conductor ticket. Running tickets include a live output-tail snapshot; terminal tickets include the durable ledger result.',
       name: 'conductor_result',
       readOnly: true,
       server: 'conductor',
@@ -214,7 +249,8 @@ export const ticketOperations = (operations: TicketOperations) => [
     id: 'request',
     inputSchema: requestInputSchema,
     mcp: {
-      description: 'Submit a background cargo request and return a durable ticket id.',
+      description:
+        'Submit a background cargo request and return a durable ticket id. Host and session are inferred when omitted; explicit fields override inferred attribution.',
       name: 'conductor_request',
       readOnly: false,
       server: 'conductor',

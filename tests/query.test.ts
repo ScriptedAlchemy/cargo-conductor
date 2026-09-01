@@ -11,7 +11,11 @@ import { pingDaemon, requestOverSocket } from '../src/daemon/control.js';
 import { createLedgerApi, openLedgerDatabase } from '../src/daemon/ledger.js';
 import { runDaemon } from '../src/daemon/main.js';
 import type { RequestRecord } from '../src/daemon/protocol.js';
-import { defaultInspectOperations } from '../src/operations/inspect.js';
+import {
+  defaultInspectOperations,
+  filterStatusRows,
+  statusSummary,
+} from '../src/operations/inspect.js';
 import {
   describeRequestRecord,
   displayRequestRecord,
@@ -77,6 +81,38 @@ const coloredRecord: RequestRecord = {
   warningCount: 0,
   workspaceRoot: '/ws',
 };
+
+describe('status scoping', () => {
+  const running: RequestRecord = {
+    ...coloredRecord,
+    cwd: '/ws/other',
+    errorCount: null,
+    exitCode: null,
+    finishedAtMs: null,
+    laneKey: 'lane-other',
+    outputTail: null,
+    session: 'session-1',
+    status: 'running',
+    ticket: 'cc-2',
+  };
+
+  it('filters status rows without requiring CLI jq projections', () => {
+    expect(filterStatusRows([coloredRecord, running], { session: 'session-1' })).toEqual([running]);
+    expect(
+      filterStatusRows([coloredRecord, running], {
+        commandContains: 'check',
+        statuses: ['failed'],
+        tickets: ['cc-1'],
+      }),
+    ).toEqual([coloredRecord]);
+  });
+
+  it('renders active ticket one-liners in MCP text content', () => {
+    expect(statusSummary('running', [running], [])).toContain(
+      'cc-2 running cargo check (session-1)',
+    );
+  });
+});
 
 describe('display projection', () => {
   it('strips stored ANSI unconditionally, leaving other fields intact', () => {

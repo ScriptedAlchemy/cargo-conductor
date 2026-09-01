@@ -15,4 +15,10 @@ describe('daemon config platform posture', () => {
       expect(config.socketPath.endsWith('daemon.sock')).toBe(true);
     }
   });
+
+  it('uses a brief configurable batching window for near-simultaneous requests', () => {
+    expect(resolveDaemonConfig({}).batchWindowMs).toBe(150);
+    expect(resolveDaemonConfig({ CARGO_CONDUCTOR_BATCH_WINDOW_MS: '0' }).batchWindowMs).toBe(0);
+    expect(resolveDaemonConfig({ CARGO_CONDUCTOR_BATCH_WINDOW_MS: '275' }).batchWindowMs).toBe(275);
+  });
 });

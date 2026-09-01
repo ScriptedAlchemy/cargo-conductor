@@ -5,6 +5,8 @@
  * through as opaque output.
  */
 
+import { isRecord } from '../lib/guards.js';
+
 export type CargoJsonEvent =
   | {
       readonly kind: 'artifact';
@@ -26,9 +28,6 @@ export type CargoJsonEvent =
   | {
       readonly kind: 'other';
     };
-
-const isRecord = (value: unknown): value is Record<string, unknown> =>
-  typeof value === 'object' && value !== null && !Array.isArray(value);
 
 /**
  * Extracts the package name from either package-id format:

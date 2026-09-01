@@ -114,13 +114,8 @@ describe('sectionOrder (stable layout)', () => {
     'history',
   ];
 
-  it('keeps every section mounted on the idle home so live polling never shifts layout', () => {
-    expect(sectionOrder({ lanes: 0, queued: 0, running: 0 })).toEqual(fullOrder);
-  });
-
-  it('returns the identical order under load — work starting or finishing must not move sections', () => {
-    expect(sectionOrder({ lanes: 2, queued: 1, running: 3 })).toEqual(fullOrder);
-    expect(sectionOrder({ lanes: 1, queued: 4, running: 0 })).toEqual(fullOrder);
+  it('keeps every section mounted so live polling never shifts layout', () => {
+    expect(sectionOrder).toEqual(fullOrder);
   });
 });
 
@@ -749,9 +744,15 @@ describe('diagnosticBadges (history/in-flight warning and error counts)', () => 
   });
 });
 
-describe('terminal statuses (denied is its own distinct end)', () => {
-  it('treats denied as finished work alongside done, failed, and killed', () => {
-    expect([...terminalStatuses].sort()).toEqual(['denied', 'done', 'failed', 'killed']);
+describe('terminal statuses', () => {
+  it('includes hook-denied and fail-open passthrough attempts as finished work', () => {
+    expect([...terminalStatuses].sort()).toEqual([
+      'denied',
+      'done',
+      'failed',
+      'killed',
+      'passthrough',
+    ]);
   });
 
   it('does not re-fetch output for denied rows once resolved', async () => {

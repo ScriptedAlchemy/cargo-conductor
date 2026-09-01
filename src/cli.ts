@@ -108,10 +108,12 @@ const runExecCommand = async (argv: readonly string[], options: CliOptions): Pro
         argv: parsed.cargoArgv,
         cwd: parsed.cwd ?? process.cwd(),
         env: buildRelevantEnv(process.env),
+        host: parsed.host ?? process.env['CARGO_CONDUCTOR_HOST'] ?? 'cli',
         io,
         ...(parsed.background ? { background: true } : {}),
-        ...(parsed.host === undefined ? {} : { host: parsed.host }),
-        ...(parsed.session === undefined ? {} : { session: parsed.session }),
+        ...((parsed.session ?? process.env['CARGO_CONDUCTOR_SESSION']) === undefined
+          ? {}
+          : { session: parsed.session ?? process.env['CARGO_CONDUCTOR_SESSION'] }),
       }).pipe(
         Effect.map((result) => result.exitCode),
         Effect.catchCause((cause) =>

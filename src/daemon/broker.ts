@@ -34,12 +34,13 @@ import type {
 } from './job-state.js';
 import { laneKeyFor, makeLaneRuntime } from './lane-exec.js';
 import { Ledger } from './ledger.js';
-import type { SessionCompletedRecord, SessionPendingRecord } from './ledger.js';
 import type {
   AttachMode,
   HistogramMetricSnapshot,
   LaneStatus,
   RequestRecord,
+  SessionCompletedRecord,
+  SessionPendingRecord,
   StatusReport,
 } from './protocol.js';
 import { makeTicketDirectory } from './ticket-directory.js';

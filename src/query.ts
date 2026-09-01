@@ -47,8 +47,6 @@ export interface LoadSnapshotOptions {
 
 const defaultRecentLimit = 50;
 
-const requestWord = (count: number): string => (count === 1 ? 'request' : 'requests');
-
 export const describeRequestRecord = (
   ticket: string,
   request:
@@ -90,7 +88,7 @@ const stoppedSummary = (recentCount: number): string => {
   if (recentCount === 0) {
     return 'cargo-conductor daemon is not running';
   }
-  return `cargo-conductor daemon is not running; ${recentCount} recorded ${requestWord(recentCount)}`;
+  return `cargo-conductor daemon is not running; ${countWord(recentCount, 'recorded request')}`;
 };
 
 const runningSummary = (report: StatusReport): string => {

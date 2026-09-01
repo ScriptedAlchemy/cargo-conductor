@@ -1,6 +1,6 @@
 import { Effect, Schedule, Stream, type Duration } from 'effect';
 
-import { namedPackagesInArgv } from '../src/lib/argv.js';
+import { cargoJsonDemuxFlag, namedPackagesInArgv } from '../src/lib/argv.js';
 import { packageVersion } from '../src/lib/version.js';
 
 /**
@@ -8,7 +8,7 @@ import { packageVersion } from '../src/lib/version.js';
  * it directly (the widget entry touches `document` at module scope).
  */
 
-export const DEMUX_FLAG = '--message-format=json-diagnostic-rendered-ansi';
+export const DEMUX_FLAG = cargoJsonDemuxFlag;
 export const dashboardVersion = packageVersion;
 
 /**
@@ -22,15 +22,9 @@ export const terminalStatuses: ReadonlySet<string> = new Set([
   'failed',
   'killed',
   'denied',
+  'passthrough',
 ]);
 
-/**
- * Sections whose presence depends on live data. Contention, Metrics, Kache,
- * and History always render (Kache additionally hides itself when the machine
- * has no kache index); In flight, Queue, and Lanes collapse entirely when
- * empty instead of rendering a "None." placeholder. When work is running,
- * In flight is the first body section, above Queue.
- */
 export type DashboardSection =
   | 'contention'
   | 'inFlight'
@@ -40,19 +34,13 @@ export type DashboardSection =
   | 'lanes'
   | 'history';
 
-export interface SectionCounts {
-  readonly running: number;
-  readonly queued: number;
-  readonly lanes: number;
-}
-
 /**
  * Fixed section order regardless of content. Sections used to unmount when
  * empty, but on a live-polling page that made the layout jump every time work
  * started or finished; instead every section stays mounted and empty ones
  * render a slim one-line state.
  */
-export const sectionOrder = (_counts: SectionCounts): readonly DashboardSection[] => [
+export const sectionOrder: readonly DashboardSection[] = [
   'contention',
   'inFlight',
   'queue',
@@ -390,11 +378,9 @@ export const outputTextFor = (detail: TicketDetail): string | null => {
 /**
  * Resolve the drawer detail for a clicked row. Status payloads from a running
  * daemon deliberately null `outputTail` on every row to keep the report
- * small, so a finished row without a tail needs one follow-up
- * `conductor_result` fetch (the ledger keeps the ANSI-stripped tail). Rows
- * that already carry a tail — the stopped-daemon status path reads the ledger
- * directly — and rows still queued/running (no tail exists yet) skip the
- * fetch.
+ * small, so a row without a tail needs one follow-up `conductor_result`
+ * fetch. Finished rows receive the ledger tail; running rows receive the
+ * daemon's live in-memory tail snapshot.
  */
 export const resolveTicketDetail = async (
   row: unknown,
@@ -414,11 +400,6 @@ export const resolveTicketDetail = async (
   return fetched ?? fromRow;
 };
 
-const asStrings = (value: unknown): readonly string[] | null =>
-  Array.isArray(value) && value.every((part) => typeof part === 'string')
-    ? (value as readonly string[])
-    : null;
-
 const displayProgram = (part: string): string => {
   const slash = part.lastIndexOf('/');
   return slash === -1 ? part : part.slice(slash + 1);
@@ -430,18 +411,11 @@ const displayJoin = (parts: readonly string[]): string => {
 };
 
 export const argvText = (argv: unknown): string => {
-  const parts = asStrings(argv);
+  const parts = stringArrayOrNull(argv);
   return parts === null ? '' : displayJoin(parts);
 };
 
-export const argvTitle = (argv: unknown): string => asStrings(argv)?.join(' ') ?? '';
-
-export const escapeHtml = (value: string): string =>
-  value
-    .replaceAll('&', '&amp;')
-    .replaceAll('<', '&lt;')
-    .replaceAll('>', '&gt;')
-    .replaceAll('"', '&quot;');
+export const argvTitle = (argv: unknown): string => stringArrayOrNull(argv)?.join(' ') ?? '';
 
 interface RanAs {
   readonly command: string;
@@ -455,8 +429,8 @@ interface RanAs {
  * count of packages beyond the request's own.
  */
 export const ranAsFor = (argvValue: unknown, execArgvValue: unknown): RanAs | null => {
-  const argv = asStrings(argvValue);
-  const execArgv = asStrings(execArgvValue);
+  const argv = stringArrayOrNull(argvValue);
+  const execArgv = stringArrayOrNull(execArgvValue);
   if (argv === null || execArgv === null) {
     return null;
   }
@@ -665,7 +639,7 @@ export const rowSubcommand = (row: {
       // Fall through to argv.
     }
   }
-  const argv = asStrings(row.argv);
+  const argv = stringArrayOrNull(row.argv);
   if (argv === null) {
     return null;
   }
