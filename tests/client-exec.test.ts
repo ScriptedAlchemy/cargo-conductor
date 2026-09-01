@@ -195,6 +195,49 @@ describe('runExecClient', () => {
       }),
     ));
 
+  it('strips ANSI from streamed stderr when the consumer does not render color', () =>
+    withDaemon(5, (fixture) =>
+      Effect.gen(function* () {
+        const collected = collectIo();
+        const colored = '\u001b[31mred\u001b[0m';
+        const result = yield* runExecClient({
+          argv: ['cargo', 'check', colored],
+          autoSpawn: false,
+          config: fixture.config,
+          cwd: fixture.ws1,
+          env: cargoEnv(fixture),
+          io: collected.io,
+          stderrColor: false,
+        });
+
+        expect(result.exitCode).toBe(0);
+        expect(collected.stderr()).toContain('fake-err:check red');
+        expect(collected.stderr()).not.toContain('\u001b');
+        // Stdout may be program/data output; it is never rewritten.
+        expect(collected.stdout()).toContain(colored);
+      }),
+    ));
+
+  it('passes ANSI through on stderr for a color-capable consumer', () =>
+    withDaemon(5, (fixture) =>
+      Effect.gen(function* () {
+        const collected = collectIo();
+        const colored = '\u001b[31mred\u001b[0m';
+        const result = yield* runExecClient({
+          argv: ['cargo', 'check', colored],
+          autoSpawn: false,
+          config: fixture.config,
+          cwd: fixture.ws1,
+          env: cargoEnv(fixture),
+          io: collected.io,
+          stderrColor: true,
+        });
+
+        expect(result.exitCode).toBe(0);
+        expect(collected.stderr()).toContain(`fake-err:check ${colored}`);
+      }),
+    ));
+
   it('emits heartbeat progress while a brokered run is in flight', () =>
     withDaemon(5, (fixture) =>
       Effect.gen(function* () {

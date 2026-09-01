@@ -311,6 +311,51 @@ describe('json demux early release', () => {
       }),
     ));
 
+  it('keeps ANSI on the live stream but out of diagnostics and the durable tail', () =>
+    withDaemon(5, (fixture) =>
+      Effect.gen(function* () {
+        const esc = '\u001b';
+        const staged = stagedCargo(fixture, [
+          errorLine(
+            'aa',
+            `${esc}[0m${esc}[1m${esc}[38;5;9merror[E0432]${esc}[0m${esc}[1m: unresolved import${esc}[0m\n ${esc}[1m${esc}[94m--> ${esc}[0msrc/lib.rs:3:5`,
+          ),
+          '{"reason":"build-finished","success":false}',
+          'exit:101',
+        ]);
+        const messages = yield* execRequest(fixture, {
+          cwd: fixture.ws1,
+          argv: [staged.cargoPath, 'check', '-p', 'aa'],
+          extraEnv: staged.extraEnv,
+          timeoutMs: 15_000,
+        });
+        const exit = findExit(messages);
+        expect(exit.status).toBe('failed');
+        // The live stream keeps the colored bytes for TTY consumers (the
+        // exec client strips them when its consumer cannot render color).
+        const liveStderr = decodeOutput(messages, 'stderr');
+        expect(liveStderr).toContain(`${esc}[38;5;9merror[E0432]`);
+
+        const report = yield* pollReport(fixture, (candidate) =>
+          candidate.recent.some((record) => record.ticket === exit.ticket),
+        );
+        const record = report.recent.find((item) => item.ticket === exit.ticket);
+        // JSON surfaces (status/await/result/MCP) must never show a raw or
+        // escaped ESC: diagnostics are captured color-free.
+        expect(record?.errorCount).toBe(1);
+        expect(record?.diagnostics).toEqual([
+          'error[E0432]: unresolved import\n --> src/lib.rs:3:5\n',
+        ]);
+
+        const db = openLedgerDatabase(fixture.config.databasePath);
+        const durable = yield* createLedgerApi(db).getRequestByTicket(exit.ticket);
+        db.close();
+        expect(durable?.outputTail).toContain('error[E0432]: unresolved import');
+        expect(durable?.outputTail).not.toContain(esc);
+        expect(durable?.diagnostics?.join('')).not.toContain(esc);
+      }),
+    ));
+
   it('keeps caller-chosen message formats verbatim (no demux double-parse)', () =>
     withDaemon(5, (fixture) =>
       Effect.gen(function* () {

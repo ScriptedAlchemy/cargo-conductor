@@ -71,6 +71,28 @@ describe('ledger lifecycle', () => {
     });
   });
 
+  it('strips ANSI from tails and diagnostics persisted by pre-strip versions', () => {
+    withLedger((ledger) => {
+      Effect.runSync(ledger.createRequest(makeInput()));
+      Effect.runSync(
+        ledger.markFinished(1, {
+          atMs: 4_200,
+          diagnostics: ['\u001b[1m\u001b[38;5;9merror[E0432]\u001b[0m: unresolved import\n'],
+          errorCount: 1,
+          exitCode: 101,
+          outputTail: 'import: `rusqlite::Connection`\u001b[0m\n \u001b[1m\u001b[94m--> \u001b[0msrc/lib.rs:3:5\n',
+          status: 'failed',
+        }),
+      );
+
+      const finished = Effect.runSync(ledger.getRequest(1));
+      expect(finished?.outputTail).toBe(
+        'import: `rusqlite::Connection`\n --> src/lib.rs:3:5\n',
+      );
+      expect(finished?.diagnostics).toEqual(['error[E0432]: unresolved import\n']);
+    });
+  });
+
   it('records every transition in order', () => {
     withLedger((ledger) => {
       Effect.runSync(ledger.createRequest(makeInput()));

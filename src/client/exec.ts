@@ -33,6 +33,8 @@ import type {
   ServerMessage,
 } from '../daemon/protocol.js';
 
+import { AnsiStreamStripper, colorEnabled } from '../lib/ansi.js';
+
 import { ensureDaemonRunning, type EnsureDaemonError } from './ensure-daemon.js';
 import { shouldAutoBackground } from './host-cap.js';
 import { localQueryReason } from './local-invocation.js';
@@ -55,6 +57,14 @@ export interface RunExecOptions {
   readonly host?: string;
   readonly io: ExecIo;
   readonly session?: string;
+  /**
+   * Whether the consumer of stderr renders ANSI color. When false, cargo
+   * output chunks (demux-rendered diagnostics keep their color on the wire)
+   * are stripped before reaching `io`, so a pipe/capture never sees escape
+   * bytes. Defaults to this process's stderr TTY-ness combined with the
+   * NO_COLOR/FORCE_COLOR/CLICOLOR/TERM conventions.
+   */
+  readonly stderrColor?: boolean;
   readonly workspaceRoot?: string;
 }
 
@@ -74,6 +84,30 @@ const writeChannel = (io: ExecIo, channel: 'stdout' | 'stderr', data: Uint8Array
     return;
   }
   io.writeStderr(data);
+};
+
+/**
+ * Wraps `io` so stderr output chunks are ANSI-stripped for a colorless
+ * consumer. Only byte chunks (cargo output) pass through the stripper;
+ * conductor's own progress strings carry no color. Stdout is left verbatim:
+ * it can be program/data output (binary, caller-chosen `--message-format`
+ * streams) that stripping must not touch.
+ */
+const withStrippedStderr = (io: ExecIo): ExecIo => {
+  const stripper = new AnsiStreamStripper();
+  return {
+    writeStderr: (data) => {
+      if (typeof data === 'string') {
+        io.writeStderr(data);
+        return;
+      }
+      const stripped = stripper.push(data);
+      if (stripped.byteLength > 0) {
+        io.writeStderr(stripped);
+      }
+    },
+    writeStdout: io.writeStdout,
+  };
 };
 
 interface PassthroughMode {
@@ -381,8 +415,13 @@ const brokeredOrUnreachable = (
   );
 
 export const runExecClient = (
-  options: RunExecOptions,
+  rawOptions: RunExecOptions,
 ): Effect.Effect<RunExecResult> => {
+  const stderrColor =
+    rawOptions.stderrColor ?? colorEnabled(process.env, process.stderr.isTTY === true);
+  const options: RunExecOptions = stderrColor
+    ? rawOptions
+    : { ...rawOptions, io: withStrippedStderr(rawOptions.io) };
   const config = options.config ?? resolveDaemonConfig();
   // Help/version and other non-compiling queries never take a ticket: a
   // brokered query would hold a lane slot behind a generic multi-minute
