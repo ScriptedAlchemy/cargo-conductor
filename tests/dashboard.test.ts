@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { describe, expect, it } from '@rstest/core';
+import { Effect, Stream } from 'effect';
 
 import { APP_RESOURCE_URI } from '../src/constants.js';
 import {
@@ -14,6 +15,7 @@ import {
   frequencyEntries,
   frequencyTotal,
   percentileMinSamples,
+  pollStatus,
   ranAsFor,
   relativeTime,
   resolveTicketDetail,
@@ -39,6 +41,46 @@ describe('MCP App dashboard', () => {
       expect(html).toContain('conductor_result');
       expect(html).not.toContain('src="http');
     }
+  });
+});
+
+describe('pollStatus (one failed poll must not kill the stream)', () => {
+  it('keeps polling through a failed iteration, surfacing then clearing the error', async () => {
+    let call = 0;
+    const fetch = Effect.suspend((): Effect.Effect<{ readonly seq: number }, string> => {
+      call += 1;
+      return call === 2
+        ? Effect.fail('timed out: tools/call')
+        : Effect.succeed({ seq: call });
+    });
+    const polls = await Effect.runPromise(
+      pollStatus(fetch, {
+        describeError: (error) => error,
+        interval: '1 millis',
+        nowMs: () => 42,
+      }).pipe(Stream.take(4), Stream.runCollect),
+    );
+    expect(polls).toEqual([
+      { error: null, updatedAtMs: 42, value: { seq: 1 } },
+      // The failed poll keeps the last good status and carries the error…
+      { error: 'timed out: tools/call', updatedAtMs: 42, value: { seq: 1 } },
+      // …and the cadence continues: later successes clear it.
+      { error: null, updatedAtMs: 42, value: { seq: 3 } },
+      { error: null, updatedAtMs: 42, value: { seq: 4 } },
+    ]);
+  });
+
+  it('reports a first-poll failure without inventing a stale value', async () => {
+    const polls = await Effect.runPromise(
+      pollStatus(Effect.fail('daemon gone'), {
+        describeError: (error) => error,
+        interval: '1 millis',
+      }).pipe(Stream.take(2), Stream.runCollect),
+    );
+    expect(polls).toEqual([
+      { error: 'daemon gone', updatedAtMs: null, value: null },
+      { error: 'daemon gone', updatedAtMs: null, value: null },
+    ]);
   });
 });
 

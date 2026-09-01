@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import * as Context from 'effect/Context';
 import * as Layer from 'effect/Layer';
 
-import { defaultKacheIndexPath, resolveStateDir } from '../status.js';
+import { daemonSocketPath, defaultKacheIndexPath, resolveStateDir } from '../status.js';
 
 /** Filesystem layout and concurrency settings for one daemon instance. */
 export interface DaemonConfigShape {
@@ -53,6 +53,7 @@ const defaultCpuStallThreshold = 75;
 
 export const resolveDaemonConfig = (
   env: Readonly<Record<string, string | undefined>> = process.env,
+  platform: NodeJS.Platform = process.platform,
 ): DaemonConfigShape => {
   const stateDir = resolveStateDir(env);
   const parsedMax = Number.parseInt(env.CARGO_CONDUCTOR_MAX_CONCURRENT ?? '', 10);
@@ -68,7 +69,7 @@ export const resolveDaemonConfig = (
   const defaultJobsGrant = Math.max(4, Math.floor(availableParallelism() / maxConcurrent));
   return {
     stateDir,
-    socketPath: join(stateDir, 'daemon.sock'),
+    socketPath: daemonSocketPath(stateDir, platform),
     databasePath: join(stateDir, 'ledger.db'),
     lockTargetPath: join(stateDir, 'daemon.pid'),
     logPath: join(stateDir, 'daemon.log'),

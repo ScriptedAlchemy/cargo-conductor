@@ -16,7 +16,7 @@ import type {
   StatusResultMessage,
   SystemLoadReport,
 } from './daemon/protocol.js';
-import { colorEnabled, stripAnsi } from './lib/ansi.js';
+import { stripAnsi } from './lib/ansi.js';
 import { shortId } from './lib/id.js';
 import { countWord } from './lib/text.js';
 
@@ -62,33 +62,25 @@ export const describeRequestRecord = (
 };
 
 /**
- * Whether this process's consumer renders ANSI color. Ledger records store
- * cargo output verbatim (color included); color is a display concern decided
- * here, per consumer: an interactive TTY (or FORCE_COLOR/CLICOLOR_FORCE)
- * keeps the bytes, while pipes, MCP stdio transports, NO_COLOR, and
- * TERM=dumb get stripped text — a JSON-stringified ESC would otherwise show
- * up as literal `\u001b[…` noise for a consumer that cannot paint it.
+ * Projects one stored record onto a structured operation result. Ledger
+ * records keep cargo output verbatim (color included), but every operation
+ * result is JSON on the wire — the CLI prints `JSON.stringify(result)` and
+ * MCP structured content is JSON-RPC — where an ESC byte can only ever
+ * render as literal `\u001b[…` noise. That holds regardless of process
+ * stdout: a TTY still sees the escaped JSON form, and an inherited
+ * FORCE_COLOR/CLICOLOR_FORCE cannot make JSON paint color. So the
+ * projection strips unconditionally; only the live `conductor exec` stream
+ * (which never passes through here) keeps color for TTY consumers.
  */
-export const consumerRendersColor = (
-  env: Readonly<Record<string, string | undefined>> = process.env,
-  isTty: boolean = process.stdout.isTTY === true,
-): boolean => colorEnabled(env, isTty);
-
-/** Projects one record for a consumer: verbatim with color, stripped without. */
-export const displayRequestRecord = (record: RequestRecord, color: boolean): RequestRecord =>
-  color
-    ? record
-    : {
-        ...record,
-        outputTail: record.outputTail === null ? null : stripAnsi(record.outputTail),
-        diagnostics: record.diagnostics === null ? null : record.diagnostics.map(stripAnsi),
-      };
+export const displayRequestRecord = (record: RequestRecord): RequestRecord => ({
+  ...record,
+  outputTail: record.outputTail === null ? null : stripAnsi(record.outputTail),
+  diagnostics: record.diagnostics === null ? null : record.diagnostics.map(stripAnsi),
+});
 
 export const displayRequestRecords = (
   records: readonly RequestRecord[],
-  color: boolean,
-): readonly RequestRecord[] =>
-  color ? records : records.map((record) => displayRequestRecord(record, color));
+): readonly RequestRecord[] => records.map(displayRequestRecord);
 
 const stoppedSummary = (recentCount: number): string => {
   if (recentCount === 0) {

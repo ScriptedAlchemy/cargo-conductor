@@ -4,10 +4,12 @@ import { join, sep } from 'node:path';
 import { describe, expect, it } from '@rstest/core';
 
 import { resolveDaemonConfig } from '../src/daemon/config.js';
-import { resolveHookStateDir } from '../src/hooks/paths.js';
+import { resolveHookSocketPath, resolveHookStateDir } from '../src/hooks/paths.js';
 import {
+  daemonSocketPath,
   defaultKacheIndexPath,
   defaultStateDir,
+  isNamedPipePath,
   resolveStateDir,
   userCacheDir,
 } from '../src/status.js';
@@ -54,6 +56,57 @@ describe('portable state root', () => {
     expect(config.stateDir).toBe(resolveHookStateDir(env));
     expect(config.stateDir).toBe(defaultStateDir(env));
     expect(config.socketPath).toBe(join(config.stateDir, 'daemon.sock'));
+  });
+});
+
+describe('daemon control endpoint per platform', () => {
+  const winEnv = { LOCALAPPDATA: 'C:\\Users\\alice\\AppData\\Local' };
+
+  it('keeps a unix socket file inside the state dir on darwin and linux', () => {
+    expect(daemonSocketPath('/home/alice/.cache/cargo-conductor', 'linux')).toBe(
+      join('/home/alice/.cache/cargo-conductor', 'daemon.sock'),
+    );
+    expect(daemonSocketPath('/Users/alice/Library/Caches/cargo-conductor', 'darwin')).toBe(
+      join('/Users/alice/Library/Caches/cargo-conductor', 'daemon.sock'),
+    );
+    expect(isNamedPipePath(daemonSocketPath('/tmp/state', 'linux'))).toBe(false);
+  });
+
+  it('listens on a \\\\.\\pipe\\ named pipe on win32, never a filesystem .sock path', () => {
+    const config = resolveDaemonConfig(winEnv, 'win32');
+    // Node net.Server.listen treats a path as Windows IPC only under the
+    // named-pipe namespace; a %LOCALAPPDATA%\...\daemon.sock path cannot be
+    // bound, so the daemon could never start on the documented default.
+    expect(config.socketPath).toMatch(/^\\\\\.\\pipe\\cargo-conductor-[0-9a-f]{16}$/u);
+    expect(isNamedPipePath(config.socketPath)).toBe(true);
+    expect(config.socketPath).not.toContain('daemon.sock');
+    // Non-socket state files stay in the filesystem state dir.
+    expect(config.databasePath).toBe(join(config.stateDir, 'ledger.db'));
+  });
+
+  it('gives daemon and hook clients the same pipe for the same state dir', () => {
+    const config = resolveDaemonConfig(winEnv, 'win32');
+    expect(resolveHookSocketPath(winEnv, 'win32')).toBe(config.socketPath);
+    expect(resolveDaemonConfig(winEnv, 'win32').socketPath).toBe(config.socketPath);
+  });
+
+  it('keeps the pipe stable per state dir and distinct across state dirs', () => {
+    const one = daemonSocketPath('C:\\Users\\alice\\AppData\\Local\\cargo-conductor', 'win32');
+    const other = daemonSocketPath('D:\\fastdisk\\cargo-conductor', 'win32');
+    expect(one).not.toBe(other);
+    // Windows paths are case-insensitive: casing drift between clients must
+    // not split them onto different pipes.
+    expect(daemonSocketPath('C:\\USERS\\Alice\\AppData\\Local\\cargo-conductor', 'win32')).toBe(one);
+  });
+
+  it('honors CARGO_CONDUCTOR_STATE_DIR in the win32 pipe identity', () => {
+    const overridden = resolveDaemonConfig(
+      { CARGO_CONDUCTOR_STATE_DIR: 'D:\\fastdisk\\cargo-conductor' },
+      'win32',
+    );
+    expect(overridden.stateDir).toBe('D:\\fastdisk\\cargo-conductor');
+    expect(overridden.socketPath).toMatch(/^\\\\\.\\pipe\\cargo-conductor-/u);
+    expect(overridden.socketPath).not.toBe(resolveDaemonConfig(winEnv, 'win32').socketPath);
   });
 });
 

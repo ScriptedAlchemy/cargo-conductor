@@ -34,4 +34,25 @@ describe('buildRelevantEnv', () => {
   it('skips undefined values', () => {
     expect(buildRelevantEnv({ RUSTFLAGS: undefined })).toEqual({});
   });
+
+  it('transports the caller color-decision variables to the daemon spawn', () => {
+    // A caller NO_COLOR must reach the executor, or it injects
+    // CARGO_TERM_COLOR=always and ANSI leaks through unstripped stdout.
+    expect(
+      buildRelevantEnv({
+        CLICOLOR: '0',
+        CLICOLOR_FORCE: '1',
+        FORCE_COLOR: '1',
+        HOME: '/home/alice',
+        NO_COLOR: '1',
+        TERM: 'dumb',
+      }),
+    ).toEqual({
+      CLICOLOR: '0',
+      CLICOLOR_FORCE: '1',
+      FORCE_COLOR: '1',
+      NO_COLOR: '1',
+      TERM: 'dumb',
+    });
+  });
 });

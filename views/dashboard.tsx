@@ -1,5 +1,5 @@
 import { RegistryProvider, useAtomRefresh, useAtomSet, useAtomValue } from '@effect/atom-react';
-import { Cause, Data, Effect, Option, Schedule, Stream } from 'effect';
+import { Cause, Data, Effect, Option } from 'effect';
 import { AsyncResult, Atom } from 'effect/unstable/reactivity';
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { createRoot } from 'react-dom/client';
@@ -15,6 +15,7 @@ import {
   frequencyEntries,
   frequencyTotal,
   percentileMinSamples,
+  pollStatus,
   ranAsFor,
   relativeTime,
   resolveTicketDetail,
@@ -24,6 +25,7 @@ import {
   terminalStatuses,
   ticketDetailFrom,
   type RunHistogramShape,
+  type StatusPoll,
   type TicketDetail,
 } from './dashboard-lib.js';
 
@@ -198,8 +200,14 @@ const fetchStatus = Effect.tryPromise({
   catch: (cause) => new StatusRpcError({ cause }),
 });
 
+// One rejected/timed-out tools/call must not end the polling stream (the
+// widget would freeze on stale data until a manual Retry): pollStatus folds
+// each failure into the emitted value and keeps the 5s cadence.
 export const statusAtom = Atom.make(
-  Stream.fromEffectSchedule(fetchStatus, Schedule.spaced('5 seconds')),
+  pollStatus(fetchStatus, {
+    describeError: (error) => error.message,
+    interval: '5 seconds',
+  }),
 );
 
 /**
@@ -882,19 +890,20 @@ const DashboardContent = ({ structured }: { readonly structured: StructuredConte
   );
 };
 
-const snapshotFrom = (
-  result: AsyncResult.AsyncResult<StructuredContent | null, unknown>,
-): StatusSnapshot | null => {
+type StatusPollResult = AsyncResult.AsyncResult<StatusPoll<StructuredContent | null>, unknown>;
+
+const pollSnapshot = (poll: StatusPoll<StructuredContent | null>): StatusSnapshot | null =>
+  poll.updatedAtMs === null ? null : { timestamp: poll.updatedAtMs, value: poll.value };
+
+const snapshotFrom = (result: StatusPollResult): StatusSnapshot | null => {
   switch (result._tag) {
     case 'Initial':
       return null;
     case 'Success':
-      return { timestamp: result.timestamp, value: result.value };
+      return pollSnapshot(result.value);
     case 'Failure': {
       const previous = Option.getOrUndefined(result.previousSuccess);
-      return previous === undefined
-        ? null
-        : { timestamp: previous.timestamp, value: previous.value };
+      return previous === undefined ? null : pollSnapshot(previous.value);
     }
     default: {
       const exhaustive: never = result;
@@ -908,10 +917,31 @@ const failureMessage = (cause: Cause.Cause<unknown>): string => {
   return error instanceof Error ? error.message : String(error);
 };
 
+/**
+ * The error to surface above the grid: a failed poll travels inside the
+ * Success value (the stream itself never fails, so polling continues), while
+ * the Failure branch only catches defects escaping the stream machinery.
+ */
+const pollErrorFrom = (result: StatusPollResult): string | null => {
+  switch (result._tag) {
+    case 'Initial':
+      return null;
+    case 'Success':
+      return result.value.error;
+    case 'Failure':
+      return failureMessage(result.cause);
+    default: {
+      const exhaustive: never = result;
+      return exhaustive;
+    }
+  }
+};
+
 const Dashboard = ({ pushed }: { readonly pushed: PushedStatus | null }) => {
   const result = useAtomValue(statusAtom);
   const refresh = useAtomRefresh(statusAtom);
   const polled = snapshotFrom(result);
+  const pollError = pollErrorFrom(result);
   const latest =
     pushed !== null && (polled === null || pushed.receivedAt >= polled.timestamp)
       ? pushed.value
@@ -932,9 +962,9 @@ const Dashboard = ({ pushed }: { readonly pushed: PushedStatus | null }) => {
           {result.waiting ? <span className="refreshing" title="Refreshing status">●</span> : null}
         </div>
       </header>
-      {result._tag === 'Failure' ? (
+      {pollError !== null ? (
         <div className="error-line">
-          Error: {failureMessage(result.cause)}{' '}
+          Error: {pollError}{' '}
           <button type="button" onClick={refresh}>Retry</button>
         </div>
       ) : null}

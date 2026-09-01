@@ -2,10 +2,13 @@ import { describe, expect, it } from '@rstest/core';
 
 import { buildRelevantEnv } from '../src/client/env.js';
 import { digestCargoEnvironment } from '../src/daemon/intent-normalizer.js';
-import { isRelevantCargoEnvironmentVariable } from '../src/lib/cargo-env.js';
+import {
+  isRelevantCargoEnvironmentVariable,
+  isTransportedEnvironmentVariable,
+} from '../src/lib/cargo-env.js';
 
 describe('cargo environment relevance', () => {
-  it('uses one superset for client transport and intent identity', () => {
+  it('transports every identity-relevant variable the digest sees', () => {
     const env = {
       CARGO_TARGET_DIR: '/tmp/target',
       CARGO_CONDUCTOR_STATE_DIR: '/tmp/state',
@@ -38,5 +41,20 @@ describe('cargo environment relevance', () => {
     expect(digestCargoEnvironment({ CC_aarch64_unknown_linux_gnu: 'gcc' })).not.toBe(
       digestCargoEnvironment({ CC_aarch64_unknown_linux_gnu: 'clang' }),
     );
+  });
+
+  it('transports color-decision variables without letting them into identity', () => {
+    for (const name of ['CLICOLOR', 'CLICOLOR_FORCE', 'FORCE_COLOR', 'NO_COLOR', 'TERM']) {
+      expect(isTransportedEnvironmentVariable(name)).toBe(true);
+      expect(isRelevantCargoEnvironmentVariable(name)).toBe(false);
+    }
+    // Sessions differing only in color/terminal env must still coalesce.
+    const base = { RUSTFLAGS: '-Dwarnings' };
+    expect(
+      digestCargoEnvironment({ ...base, NO_COLOR: '1', TERM: 'dumb' }),
+    ).toBe(digestCargoEnvironment(base));
+    expect(
+      digestCargoEnvironment(buildRelevantEnv({ ...base, FORCE_COLOR: '1', TERM: 'xterm-256color' })),
+    ).toBe(digestCargoEnvironment(base));
   });
 });
