@@ -38,6 +38,21 @@ interface StructuredContent {
   readonly recent?: unknown;
   readonly operation?: unknown;
   readonly structuredContent?: unknown;
+  readonly metrics?: unknown;
+}
+
+interface RunHistogram {
+  readonly buckets?: unknown;
+  readonly count?: unknown;
+  readonly min?: unknown;
+  readonly max?: unknown;
+  readonly sum?: unknown;
+}
+
+interface StatusMetricsShape {
+  readonly cargo_run_ms?: RunHistogram;
+  readonly attach_mode?: Readonly<Record<string, unknown>>;
+  readonly job_outcome?: Readonly<Record<string, unknown>>;
 }
 
 interface RequestRow {
@@ -295,6 +310,88 @@ const StatusPill = ({ status }: { readonly status: unknown }): ReactNode => {
   return <span className={`pill ${value}`}>{value}</span>;
 };
 
+/** Upper-bound estimate of the given percentile from histogram buckets ([le, cumulativeCount]). */
+const histogramPercentile = (histogram: RunHistogram, percentile: number): number | null => {
+  const count = typeof histogram.count === 'number' ? histogram.count : 0;
+  if (count === 0 || !Array.isArray(histogram.buckets)) {
+    return null;
+  }
+  const target = count * percentile;
+  for (const bucket of histogram.buckets) {
+    if (!Array.isArray(bucket)) {
+      continue;
+    }
+    const le: unknown = bucket[0];
+    const cumulative: unknown = bucket[1];
+    if (typeof le === 'number' && typeof cumulative === 'number' && cumulative >= target) {
+      return le;
+    }
+  }
+  return typeof histogram.max === 'number' ? histogram.max : null;
+};
+
+const frequencyText = (record: Readonly<Record<string, unknown>> | undefined): string => {
+  if (record === undefined) {
+    return '—';
+  }
+  const parts = Object.entries(record)
+    .filter((entry): entry is [string, number] => typeof entry[1] === 'number' && entry[1] > 0)
+    .map(([key, value]) => `${key} ${value}`);
+  return parts.length === 0 ? 'none yet' : parts.join(' · ');
+};
+
+const MetricsSection = ({
+  finished,
+  metrics,
+}: {
+  readonly finished: readonly RequestRow[];
+  readonly metrics: StatusMetricsShape | null;
+}): ReactNode => {
+  const runs = metrics?.cargo_run_ms;
+  const runCount = typeof runs?.count === 'number' ? runs.count : 0;
+  const meanMs = runCount > 0 && typeof runs?.sum === 'number' ? runs.sum / runCount : null;
+  const p50 = runs === undefined ? null : histogramPercentile(runs, 0.5);
+  const p95 = runs === undefined ? null : histogramPercentile(runs, 0.95);
+  // Queue latency derives from the visible finished rows: honest about its
+  // window, and available even before the daemon accumulates histograms.
+  const waits = finished
+    .map((row) => row.waitMs)
+    .filter((value): value is number => typeof value === 'number')
+    .sort((left, right) => left - right);
+  const waitP50 = waits.length === 0 ? null : waits[Math.floor((waits.length - 1) * 0.5)];
+  const waitMax = waits.length === 0 ? null : waits[waits.length - 1];
+  const attach = metrics?.attach_mode;
+  const attachTotal =
+    attach === undefined
+      ? 0
+      : Object.values(attach).reduce<number>(
+          (sum, value) => (typeof value === 'number' ? sum + value : sum),
+          0,
+        );
+
+  return (
+    <section>
+      <h2>Metrics <span className="count">(since daemon start)</span></h2>
+      <div className="stats">
+        <Stat label="runs tracked" value={String(runCount)} />
+        <Stat label="run p50" value={p50 === null ? '—' : `≤${formatMs(p50)}`} />
+        <Stat label="run p95" value={p95 === null ? '—' : `≤${formatMs(p95)}`} />
+        <Stat label="run mean" value={meanMs === null ? '—' : formatMs(meanMs)} />
+        <Stat
+          label={`wait p50 (last ${waits.length})`}
+          value={waitP50 === null ? '—' : formatMs(waitP50)}
+        />
+        <Stat label="wait max" value={waitMax === null ? '—' : formatMs(waitMax)} />
+        <Stat label="runs avoided" value={String(attachTotal)} />
+      </div>
+      <div className="stats metricsdetail">
+        <Stat label="outcomes" value={frequencyText(metrics?.job_outcome)} />
+        <Stat label="attach modes" value={frequencyText(attach)} />
+      </div>
+    </section>
+  );
+};
+
 const DashboardContent = ({ structured }: { readonly structured: StructuredContent | null }) => {
   const nowMs = Date.now();
   const active = arrayOrEmpty<RequestRow>(structured?.active);
@@ -313,6 +410,7 @@ const DashboardContent = ({ structured }: { readonly structured: StructuredConte
   const finished = recent
     .filter((row) => typeof row.status === 'string' && terminalStatuses.has(row.status))
     .slice(0, 20);
+  const metrics = (structured?.metrics ?? null) as StatusMetricsShape | null;
   const laneCount =
     activeLanes.length === lanes.length
       ? String(lanes.length)
@@ -351,6 +449,7 @@ const DashboardContent = ({ structured }: { readonly structured: StructuredConte
           ])}
         />
       </section>
+      <MetricsSection finished={finished} metrics={metrics} />
       <section>
         <h2>Lanes <span className="count">({laneCount})</span></h2>
         <Table
