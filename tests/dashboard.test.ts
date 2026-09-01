@@ -37,6 +37,7 @@ import {
   runMetricsView,
   sectionOrder,
   shortenPath,
+  subcommandDisplayLabel,
   subcommandMetricsView,
   subcommandTimings,
   summaryFirstLine,
@@ -598,6 +599,12 @@ describe('display formatting', () => {
     expect(formatMs(200_000)).toBe('3m 20s');
   });
 
+  it('compacts durations at one hour and above', () => {
+    expect(formatMs(27_110_000)).toBe('7h 31m');
+    expect(formatMs(3_600_000)).toBe('1h');
+    expect(formatMs(3_599_600)).toBe('1h');
+  });
+
   it('carries rounded seconds into the minute instead of rendering 60s', () => {
     // A live dashboard showed "17m 60s" for 1079.6 seconds.
     expect(formatMs(1_079_600)).toBe('18m');
@@ -659,9 +666,14 @@ describe('kacheProfileGroups (slowest crates never rank across profiles)', () =>
   it('appends unknown profiles after the familiar cargo ones', () => {
     const groups = kacheProfileGroups([
       { crate: 'a', ms: 1, profile: 'zcustom' },
+      { crate: 'c', ms: 1, profile: '' },
       { crate: 'b', ms: 1, profile: 'release' },
     ]);
-    expect(groups.map((group) => group.profile)).toEqual(['release', 'zcustom']);
+    expect(groups.map((group) => group.profile)).toEqual([
+      'release',
+      'unattributed',
+      'zcustom',
+    ]);
   });
 });
 
@@ -701,8 +713,22 @@ describe('subcommandTimings (metrics split by subcommand)', () => {
   it('reports each subcommand as its own population with an honest n', () => {
     const timings = subcommandTimings(rows);
     expect(timings).toEqual([
-      { count: 3, maxMs: 5_000, meanMs: 3_000, p50Ms: 3_000, subcommand: 'check' },
-      { count: 2, maxMs: 90_000, meanMs: 75_000, p50Ms: 60_000, subcommand: 'test' },
+      {
+        count: 3,
+        maxMs: 5_000,
+        meanMs: 3_000,
+        p50Ms: 3_000,
+        profile: 'dev',
+        subcommand: 'check',
+      },
+      {
+        count: 2,
+        maxMs: 90_000,
+        meanMs: 75_000,
+        p50Ms: 60_000,
+        profile: 'test',
+        subcommand: 'test',
+      },
     ]);
   });
 
@@ -712,6 +738,25 @@ describe('subcommandTimings (metrics split by subcommand)', () => {
     // A blended p50 over all five runs would be 5s; the honest check p50 is 3s.
     expect(check?.p50Ms).toBe(3_000);
     expect(timings).toHaveLength(2);
+  });
+
+  it('keeps custom profiles separate and labels only the non-default profile', () => {
+    const timings = subcommandTimings([
+      {
+        intentJson: JSON.stringify({ profile: 'dev', subcommand: 'build' }),
+        runMs: 1_000,
+      },
+      {
+        intentJson: JSON.stringify({ profile: 'perf', subcommand: 'build' }),
+        runMs: 9_000,
+      },
+    ]);
+
+    expect(timings.map((timing) => [timing.profile, timing.p50Ms])).toEqual([
+      ['dev', 1_000],
+      ['perf', 9_000],
+    ]);
+    expect(timings.map(subcommandDisplayLabel)).toEqual(['cargo build', 'cargo build · perf']);
   });
 });
 
@@ -781,8 +826,22 @@ describe('subcommandMetricsView (daemon-lifetime + fallback)', () => {
     );
     expect(view.source).toBe('daemon-lifetime');
     expect(view.rows).toEqual([
-      { count: 3, maxMs: 4_500, meanMs: 8_000 / 3, p50Ms: 1_000, subcommand: 'check' },
-      { count: 1, maxMs: 60_000, meanMs: 60_000, p50Ms: 60_000, subcommand: 'test' },
+      {
+        count: 3,
+        maxMs: 4_500,
+        meanMs: 8_000 / 3,
+        p50Ms: 1_000,
+        profile: 'dev',
+        subcommand: 'check',
+      },
+      {
+        count: 1,
+        maxMs: 60_000,
+        meanMs: 60_000,
+        p50Ms: 60_000,
+        profile: 'test',
+        subcommand: 'test',
+      },
     ]);
   });
 

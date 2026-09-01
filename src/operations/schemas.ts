@@ -88,6 +88,7 @@ const histogramMetricSchema = z.object({
 
 const statusMetricsWindowBySubcommandSchema = z.object({
   subcommand: z.string(),
+  profile: z.string().optional(),
   count: z.number().int().nonnegative(),
   p50Ms: z.number().nullable(),
   maxMs: z.number().nullable(),

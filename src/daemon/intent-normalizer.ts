@@ -67,7 +67,7 @@ const globalOptionsWithValues = new Set([
   '-Z',
 ]);
 
-const defaultProfile = (subcommand: string): string => {
+export const defaultCargoProfile = (subcommand: string): string => {
   if (subcommand === 'test') {
     return 'test';
   }
@@ -170,7 +170,7 @@ export const parseCargoArgv = (input: readonly string[]): ParsedCargoArgv => {
   let allFeatures = false;
   let nextestCommand: string | null = null;
   let noDefaultFeatures = false;
-  let profile = defaultProfile(subcommand);
+  let profile = defaultCargoProfile(subcommand);
   let passthrough: string[] = [];
   let targetTriple: string | null = null;
   let workspace = false;

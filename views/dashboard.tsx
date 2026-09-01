@@ -36,6 +36,7 @@ import {
   runMetricsView,
   sectionOrder,
   shortenPath,
+  subcommandDisplayLabel,
   subcommandMetricsView,
   summaryFirstLine,
   terminalStatuses,
@@ -107,6 +108,7 @@ interface StatusMetricsShape {
 
 interface StatusMetricsWindowBySubcommandShape {
   readonly subcommand?: unknown;
+  readonly profile?: unknown;
   readonly count?: unknown;
   readonly p50Ms?: unknown;
   readonly maxMs?: unknown;
@@ -313,6 +315,7 @@ const asDashboardWindowBySubcommand = (
   if (
     row === null ||
     typeof row.subcommand !== 'string' ||
+    (row.profile !== undefined && typeof row.profile !== 'string') ||
     typeof row.count !== 'number' ||
     (row.p50Ms !== null && typeof row.p50Ms !== 'number') ||
     (row.maxMs !== null && typeof row.maxMs !== 'number')
@@ -321,6 +324,7 @@ const asDashboardWindowBySubcommand = (
   }
   return {
     subcommand: row.subcommand,
+    ...(typeof row.profile === 'string' ? { profile: row.profile } : {}),
     count: row.count,
     p50Ms: row.p50Ms ?? null,
     maxMs: row.maxMs ?? null,
@@ -1074,8 +1078,8 @@ const MetricsSection = ({
           <p className="empty">No command timings in this window.</p>
         ) : (
           bySubcommandRows.map((timing) => (
-            <div className="compact-row" key={timing.subcommand}>
-              <span className="cmd">cargo {timing.subcommand}</span>
+            <div className="compact-row" key={`${timing.subcommand}\0${timing.profile ?? ''}`}>
+              <span className="cmd">{subcommandDisplayLabel(timing)}</span>
               <span className="row-value">
                 n={timing.count} · p50{' '}
                 {timing.count < percentileMinSamples

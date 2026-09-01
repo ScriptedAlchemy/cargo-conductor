@@ -84,7 +84,12 @@ export const defaultEstimateFor = (intent: NormalizedCargoIntent): number => {
     : base;
 };
 
-/** Maps cargo profile names onto the artifact-directory names kache records. */
+/**
+ * Maps cargo profiles onto the artifact-directory names kache records.
+ * Custom profiles overwhelmingly inherit Cargo's release profile, so prefer
+ * their exact timing and then release before the reader falls back to the
+ * crate-wide maximum (which can come from an unrelated debug/test build).
+ */
 const kacheProfilesFor = (profile: string): readonly string[] => {
   if (profile === 'dev' || profile === 'test') {
     return [profile, 'debug'];
@@ -92,7 +97,7 @@ const kacheProfilesFor = (profile: string): readonly string[] => {
   if (profile === 'bench') {
     return [profile, 'release'];
   }
-  return [profile];
+  return profile === 'release' ? [profile] : [profile, 'release'];
 };
 
 interface KacheReader {

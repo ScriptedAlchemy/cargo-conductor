@@ -131,6 +131,7 @@ export const defaultMetricsWindowId: MetricsWindowId = 'day';
 
 export interface DashboardMetricsWindowBySubcommand {
   readonly subcommand: string;
+  readonly profile?: string;
   readonly count: number;
   readonly p50Ms: number | null;
   readonly maxMs: number | null;
@@ -661,6 +662,11 @@ export const formatMs = (ms: number): string => {
   // Round to whole seconds before splitting so 17m 59.6s carries to 18m
   // instead of rendering the impossible "17m 60s".
   const wholeSeconds = Math.round(seconds);
+  if (wholeSeconds >= 3600) {
+    const hours = Math.floor(wholeSeconds / 3600);
+    const minutes = Math.floor((wholeSeconds % 3600) / 60);
+    return minutes === 0 ? `${hours}h` : `${hours}h ${minutes}m`;
+  }
   const minutes = Math.floor(wholeSeconds / 60);
   const rest = wholeSeconds - minutes * 60;
   return rest === 0 ? `${minutes}m` : `${minutes}m ${rest}s`;
@@ -794,23 +800,35 @@ export const kacheProfileGroups = (
         (left, right) => right.ms - left.ms || left.crate.localeCompare(right.crate),
       );
       return {
-        profile,
+        profile: profile === '' ? 'unattributed' : profile,
         rows: sorted,
         maxMs: sorted.reduce((maximum, row) => Math.max(maximum, row.ms), 0),
       };
     });
 };
 
-/**
- * The cargo subcommand a row ran, for timing splits: `intentJson.subcommand`
- * (the daemon's own normalization) when present, else the first
- * non-flag/non-toolchain argv token after the program. Check and test runs
- * are different populations and must never share one histogram line.
- */
-export const rowSubcommand = (row: {
+const defaultCargoProfile = (subcommand: string): string => {
+  if (subcommand === 'test') {
+    return 'test';
+  }
+  if (subcommand === 'bench') {
+    return 'bench';
+  }
+  if (subcommand === 'install') {
+    return 'release';
+  }
+  return 'dev';
+};
+
+interface RowCommandPopulation {
+  readonly subcommand: string;
+  readonly profile: string;
+}
+
+const rowCommandPopulation = (row: {
   readonly intentJson?: unknown;
   readonly argv?: unknown;
-}): string | null => {
+}): RowCommandPopulation | null => {
   if (typeof row.intentJson === 'string' && row.intentJson.length > 0) {
     try {
       const intent: unknown = JSON.parse(row.intentJson);
@@ -819,7 +837,13 @@ export const rowSubcommand = (row: {
         typeof intent === 'object' &&
         typeof (intent as { subcommand?: unknown }).subcommand === 'string'
       ) {
-        return (intent as { subcommand: string }).subcommand;
+        const subcommand = (intent as { subcommand: string }).subcommand;
+        const rawProfile = (intent as { profile?: unknown }).profile;
+        const profile =
+          typeof rawProfile === 'string' && rawProfile.trim().length > 0
+            ? rawProfile
+            : defaultCargoProfile(subcommand);
+        return { profile, subcommand };
       }
     } catch {
       // Fall through to argv.
@@ -833,13 +857,25 @@ export const rowSubcommand = (row: {
     if (part.startsWith('-') || part.startsWith('+')) {
       continue;
     }
-    return part;
+    return { profile: defaultCargoProfile(part), subcommand: part };
   }
   return null;
 };
 
+/**
+ * The cargo subcommand a row ran, for timing splits: `intentJson.subcommand`
+ * (the daemon's own normalization) when present, else the first
+ * non-flag/non-toolchain argv token after the program. Check and test runs
+ * are different populations and must never share one histogram line.
+ */
+export const rowSubcommand = (row: {
+  readonly intentJson?: unknown;
+  readonly argv?: unknown;
+}): string | null => rowCommandPopulation(row)?.subcommand ?? null;
+
 export interface SubcommandTiming {
   readonly subcommand: string;
+  readonly profile?: string;
   /** Honest n: finished rows of this subcommand inside the visible window. */
   readonly count: number;
   readonly p50Ms: number;
@@ -860,24 +896,25 @@ export const subcommandTimings = (
     readonly runMs?: unknown;
   }[],
 ): readonly SubcommandTiming[] => {
-  const samples = new Map<string, number[]>();
+  const samples = new Map<string, { readonly population: RowCommandPopulation; readonly runs: number[] }>();
   for (const row of rows) {
     if (typeof row.runMs !== 'number' || row.runMs < 0) {
       continue;
     }
-    const subcommand = rowSubcommand(row);
-    if (subcommand === null) {
+    const population = rowCommandPopulation(row);
+    if (population === null) {
       continue;
     }
-    const list = samples.get(subcommand) ?? [];
-    list.push(row.runMs);
-    samples.set(subcommand, list);
+    const key = `${population.subcommand}\0${population.profile}`;
+    const entry = samples.get(key) ?? { population, runs: [] };
+    entry.runs.push(row.runMs);
+    samples.set(key, entry);
   }
-  return [...samples.entries()]
-    .map(([subcommand, runs]) => {
+  return [...samples.values()]
+    .map(({ population, runs }) => {
       const sorted = [...runs].sort((left, right) => left - right);
       return {
-        subcommand,
+        ...population,
         count: sorted.length,
         p50Ms: sorted[Math.floor((sorted.length - 1) * 0.5)],
         maxMs: sorted[sorted.length - 1],
@@ -886,8 +923,20 @@ export const subcommandTimings = (
     })
     .sort(
       (left, right) =>
-        right.count - left.count || left.subcommand.localeCompare(right.subcommand),
+        right.count - left.count ||
+        left.subcommand.localeCompare(right.subcommand) ||
+        left.profile.localeCompare(right.profile),
     );
+};
+
+export const subcommandDisplayLabel = (timing: {
+  readonly subcommand: string;
+  readonly profile?: string;
+}): string => {
+  const profile = timing.profile;
+  return profile === undefined || profile === defaultCargoProfile(timing.subcommand)
+    ? `cargo ${timing.subcommand}`
+    : `cargo ${timing.subcommand} · ${profile}`;
 };
 
 export interface SubcommandMetricsView {
@@ -917,7 +966,14 @@ export const subcommandMetricsView = (
         if (maxMs === null || meanMs === null || p50Ms === null) {
           return null;
         }
-        return { subcommand, count, p50Ms, maxMs, meanMs };
+        return {
+          subcommand,
+          profile: defaultCargoProfile(subcommand),
+          count,
+          p50Ms,
+          maxMs,
+          meanMs,
+        };
       })
       .filter((row): row is SubcommandTiming => row !== null)
       .sort(

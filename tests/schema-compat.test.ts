@@ -298,7 +298,7 @@ describe('schema forward compatibility (issue #4)', () => {
             waitP50Ms: 110,
             waitP95Ms: 640,
             bySubcommand: [
-              { subcommand: 'check', count: 7, p50Ms: 900, maxMs: 2_300 },
+              { subcommand: 'check', profile: 'perf', count: 7, p50Ms: 900, maxMs: 2_300 },
               { subcommand: 'test', count: 5, p50Ms: 2_100, maxMs: 5_900 },
             ],
           },
@@ -338,7 +338,7 @@ describe('schema forward compatibility (issue #4)', () => {
       waitP50Ms: 110,
       waitP95Ms: 640,
       bySubcommand: [
-        { subcommand: 'check', count: 7, p50Ms: 900, maxMs: 2_300 },
+        { subcommand: 'check', profile: 'perf', count: 7, p50Ms: 900, maxMs: 2_300 },
         { subcommand: 'test', count: 5, p50Ms: 2_100, maxMs: 5_900 },
       ],
     });

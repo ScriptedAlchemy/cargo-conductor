@@ -592,7 +592,7 @@ describe('metricsWindow', () => {
         startedAtMs: 1_100,
         finishedAtMs: 1_200,
         status: 'done',
-        intentJson: '{"subcommand":"check"}',
+        intentJson: '{"subcommand":"check","profile":"dev"}',
       });
       settleLeader(ledger, {
         createdAtMs: 5_000,
@@ -600,7 +600,7 @@ describe('metricsWindow', () => {
         startedAtMs: 5_080,
         finishedAtMs: 5_380,
         status: 'failed',
-        intentJson: '{"subcommand":"test"}',
+        intentJson: '{"subcommand":"test","profile":"test"}',
       });
       settleLeader(ledger, {
         createdAtMs: 7_000,
@@ -608,7 +608,7 @@ describe('metricsWindow', () => {
         startedAtMs: 7_100,
         finishedAtMs: 7_600,
         status: 'killed',
-        intentJson: '{"subcommand":"check"}',
+        intentJson: '{"subcommand":"check","profile":"perf"}',
       });
       settleLeader(ledger, {
         createdAtMs: 8_000,
@@ -647,8 +647,8 @@ describe('metricsWindow', () => {
         waitP50Ms: 80,
         waitP95Ms: 80,
         bySubcommand: [
-          { subcommand: 'check', count: 1, p50Ms: 500, maxMs: 500 },
-          { subcommand: 'unknown', count: 1, p50Ms: 200, maxMs: 200 },
+          { subcommand: 'check', profile: 'perf', count: 1, p50Ms: 500, maxMs: 500 },
+          { subcommand: 'unknown', profile: 'dev', count: 1, p50Ms: 200, maxMs: 200 },
         ],
       });
 
@@ -664,9 +664,10 @@ describe('metricsWindow', () => {
         waitP50Ms: 50,
         waitP95Ms: 50,
         bySubcommand: [
-          { subcommand: 'check', count: 2, p50Ms: 100, maxMs: 500 },
-          { subcommand: 'test', count: 1, p50Ms: 300, maxMs: 300 },
-          { subcommand: 'unknown', count: 1, p50Ms: 200, maxMs: 200 },
+          { subcommand: 'check', profile: 'dev', count: 1, p50Ms: 100, maxMs: 100 },
+          { subcommand: 'check', profile: 'perf', count: 1, p50Ms: 500, maxMs: 500 },
+          { subcommand: 'test', profile: 'test', count: 1, p50Ms: 300, maxMs: 300 },
+          { subcommand: 'unknown', profile: 'dev', count: 1, p50Ms: 200, maxMs: 200 },
         ],
       });
     });

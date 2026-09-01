@@ -244,6 +244,7 @@ export type StatusMetricsWindowId = 'hour' | 'day' | 'all';
 
 export interface StatusMetricsWindowBySubcommand {
   readonly subcommand: string;
+  readonly profile?: string;
   readonly count: number;
   readonly p50Ms: number | null;
   readonly maxMs: number | null;

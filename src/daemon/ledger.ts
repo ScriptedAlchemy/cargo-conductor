@@ -9,6 +9,7 @@ import * as Layer from 'effect/Layer';
 import { isRecord } from '../lib/guards.js';
 
 import { DaemonConfig } from './config.js';
+import { defaultCargoProfile } from './intent-normalizer.js';
 import { formatTicket, parseTicket } from './protocol.js';
 import type {
   AttachmentSavingsModeReport,
@@ -78,6 +79,7 @@ export interface AttachRequestInput {
 
 export interface MetricsWindowBySubcommand {
   readonly subcommand: string;
+  readonly profile?: string;
   readonly count: number;
   readonly p50Ms: number | null;
   readonly maxMs: number | null;
@@ -592,7 +594,8 @@ export const createLedgerApi = (db: DatabaseSync): LedgerApi => {
        finished_at_ms,
        run_ms,
        wait_ms,
-       COALESCE(json_extract(intent_json, '$.subcommand'), 'unknown') AS subcommand
+       COALESCE(json_extract(intent_json, '$.subcommand'), 'unknown') AS subcommand,
+       json_extract(intent_json, '$.profile') AS profile
      FROM requests
      WHERE attached_to IS NULL
        AND run_ms IS NOT NULL
@@ -605,7 +608,8 @@ export const createLedgerApi = (db: DatabaseSync): LedgerApi => {
        finished_at_ms,
        run_ms,
        wait_ms,
-       COALESCE(json_extract(intent_json, '$.subcommand'), 'unknown') AS subcommand
+       COALESCE(json_extract(intent_json, '$.subcommand'), 'unknown') AS subcommand,
+       json_extract(intent_json, '$.profile') AS profile
      FROM requests
      WHERE attached_to IS NULL
        AND run_ms IS NOT NULL
@@ -737,9 +741,15 @@ export const createLedgerApi = (db: DatabaseSync): LedgerApi => {
           subcommandText === null || subcommandText.trim().length === 0
             ? 'unknown'
             : subcommandText;
-        const samples = bySubcommand.get(subcommand) ?? [];
+        const profileText = toNullableText(row.profile);
+        const profile =
+          profileText === null || profileText.trim().length === 0
+            ? defaultCargoProfile(subcommand)
+            : profileText;
+        const populationKey = `${subcommand}\0${profile}`;
+        const samples = bySubcommand.get(populationKey) ?? [];
         samples.push(run);
-        bySubcommand.set(subcommand, samples);
+        bySubcommand.set(populationKey, samples);
       }
       const wait = toNullableNumber(row.wait_ms);
       if (wait !== null) {
@@ -749,10 +759,12 @@ export const createLedgerApi = (db: DatabaseSync): LedgerApi => {
     runMs.sort((left, right) => left - right);
     waitMs.sort((left, right) => left - right);
     const bySubcommandRows = [...bySubcommand.entries()]
-      .map(([subcommand, samples]): MetricsWindowBySubcommand => {
+      .map(([populationKey, samples]): MetricsWindowBySubcommand => {
+        const [subcommand = 'unknown', profile] = populationKey.split('\0');
         const sorted = [...samples].sort((left, right) => left - right);
         return {
           subcommand,
+          ...(profile === undefined ? {} : { profile }),
           count: sorted.length,
           p50Ms: percentileFromSorted(sorted, 0.5),
           maxMs: sorted.length === 0 ? null : sorted[sorted.length - 1] ?? null,
@@ -760,7 +772,9 @@ export const createLedgerApi = (db: DatabaseSync): LedgerApi => {
       })
       .sort(
         (left, right) =>
-          right.count - left.count || left.subcommand.localeCompare(right.subcommand),
+          right.count - left.count ||
+          left.subcommand.localeCompare(right.subcommand) ||
+          (left.profile ?? '').localeCompare(right.profile ?? ''),
       );
     return {
       count: runMs.length,

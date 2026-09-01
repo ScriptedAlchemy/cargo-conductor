@@ -254,6 +254,51 @@ describe('createCostModel', () => {
     expect(estimate).toEqual({ estimateMs: 12_000, source: 'kache' });
   });
 
+  it('tries release priors before crate-wide fallback for custom profiles', async () => {
+    let requestedProfiles: readonly string[] = [];
+    const model = createCostModel({
+      kachePriors: {
+        initial: indexPriors((_crateName, profiles) => {
+          requestedProfiles = profiles;
+          return profiles.includes('release') ? 12_000 : 90_000;
+        }),
+      },
+      kacheReader: null,
+      seedDurations: () => Effect.succeed([]),
+    });
+
+    const estimate = await Effect.runPromise(
+      model.estimate(intent(['cargo', 'build', '--profile', 'perf', '-p', 'alpha'])),
+    );
+
+    expect(requestedProfiles).toEqual(['perf', 'release']);
+    expect(estimate).toEqual({ estimateMs: 12_000, source: 'kache' });
+  });
+
+  it('keeps dev, test, and bench kache profile aliases', async () => {
+    const cases = [
+      { argv: ['cargo', 'check', '-p', 'alpha'], profiles: ['dev', 'debug'] },
+      { argv: ['cargo', 'test', '-p', 'alpha'], profiles: ['test', 'debug'] },
+      { argv: ['cargo', 'bench', '-p', 'alpha'], profiles: ['bench', 'release'] },
+    ] as const;
+
+    for (const testCase of cases) {
+      let requestedProfiles: readonly string[] = [];
+      const model = createCostModel({
+        kachePriors: {
+          initial: indexPriors((_crateName, profiles) => {
+            requestedProfiles = profiles;
+            return 1_000;
+          }),
+        },
+        kacheReader: null,
+        seedDurations: () => Effect.succeed([]),
+      });
+      await Effect.runPromise(model.estimate(intent(testCase.argv)));
+      expect(requestedProfiles).toEqual(testCase.profiles);
+    }
+  });
+
   it('reuses crate/profile/subcommand-class observations for a new intent key', async () => {
     const model = createCostModel({
       kacheReader: null,

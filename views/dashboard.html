@@ -247,7 +247,14 @@
         margin-bottom: 3px;
       }
       .crate-group-head .profile { font-size: 0.72rem; letter-spacing: 0.08em; text-transform: uppercase; }
-      .subcommand-split { margin-top: 18px; max-width: 460px; }
+      .subcommand-split {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+        column-gap: 28px;
+        margin-top: 18px;
+      }
+      .subcommand-split > h3,
+      .subcommand-split > .empty { grid-column: 1 / -1; }
       .subcommand-split .cmd { max-width: 300px; }
       .diskutil .est { font-size: 0.72rem; }
       .crate-name {
