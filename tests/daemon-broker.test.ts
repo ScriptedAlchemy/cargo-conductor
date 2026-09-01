@@ -87,6 +87,26 @@ describe('conductor daemon', () => {
         });
         expect(report.metrics?.cargo_run_ms_by_kind?.check?.count ?? 0).toBeGreaterThanOrEqual(1);
         expect(report.metrics?.wait_ms_summary?.count ?? 0).toBeGreaterThanOrEqual(1);
+        expect(report.metrics?.windows?.map((window) => window.id)).toEqual([
+          'hour',
+          'day',
+          'all',
+        ]);
+        expect(report.metrics?.windows?.[0]).toEqual(
+          expect.objectContaining({
+            bySubcommand: expect.any(Array),
+            count: expect.any(Number),
+            done: expect.any(Number),
+            failed: expect.any(Number),
+            id: 'hour',
+            killed: expect.any(Number),
+          }),
+        );
+        expect(report.metrics?.windows?.[0]?.runMeanMs).not.toBeUndefined();
+        expect(report.metrics?.windows?.[0]?.runP50Ms).not.toBeUndefined();
+        expect(report.metrics?.windows?.[0]?.runP95Ms).not.toBeUndefined();
+        expect(report.metrics?.windows?.[0]?.waitP50Ms).not.toBeUndefined();
+        expect(report.metrics?.windows?.[0]?.waitP95Ms).not.toBeUndefined();
         expect(report.savings?.byMode.map((row) => row.mode)).toEqual([
           'identity',
           'coverage',

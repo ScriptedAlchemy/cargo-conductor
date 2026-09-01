@@ -11,6 +11,7 @@ import {
   argvText,
   argvTitle,
   attachSavings,
+  defaultMetricsWindowId,
   diagnosticBadges,
   formatCompactNumber,
   formatMs,
@@ -22,6 +23,7 @@ import {
   outputTextFor,
   pathBasename,
   percentileMinSamples,
+  pickMetricsWindow,
   pollStatus,
   queuedWaitMs,
   queuedWaitThresholdMs,
@@ -39,6 +41,7 @@ import {
   terminalStatuses,
   ticketDetailFrom,
   waitMetricsView,
+  metricsWindowLabel,
 } from '../views/dashboard-lib.js';
 
 const repoRoot = fileURLToPath(new URL('..', import.meta.url));
@@ -118,6 +121,83 @@ describe('sectionOrder (stable layout)', () => {
   it('returns the identical order under load — work starting or finishing must not move sections', () => {
     expect(sectionOrder({ lanes: 2, queued: 1, running: 3 })).toEqual(fullOrder);
     expect(sectionOrder({ lanes: 1, queued: 4, running: 0 })).toEqual(fullOrder);
+  });
+});
+
+describe('pickMetricsWindow (window toggle and fallback)', () => {
+  const windows = [
+    {
+      id: 'hour' as const,
+      count: 3,
+      done: 2,
+      failed: 1,
+      killed: 0,
+      runP50Ms: 900,
+      runP95Ms: 1_800,
+      runMeanMs: 1_050,
+      waitP50Ms: 40,
+      waitP95Ms: 110,
+      bySubcommand: [{ subcommand: 'check', count: 3, p50Ms: 900, maxMs: 1_800 }],
+    },
+    {
+      id: 'day' as const,
+      count: 12,
+      done: 10,
+      failed: 1,
+      killed: 1,
+      runP50Ms: 1_200,
+      runP95Ms: 2_700,
+      runMeanMs: 1_600,
+      waitP50Ms: 70,
+      waitP95Ms: 300,
+      bySubcommand: [{ subcommand: 'check', count: 12, p50Ms: 1_200, maxMs: 2_700 }],
+    },
+    {
+      id: 'all' as const,
+      count: 55,
+      done: 49,
+      failed: 4,
+      killed: 2,
+      runP50Ms: 1_600,
+      runP95Ms: 5_000,
+      runMeanMs: 2_300,
+      waitP50Ms: 120,
+      waitP95Ms: 480,
+      bySubcommand: [{ subcommand: 'check', count: 55, p50Ms: 1_600, maxMs: 5_000 }],
+    },
+  ];
+
+  it('defaults to the documented 24h window id', () => {
+    expect(defaultMetricsWindowId).toBe('day');
+  });
+
+  it('returns the selected window when present', () => {
+    const picked = pickMetricsWindow(windows, 'all');
+    expect(picked.source).toBe('ledger-windows');
+    expect(picked.id).toBe('all');
+    expect(picked.window?.count).toBe(55);
+  });
+
+  it('falls back to 24h when the selected id is missing', () => {
+    const picked = pickMetricsWindow(windows.filter((window) => window.id !== 'all'), 'all');
+    expect(picked.source).toBe('ledger-windows');
+    expect(picked.id).toBe('day');
+    expect(picked.window?.count).toBe(12);
+  });
+
+  it('falls back to daemon lifetime when windows are absent', () => {
+    const picked = pickMetricsWindow(undefined, 'day');
+    expect(picked).toEqual({
+      id: 'day',
+      source: 'daemon-lifetime',
+      window: null,
+    });
+  });
+
+  it('formats toggle labels', () => {
+    expect(metricsWindowLabel('hour')).toBe('1h');
+    expect(metricsWindowLabel('day')).toBe('24h');
+    expect(metricsWindowLabel('all')).toBe('all');
   });
 });
 

@@ -492,6 +492,10 @@ export const BrokerLive: Layer.Layer<
         const jobOutcome = yield* Metric.value(jobOutcomeMetric);
         const attachMode = yield* Metric.value(attachModeMetric);
         const waitSummary = yield* Metric.value(waitMsSummary);
+        const nowMs = Date.now();
+        const hourWindow = yield* ledger.metricsWindow(nowMs - 3_600_000);
+        const dayWindow = yield* ledger.metricsWindow(nowMs - 86_400_000);
+        const allWindow = yield* ledger.metricsWindow(null);
         const kache = yield* costModel.kacheStatus;
         const savings = yield* ledger.attachmentSavings();
         // Devices worth watching right now: the conductor's own state disk
@@ -539,6 +543,11 @@ export const BrokerLive: Layer.Layer<
                 value ?? null,
               ] as const),
             },
+            windows: [
+              { id: 'hour', ...hourWindow },
+              { id: 'day', ...dayWindow },
+              { id: 'all', ...allWindow },
+            ],
           },
           savings,
         };

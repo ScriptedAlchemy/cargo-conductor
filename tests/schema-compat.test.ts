@@ -236,6 +236,7 @@ describe('schema forward compatibility (issue #4)', () => {
     expect(parsed.metrics?.job_outcome.done).toBe(1);
     expect(parsed.metrics?.wait_ms_summary).toBeUndefined();
     expect(parsed.metrics?.cargo_run_ms_by_kind).toBeUndefined();
+    expect(parsed.metrics?.windows).toBeUndefined();
   });
 
   it('accepts status metrics with wait summary and per-kind histograms', () => {
@@ -263,6 +264,24 @@ describe('schema forward compatibility (issue #4)', () => {
           },
         },
         job_outcome: { done: 1 },
+        windows: [
+          {
+            id: 'hour',
+            count: 12,
+            done: 9,
+            failed: 2,
+            killed: 1,
+            runP50Ms: 1_200,
+            runP95Ms: 5_900,
+            runMeanMs: 1_800,
+            waitP50Ms: 110,
+            waitP95Ms: 640,
+            bySubcommand: [
+              { subcommand: 'check', count: 7, p50Ms: 900, maxMs: 2_300 },
+              { subcommand: 'test', count: 5, p50Ms: 2_100, maxMs: 5_900 },
+            ],
+          },
+        ],
         wait_ms_summary: {
           count: 1,
           max: 500,
@@ -286,6 +305,22 @@ describe('schema forward compatibility (issue #4)', () => {
       [0.9, 500],
       [0.95, 500],
     ]);
+    expect(parsed.metrics?.windows?.[0]).toEqual({
+      id: 'hour',
+      count: 12,
+      done: 9,
+      failed: 2,
+      killed: 1,
+      runP50Ms: 1_200,
+      runP95Ms: 5_900,
+      runMeanMs: 1_800,
+      waitP50Ms: 110,
+      waitP95Ms: 640,
+      bySubcommand: [
+        { subcommand: 'check', count: 7, p50Ms: 900, maxMs: 2_300 },
+        { subcommand: 'test', count: 5, p50Ms: 2_100, maxMs: 5_900 },
+      ],
+    });
   });
 
   it('round-trips kache status results while an old daemon schema strips it', () => {

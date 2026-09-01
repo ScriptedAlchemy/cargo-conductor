@@ -230,6 +230,7 @@ export interface StatusMetrics {
   readonly cargo_run_ms_by_kind?: Readonly<Record<string, HistogramMetricSnapshot>>;
   readonly job_outcome: Readonly<Record<string, number>>;
   readonly attach_mode: Readonly<Record<string, number>>;
+  readonly windows?: readonly StatusMetricsWindow[];
   readonly wait_ms_summary?: {
     readonly count: number;
     readonly min: number | null;
@@ -237,6 +238,29 @@ export interface StatusMetrics {
     readonly sum: number;
     readonly quantiles: ReadonlyArray<readonly [number, number | null]>;
   };
+}
+
+export type StatusMetricsWindowId = 'hour' | 'day' | 'all';
+
+export interface StatusMetricsWindowBySubcommand {
+  readonly subcommand: string;
+  readonly count: number;
+  readonly p50Ms: number | null;
+  readonly maxMs: number | null;
+}
+
+export interface StatusMetricsWindow {
+  readonly id: StatusMetricsWindowId;
+  readonly count: number;
+  readonly done: number;
+  readonly failed: number;
+  readonly killed: number;
+  readonly runP50Ms: number | null;
+  readonly runP95Ms: number | null;
+  readonly runMeanMs: number | null;
+  readonly waitP50Ms: number | null;
+  readonly waitP95Ms: number | null;
+  readonly bySubcommand: readonly StatusMetricsWindowBySubcommand[];
 }
 
 export interface KacheHeartbeatRoot {

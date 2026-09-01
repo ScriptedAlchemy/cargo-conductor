@@ -86,11 +86,33 @@ const histogramMetricSchema = z.object({
   sum: z.number(),
 });
 
+const statusMetricsWindowBySubcommandSchema = z.object({
+  subcommand: z.string(),
+  count: z.number().int().nonnegative(),
+  p50Ms: z.number().nullable(),
+  maxMs: z.number().nullable(),
+});
+
+const statusMetricsWindowSchema = z.object({
+  id: z.enum(['hour', 'day', 'all']),
+  count: z.number().int().nonnegative(),
+  done: z.number().int().nonnegative(),
+  failed: z.number().int().nonnegative(),
+  killed: z.number().int().nonnegative(),
+  runP50Ms: z.number().nullable(),
+  runP95Ms: z.number().nullable(),
+  runMeanMs: z.number().nullable(),
+  waitP50Ms: z.number().nullable(),
+  waitP95Ms: z.number().nullable(),
+  bySubcommand: z.array(statusMetricsWindowBySubcommandSchema),
+});
+
 const statusMetricsSchema = z.object({
   attach_mode: frequencyMetricSchema,
   cargo_run_ms: histogramMetricSchema,
   cargo_run_ms_by_kind: z.record(z.string(), histogramMetricSchema).optional(),
   job_outcome: frequencyMetricSchema,
+  windows: z.array(statusMetricsWindowSchema).optional(),
   wait_ms_summary: z
     .object({
       count: z.number().int().nonnegative(),

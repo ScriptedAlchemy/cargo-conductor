@@ -137,6 +137,67 @@ export interface RunHistogramShape {
  */
 export const percentileMinSamples = 10;
 
+export const metricsWindowIds = ['hour', 'day', 'all'] as const;
+export type MetricsWindowId = (typeof metricsWindowIds)[number];
+export const defaultMetricsWindowId: MetricsWindowId = 'day';
+
+export interface DashboardMetricsWindowBySubcommand {
+  readonly subcommand: string;
+  readonly count: number;
+  readonly p50Ms: number | null;
+  readonly maxMs: number | null;
+}
+
+export interface DashboardMetricsWindow {
+  readonly id: MetricsWindowId;
+  readonly count: number;
+  readonly done: number;
+  readonly failed: number;
+  readonly killed: number;
+  readonly runP50Ms: number | null;
+  readonly runP95Ms: number | null;
+  readonly runMeanMs: number | null;
+  readonly waitP50Ms: number | null;
+  readonly waitP95Ms: number | null;
+  readonly bySubcommand: readonly DashboardMetricsWindowBySubcommand[];
+}
+
+export interface PickedMetricsWindow {
+  readonly id: MetricsWindowId;
+  readonly source: 'ledger-windows' | 'daemon-lifetime';
+  readonly window: DashboardMetricsWindow | null;
+}
+
+export const pickMetricsWindow = (
+  windows: readonly DashboardMetricsWindow[] | undefined,
+  selectedId: MetricsWindowId,
+): PickedMetricsWindow => {
+  if (windows === undefined || windows.length === 0) {
+    return { id: selectedId, source: 'daemon-lifetime', window: null };
+  }
+  const selected = windows.find((window) => window.id === selectedId);
+  if (selected !== undefined) {
+    return { id: selected.id, source: 'ledger-windows', window: selected };
+  }
+  const fallback = windows.find((window) => window.id === defaultMetricsWindowId) ?? windows[0];
+  return { id: fallback.id, source: 'ledger-windows', window: fallback };
+};
+
+export const metricsWindowLabel = (id: MetricsWindowId): string => {
+  switch (id) {
+    case 'hour':
+      return '1h';
+    case 'day':
+      return '24h';
+    case 'all':
+      return 'all';
+    default: {
+      const exhaustive: never = id;
+      return exhaustive;
+    }
+  }
+};
+
 /** Upper-bound estimate of the given percentile from histogram buckets ([le, cumulativeCount]). */
 export const histogramPercentile = (
   histogram: RunHistogramShape,

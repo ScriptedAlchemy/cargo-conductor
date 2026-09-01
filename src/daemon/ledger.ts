@@ -89,6 +89,26 @@ export interface SessionCompletedRecord {
   readonly warningCount: number | null;
 }
 
+export interface MetricsWindowBySubcommand {
+  readonly subcommand: string;
+  readonly count: number;
+  readonly p50Ms: number | null;
+  readonly maxMs: number | null;
+}
+
+export interface MetricsWindowReport {
+  readonly count: number;
+  readonly done: number;
+  readonly failed: number;
+  readonly killed: number;
+  readonly runP50Ms: number | null;
+  readonly runP95Ms: number | null;
+  readonly runMeanMs: number | null;
+  readonly waitP50Ms: number | null;
+  readonly waitP95Ms: number | null;
+  readonly bySubcommand: readonly MetricsWindowBySubcommand[];
+}
+
 export interface LedgerApi {
   readonly createRequest: (
     input: CreateRequestInput,
@@ -126,6 +146,7 @@ export interface LedgerApi {
   readonly transitionsFor: (id: number) => Effect.Effect<readonly TransitionRecord[]>;
   readonly reapOrphans: (atMs: number, error: string) => Effect.Effect<number>;
   readonly attachmentSavings: () => Effect.Effect<AttachmentSavingsReport>;
+  readonly metricsWindow: (sinceMs: number | null) => Effect.Effect<MetricsWindowReport>;
 }
 
 export class Ledger extends Context.Service<Ledger, LedgerApi>()('cargo-conductor/Ledger') {}
@@ -196,6 +217,12 @@ const columnMigrations: readonly (readonly [column: string, ddl: string])[] = [
 const activeStatusFilter = "status IN ('requested', 'queued', 'running')";
 
 const ticketPattern = /^cc-(\d+)$/u;
+
+/**
+ * Dashboard windows scan only recent leader-settled rows. Keeping this bounded
+ * prevents one status poll from full-scanning a very large ledger.
+ */
+const metricsWindowScanLimit = 20_000;
 
 type Row = Record<string, unknown>;
 
@@ -276,6 +303,19 @@ const toTransitionRecord = (row: Row): TransitionRecord => ({
   toStatus: toText(row.to_status) as RequestStatus,
 });
 
+const percentileFromSorted = (
+  sorted: readonly number[],
+  percentile: number,
+): number | null => {
+  if (sorted.length === 0) {
+    return null;
+  }
+  return sorted[Math.floor((sorted.length - 1) * percentile)] ?? null;
+};
+
+const mean = (values: readonly number[]): number | null =>
+  values.length === 0 ? null : values.reduce((sum, value) => sum + value, 0) / values.length;
+
 const parseTicket = (ticket: string): number | null => {
   const match = ticketPattern.exec(ticket);
   return match === null ? null : Number(match[1]);
@@ -340,6 +380,12 @@ export const openLedgerDatabase = (databasePath: string): DatabaseSync => {
      WHERE attached_to IS NOT NULL
        AND saved_compute_ms IS NOT NULL
        AND saved_latency_ms IS NOT NULL`,
+  );
+  db.exec(
+    `CREATE INDEX IF NOT EXISTS requests_metrics_window_idx
+     ON requests (finished_at_ms DESC, id DESC)
+     WHERE attached_to IS NULL
+       AND run_ms IS NOT NULL`,
   );
   return db;
 };
@@ -486,6 +532,31 @@ export const createLedgerApi = (db: DatabaseSync): LedgerApi => {
   const selectRecentRequests = db.prepare(
     `SELECT ${requestColumns} FROM requests ORDER BY created_at_ms DESC, id DESC LIMIT ?`,
   );
+  const selectMetricsWindowAll = db.prepare(
+    `SELECT
+       status,
+       run_ms,
+       wait_ms,
+       COALESCE(json_extract(intent_json, '$.subcommand'), 'unknown') AS subcommand
+     FROM requests
+     WHERE attached_to IS NULL
+       AND run_ms IS NOT NULL
+     ORDER BY finished_at_ms DESC, id DESC
+     LIMIT ?`,
+  );
+  const selectMetricsWindowSince = db.prepare(
+    `SELECT
+       status,
+       run_ms,
+       wait_ms,
+       COALESCE(json_extract(intent_json, '$.subcommand'), 'unknown') AS subcommand
+     FROM requests
+     WHERE attached_to IS NULL
+       AND run_ms IS NOT NULL
+       AND finished_at_ms >= ?
+     ORDER BY finished_at_ms DESC, id DESC
+     LIMIT ?`,
+  );
   const selectActiveRequests = db.prepare(
     `SELECT ${requestColumns} FROM requests
      WHERE ${activeStatusFilter}
@@ -568,6 +639,85 @@ export const createLedgerApi = (db: DatabaseSync): LedgerApi => {
         }),
     );
     return { byMode, totals: totalsFrom(byMode) };
+  };
+
+  /**
+   * Leader-only metrics for dashboard windows. Followers do not represent
+   * spawned work, and rows without run_ms never actually started, so both are
+   * excluded for honest run/wait distributions.
+   */
+  const metricsWindow = (sinceMs: number | null): MetricsWindowReport => {
+    const rows = (
+      sinceMs === null
+        ? selectMetricsWindowAll.all(metricsWindowScanLimit)
+        : selectMetricsWindowSince.all(sinceMs, metricsWindowScanLimit)
+    ) as readonly Row[];
+    const runMs: number[] = [];
+    const waitMs: number[] = [];
+    const bySubcommand = new Map<string, number[]>();
+    let done = 0;
+    let failed = 0;
+    let killed = 0;
+    for (const row of rows) {
+      const status = toText(row.status);
+      switch (status) {
+        case 'done':
+          done += 1;
+          break;
+        case 'failed':
+          failed += 1;
+          break;
+        case 'killed':
+          killed += 1;
+          break;
+        default:
+          break;
+      }
+      const run = toNullableNumber(row.run_ms);
+      if (run !== null) {
+        runMs.push(run);
+        const subcommandText = toNullableText(row.subcommand);
+        const subcommand =
+          subcommandText === null || subcommandText.trim().length === 0
+            ? 'unknown'
+            : subcommandText;
+        const samples = bySubcommand.get(subcommand) ?? [];
+        samples.push(run);
+        bySubcommand.set(subcommand, samples);
+      }
+      const wait = toNullableNumber(row.wait_ms);
+      if (wait !== null) {
+        waitMs.push(wait);
+      }
+    }
+    runMs.sort((left, right) => left - right);
+    waitMs.sort((left, right) => left - right);
+    const bySubcommandRows = [...bySubcommand.entries()]
+      .map(([subcommand, samples]): MetricsWindowBySubcommand => {
+        const sorted = [...samples].sort((left, right) => left - right);
+        return {
+          subcommand,
+          count: sorted.length,
+          p50Ms: percentileFromSorted(sorted, 0.5),
+          maxMs: sorted.length === 0 ? null : sorted[sorted.length - 1] ?? null,
+        };
+      })
+      .sort(
+        (left, right) =>
+          right.count - left.count || left.subcommand.localeCompare(right.subcommand),
+      );
+    return {
+      count: runMs.length,
+      done,
+      failed,
+      killed,
+      runP50Ms: percentileFromSorted(runMs, 0.5),
+      runP95Ms: percentileFromSorted(runMs, 0.95),
+      runMeanMs: mean(runMs),
+      waitP50Ms: percentileFromSorted(waitMs, 0.5),
+      waitP95Ms: percentileFromSorted(waitMs, 0.95),
+      bySubcommand: bySubcommandRows,
+    };
   };
 
   const insertAttempt = (
@@ -804,6 +954,8 @@ export const createLedgerApi = (db: DatabaseSync): LedgerApi => {
       }),
 
     attachmentSavings: () => Effect.sync(() => attachmentSavings()),
+
+    metricsWindow: (sinceMs) => Effect.sync(() => metricsWindow(sinceMs)),
   };
 };
 

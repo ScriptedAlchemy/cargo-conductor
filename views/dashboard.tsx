@@ -8,6 +8,7 @@ import {
   argvText,
   argvTitle,
   attachSavings,
+  defaultMetricsWindowId,
   dashboardVersion,
   DEMUX_FLAG,
   diagnosticBadges,
@@ -19,9 +20,12 @@ import {
   kacheColumns,
   kacheProfileGroups,
   laneIsActive,
+  metricsWindowIds,
+  metricsWindowLabel,
   outputTextFor,
   pathBasename,
   percentileMinSamples,
+  pickMetricsWindow,
   pollStatus,
   queuedWaitMs,
   ranAsFor,
@@ -35,6 +39,9 @@ import {
   terminalStatuses,
   ticketDetailFrom,
   type RunHistogramShape,
+  type DashboardMetricsWindow,
+  type DashboardMetricsWindowBySubcommand,
+  type MetricsWindowId,
   type StatusPoll,
   type TicketDetail,
   waitMetricsView,
@@ -88,11 +95,33 @@ interface StatusMetricsShape {
   readonly cargo_run_ms_by_kind?: Readonly<Record<string, RunHistogramShape>>;
   readonly attach_mode?: Readonly<Record<string, unknown>>;
   readonly job_outcome?: Readonly<Record<string, unknown>>;
+  readonly windows?: unknown;
   readonly wait_ms_summary?: {
     readonly count?: unknown;
     readonly max?: unknown;
     readonly quantiles?: unknown;
   };
+}
+
+interface StatusMetricsWindowBySubcommandShape {
+  readonly subcommand?: unknown;
+  readonly count?: unknown;
+  readonly p50Ms?: unknown;
+  readonly maxMs?: unknown;
+}
+
+interface StatusMetricsWindowShape {
+  readonly id?: unknown;
+  readonly count?: unknown;
+  readonly done?: unknown;
+  readonly failed?: unknown;
+  readonly killed?: unknown;
+  readonly runP50Ms?: unknown;
+  readonly runP95Ms?: unknown;
+  readonly runMeanMs?: unknown;
+  readonly waitP50Ms?: unknown;
+  readonly waitP95Ms?: unknown;
+  readonly bySubcommand?: unknown;
 }
 
 interface SavingsModeShape {
@@ -271,6 +300,71 @@ const fetchTicketRecord = async (ticketId: string): Promise<unknown> => {
 };
 
 const arrayOrEmpty = <T,>(value: unknown): readonly T[] => (Array.isArray(value) ? value : []);
+
+const asMetricsWindowId = (value: unknown): MetricsWindowId | null =>
+  value === 'hour' || value === 'day' || value === 'all' ? value : null;
+
+const asDashboardWindowBySubcommand = (
+  value: unknown,
+): DashboardMetricsWindowBySubcommand | null => {
+  const row = asRecord(value) as StatusMetricsWindowBySubcommandShape | null;
+  if (
+    row === null ||
+    typeof row.subcommand !== 'string' ||
+    typeof row.count !== 'number' ||
+    (row.p50Ms !== null && typeof row.p50Ms !== 'number') ||
+    (row.maxMs !== null && typeof row.maxMs !== 'number')
+  ) {
+    return null;
+  }
+  return {
+    subcommand: row.subcommand,
+    count: row.count,
+    p50Ms: row.p50Ms ?? null,
+    maxMs: row.maxMs ?? null,
+  };
+};
+
+const asDashboardWindow = (value: unknown): DashboardMetricsWindow | null => {
+  const row = asRecord(value) as StatusMetricsWindowShape | null;
+  const id = asMetricsWindowId(row?.id);
+  if (
+    row === null ||
+    id === null ||
+    typeof row.count !== 'number' ||
+    typeof row.done !== 'number' ||
+    typeof row.failed !== 'number' ||
+    typeof row.killed !== 'number' ||
+    (row.runP50Ms !== null && typeof row.runP50Ms !== 'number') ||
+    (row.runP95Ms !== null && typeof row.runP95Ms !== 'number') ||
+    (row.runMeanMs !== null && typeof row.runMeanMs !== 'number') ||
+    (row.waitP50Ms !== null && typeof row.waitP50Ms !== 'number') ||
+    (row.waitP95Ms !== null && typeof row.waitP95Ms !== 'number') ||
+    !Array.isArray(row.bySubcommand)
+  ) {
+    return null;
+  }
+  return {
+    id,
+    count: row.count,
+    done: row.done,
+    failed: row.failed,
+    killed: row.killed,
+    runP50Ms: row.runP50Ms ?? null,
+    runP95Ms: row.runP95Ms ?? null,
+    runMeanMs: row.runMeanMs ?? null,
+    waitP50Ms: row.waitP50Ms ?? null,
+    waitP95Ms: row.waitP95Ms ?? null,
+    bySubcommand: row.bySubcommand
+      .map((entry) => asDashboardWindowBySubcommand(entry))
+      .filter((entry): entry is DashboardMetricsWindowBySubcommand => entry !== null),
+  };
+};
+
+const dashboardWindows = (value: unknown): readonly DashboardMetricsWindow[] =>
+  arrayOrEmpty(value)
+    .map((entry) => asDashboardWindow(entry))
+    .filter((entry): entry is DashboardMetricsWindow => entry !== null);
 
 const duration = (value: unknown): string => (typeof value === 'number' ? formatMs(value) : '—');
 const signedDuration = (value: number): string =>
@@ -729,23 +823,49 @@ const MetricsSection = ({
   /** Every visible row (active + recent): attach savings needs leaders in flight too. */
   readonly rows: readonly RequestRow[];
 }): ReactNode => {
+  const [selectedWindowId, setSelectedWindowId] = useState<MetricsWindowId>(
+    defaultMetricsWindowId,
+  );
+  const windows = dashboardWindows(metrics?.windows);
+  const pickedWindow = pickMetricsWindow(windows, selectedWindowId);
+  const window = pickedWindow.window;
   const runs = runMetricsView(metrics?.cargo_run_ms);
   // Queue latency derives from the visible finished rows: honest about its
   // window, and available even before the daemon accumulates histograms.
   const waits = finished
     .map((row) => row.waitMs)
-    .filter((value): value is number => typeof value === 'number')
+    .filter((value): value is number => typeof value === 'number');
   const waitMetrics = waitMetricsView(metrics?.wait_ms_summary, waits);
-  const waitPercentilesVisible = waitMetrics.count >= percentileMinSamples;
-  const outcomes = frequencyEntries(metrics?.job_outcome);
-  const outcomeTotal = frequencyTotal(metrics?.job_outcome);
+  const runCount = window?.count ?? runs.count;
+  const runMeanMs = window?.runMeanMs ?? runs.meanMs;
+  const runP50Ms = runCount < percentileMinSamples ? null : (window?.runP50Ms ?? runs.p50Ms);
+  const runP95Ms = runCount < percentileMinSamples ? null : (window?.runP95Ms ?? runs.p95Ms);
+  const waitCount = window?.count ?? waitMetrics.count;
+  const waitP50Ms =
+    waitCount < percentileMinSamples ? null : (window?.waitP50Ms ?? waitMetrics.p50Ms);
+  const waitP95Ms =
+    waitCount < percentileMinSamples ? null : (window?.waitP95Ms ?? waitMetrics.p95Ms);
+  const legacyOutcomeEntries = frequencyEntries(metrics?.job_outcome);
+  const legacyOutcomeTotal = frequencyTotal(metrics?.job_outcome);
+  const outcomesTotal = window?.count ?? legacyOutcomeTotal;
+  const outcomesText =
+    window === null
+      ? (legacyOutcomeEntries.length === 0 ? '—' : frequencyText(legacyOutcomeEntries))
+      : `done ${formatCompactNumber(window.done)} · failed ${formatCompactNumber(window.failed)} · killed ${formatCompactNumber(window.killed)}`;
   const attachEntries = frequencyEntries(metrics?.attach_mode);
   const attachTotal = frequencyTotal(metrics?.attach_mode);
-  const percentileScale = runs.p95Ms ?? runs.p50Ms ?? 0;
+  const percentileScale = runP95Ms ?? runP50Ms ?? 0;
   // Check and test are different populations: the since-start histogram
   // cannot be split retroactively, so the split comes from the visible
   // finished rows, each line carrying its own honest n.
-  const bySubcommand = subcommandMetricsView(metrics?.cargo_run_ms_by_kind, finished);
+  const legacyBySubcommand = subcommandMetricsView(metrics?.cargo_run_ms_by_kind, finished);
+  const bySubcommandRows = window?.bySubcommand ?? legacyBySubcommand.rows;
+  const bySubcommandCaption =
+    window !== null
+      ? `${metricsWindowLabel(window.id)} window`
+      : legacyBySubcommand.source === 'daemon-lifetime'
+        ? 'daemon-lifetime'
+        : `last ${finished.length} finished`;
   const visibleSavings = attachSavings(rows);
   const totals = asRecord(savings?.totals) as SavingsTotalsShape | null;
   const allTimeComputeMs =
@@ -791,69 +911,80 @@ const MetricsSection = ({
       ? `counterfactual estimateMs minus actual time-to-result; negative means the rider waited longer than its own solo estimate (${formatCompactNumber(allTimeNegativeLatencyCount)} rider${allTimeNegativeLatencyCount === 1 ? '' : 's'} are negative)`
       : 'available from newer daemons; negative means the rider waited longer than its own solo estimate';
   const ridersByMode = hasLedgerSavings && savings !== null ? ridersByModeText(savings) : null;
+  const percentileText = (count: number, value: number | null): string =>
+    count === 0 ? '—' : (count < percentileMinSamples || value === null)
+      ? `n<${percentileMinSamples}`
+      : formatMs(value);
 
   return (
     <section>
-      <h2>Metrics <span className="count">(since daemon start)</span></h2>
+      <h2>
+        Metrics{' '}
+        {windows.length === 0 ? (
+          <span className="count">(since daemon start)</span>
+        ) : (
+          <span className="window-toggle" role="toolbar" aria-label="metrics window">
+            {metricsWindowIds.map((id, index) => (
+              <span key={id}>
+                {index === 0 ? null : <span className="window-dot">·</span>}
+                <button
+                  type="button"
+                  className={`window-button${pickedWindow.id === id ? ' active' : ''}`}
+                  onClick={() => setSelectedWindowId(id)}
+                >
+                  {metricsWindowLabel(id)}
+                </button>
+              </span>
+            ))}
+          </span>
+        )}
+      </h2>
       <div className="stats">
         <Stat
           label="runs timed (n)"
-          title="leader cargo runs with a recorded duration since daemon start; all subcommands blended — see the per-command split below"
-          value={formatCompactNumber(runs.count)}
+          title={
+            window === null
+              ? 'leader cargo runs with a recorded duration since daemon start; all subcommands blended — see the per-command split below'
+              : `leader cargo runs in the selected ${metricsWindowLabel(window.id)} window; all subcommands blended — see the per-command split below`
+          }
+          value={formatCompactNumber(runCount)}
         />
         <Stat
           barPercent={
-            runs.p50Ms === null || percentileScale <= 0
+            runP50Ms === null || percentileScale <= 0
               ? undefined
-              : (runs.p50Ms / percentileScale) * 100
+              : (runP50Ms / percentileScale) * 100
           }
           label="run p50"
           title="all subcommands blended; per-command timings are split below"
-          value={runs.p50Ms === null ? '—' : `≤${formatMs(runs.p50Ms)}`}
+          value={percentileText(runCount, runP50Ms)}
         />
-        {/* p95 on a tiny sample is just "slowest run so far": gated in runMetricsView. */}
-        {runs.p95Ms === null ? (
-          runs.count > 0 ? (
-            <div className="stat" title={`p95 hidden until ${percentileMinSamples} runs (have ${runs.count})`}>
-              <b className="gated">n&lt;{percentileMinSamples}</b>
-              <span>run p95</span>
-            </div>
-          ) : null
-        ) : (
-          <Stat
-            barPercent={percentileScale <= 0 ? undefined : (runs.p95Ms / percentileScale) * 100}
-            label="run p95"
-            title="all subcommands blended; per-command timings are split below"
-            value={`≤${formatMs(runs.p95Ms)}`}
-          />
-        )}
-        <Stat label="run mean" value={runs.meanMs === null ? '—' : formatMs(runs.meanMs)} />
-        {waitMetrics.source === 'daemon-1h' ? (
-          <Stat
-            label="wait p50/p90/p95 (1h window)"
-            title={`daemon summary window; hidden until ${percentileMinSamples} samples (have ${waitMetrics.count})`}
-            value={
-              !waitPercentilesVisible
-                ? `n<${percentileMinSamples}`
-                : [waitMetrics.p50Ms, waitMetrics.p90Ms, waitMetrics.p95Ms]
-                    .map((value) => (value === null ? '—' : formatMs(value)))
-                    .join(' · ')
-            }
-          />
-        ) : (
-          <Stat
-            label={`wait p50 (last ${waitMetrics.count})`}
-            title={`visible finished rows; hidden until ${percentileMinSamples} samples (have ${waitMetrics.count})`}
-            value={
-              waitMetrics.count === 0
-                ? '—'
-                : !waitPercentilesVisible || waitMetrics.p50Ms === null
-                  ? `n<${percentileMinSamples}`
-                  : formatMs(waitMetrics.p50Ms)
-            }
-          />
-        )}
-        <Stat label="wait max" value={waitMetrics.maxMs === null ? '—' : formatMs(waitMetrics.maxMs)} />
+        <Stat
+          barPercent={percentileScale <= 0 || runP95Ms === null ? undefined : (runP95Ms / percentileScale) * 100}
+          label="run p95"
+          title={`hidden until ${percentileMinSamples} runs (have ${runCount})`}
+          value={percentileText(runCount, runP95Ms)}
+        />
+        <Stat label="run mean" value={runMeanMs === null ? '—' : formatMs(runMeanMs)} />
+        <Stat
+          label="wait p50"
+          title={`hidden until ${percentileMinSamples} samples (have ${waitCount})`}
+          value={percentileText(waitCount, waitP50Ms)}
+        />
+        <Stat
+          label="wait p95"
+          title={`hidden until ${percentileMinSamples} samples (have ${waitCount})`}
+          value={percentileText(waitCount, waitP95Ms)}
+        />
+        <Stat
+          label={`outcomes (n=${formatCompactNumber(outcomesTotal)})`}
+          title={
+            window === null
+              ? 'finished requests by outcome since daemon start'
+              : `leader runs by terminal outcome in the selected ${metricsWindowLabel(window.id)} window`
+          }
+          value={outcomesText}
+        />
         <Stat
           label={hasLedgerSavings ? 'compute avoided (all time)' : 'attach time saved (visible rows)'}
           title={
@@ -876,15 +1007,8 @@ const MetricsSection = ({
           />
         ) : null}
       </div>
-      {outcomes.length === 0 && attachEntries.length === 0 && ridersByMode === null ? null : (
+      {attachEntries.length === 0 && ridersByMode === null ? null : (
         <div className="stats metricsdetail">
-          {outcomes.length === 0 ? null : (
-            <Stat
-              label={`outcomes (n=${formatCompactNumber(outcomeTotal)})`}
-              title="finished requests by outcome since daemon start — a different population from timed runs: attached and denied requests finish without a timed leader run"
-              value={frequencyText(outcomes)}
-            />
-          )}
           {attachEntries.length === 0 ? null : (
             <Stat label="attach modes" value={frequencyText(attachEntries)} />
           )}
@@ -904,30 +1028,27 @@ const MetricsSection = ({
           ) : null}
         </div>
       )}
-      {bySubcommand.rows.length === 0 ? null : (
-        <div className="subcommand-split">
-          <h3>
-            By command{' '}
-            <span>
-              {bySubcommand.source === 'daemon-lifetime'
-                ? '(daemon-lifetime — separate populations, not the histogram above)'
-                : `(last ${finished.length} finished — separate populations, not the histogram above)`}
-            </span>
-          </h3>
-          {bySubcommand.rows.map((timing) => (
+      <div className="subcommand-split">
+        <h3>
+          By command <span>({bySubcommandCaption} — separate populations, not the histogram above)</span>
+        </h3>
+        {bySubcommandRows.length === 0 ? (
+          <p className="empty">No command timings in this window.</p>
+        ) : (
+          bySubcommandRows.map((timing) => (
             <div className="compact-row" key={timing.subcommand}>
               <span className="cmd">cargo {timing.subcommand}</span>
               <span className="row-value">
                 n={timing.count} · p50{' '}
                 {timing.count < percentileMinSamples
                   ? `n<${percentileMinSamples}`
-                  : formatMs(timing.p50Ms)}{' '}
-                · max {formatMs(timing.maxMs)}
+                  : (timing.p50Ms === null ? '—' : formatMs(timing.p50Ms))}{' '}
+                · max {timing.maxMs === null ? '—' : formatMs(timing.maxMs)}
               </span>
             </div>
-          ))}
-        </div>
-      )}
+          ))
+        )}
+      </div>
     </section>
   );
 };

@@ -34,6 +34,33 @@ const makeInput = (overrides: Partial<CreateRequestInput> = {}): CreateRequestIn
   ...overrides,
 });
 
+const settleLeader = (
+  ledger: LedgerApi,
+  input: {
+    readonly createdAtMs: number;
+    readonly queuedAtMs?: number;
+    readonly startedAtMs: number;
+    readonly finishedAtMs: number;
+    readonly status: 'done' | 'failed' | 'killed';
+    readonly intentJson?: string | null;
+  },
+): string => {
+  const created = Effect.runSync(
+    ledger.createRequest(
+      makeInput({
+        createdAtMs: input.createdAtMs,
+        intentJson: input.intentJson === undefined ? '{"subcommand":"check"}' : input.intentJson,
+      }),
+    ),
+  );
+  if (input.queuedAtMs !== undefined) {
+    Effect.runSync(ledger.markQueued(created.id, input.queuedAtMs));
+  }
+  Effect.runSync(ledger.markRunning(created.id, input.startedAtMs));
+  Effect.runSync(ledger.markFinished(created.id, { atMs: input.finishedAtMs, status: input.status }));
+  return created.ticket;
+};
+
 describe('ledger lifecycle', () => {
   it('creates a request as cc-1 and carries it through to done', () => {
     withLedger((ledger) => {
@@ -551,6 +578,96 @@ describe('ledger queries', () => {
           savedLatencyMs: 850,
           negativeLatencyRiders: 1,
         },
+      });
+    });
+  });
+});
+
+describe('metricsWindow', () => {
+  it('reports leader-only windowed metrics with subcommand splits', () => {
+    withLedger((ledger) => {
+      settleLeader(ledger, {
+        createdAtMs: 1_000,
+        queuedAtMs: 1_050,
+        startedAtMs: 1_100,
+        finishedAtMs: 1_200,
+        status: 'done',
+        intentJson: '{"subcommand":"check"}',
+      });
+      settleLeader(ledger, {
+        createdAtMs: 5_000,
+        queuedAtMs: 5_030,
+        startedAtMs: 5_080,
+        finishedAtMs: 5_380,
+        status: 'failed',
+        intentJson: '{"subcommand":"test"}',
+      });
+      settleLeader(ledger, {
+        createdAtMs: 7_000,
+        queuedAtMs: 7_020,
+        startedAtMs: 7_100,
+        finishedAtMs: 7_600,
+        status: 'killed',
+        intentJson: '{"subcommand":"check"}',
+      });
+      settleLeader(ledger, {
+        createdAtMs: 8_000,
+        startedAtMs: 8_100,
+        finishedAtMs: 8_300,
+        status: 'done',
+        intentJson: null,
+      });
+
+      // Attached followers can have run_ms but must not count as leader work.
+      const attached = Effect.runSync(
+        ledger.createRequest(makeInput({ createdAtMs: 8_500, intentJson: '{"subcommand":"check"}' })),
+      );
+      Effect.runSync(
+        ledger.markAttached(attached.id, { atMs: 8_510, leaderTicket: 'cc-999', mode: 'identity' }),
+      );
+      Effect.runSync(ledger.markRunning(attached.id, 8_700));
+      Effect.runSync(ledger.markFinished(attached.id, { atMs: 9_100, status: 'done' }));
+
+      // Never-started rows have no run_ms and must not count.
+      const neverStarted = Effect.runSync(
+        ledger.createRequest(makeInput({ createdAtMs: 8_600, intentJson: '{"subcommand":"build"}' })),
+      );
+      Effect.runSync(ledger.markQueued(neverStarted.id, 8_620));
+      Effect.runSync(ledger.markFinished(neverStarted.id, { atMs: 8_900, status: 'killed' }));
+
+      const windowed = Effect.runSync(ledger.metricsWindow(5_400));
+      expect(windowed).toEqual({
+        count: 2,
+        done: 1,
+        failed: 0,
+        killed: 1,
+        runP50Ms: 200,
+        runP95Ms: 200,
+        runMeanMs: 350,
+        waitP50Ms: 80,
+        waitP95Ms: 80,
+        bySubcommand: [
+          { subcommand: 'check', count: 1, p50Ms: 500, maxMs: 500 },
+          { subcommand: 'unknown', count: 1, p50Ms: 200, maxMs: 200 },
+        ],
+      });
+
+      const allTime = Effect.runSync(ledger.metricsWindow(null));
+      expect(allTime).toEqual({
+        count: 4,
+        done: 2,
+        failed: 1,
+        killed: 1,
+        runP50Ms: 200,
+        runP95Ms: 300,
+        runMeanMs: 275,
+        waitP50Ms: 50,
+        waitP95Ms: 50,
+        bySubcommand: [
+          { subcommand: 'check', count: 2, p50Ms: 100, maxMs: 500 },
+          { subcommand: 'test', count: 1, p50Ms: 300, maxMs: 300 },
+          { subcommand: 'unknown', count: 1, p50Ms: 200, maxMs: 200 },
+        ],
       });
     });
   });
