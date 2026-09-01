@@ -1,18 +1,12 @@
 import { describe, expect, it } from '@rstest/core';
 
-import { UnsupportedPlatformError, resolveDaemonConfig } from '../src/daemon/config.js';
+import { resolveDaemonConfig } from '../src/daemon/config.js';
 
 describe('daemon config platform posture', () => {
-  it('fails on win32 with one clear unsupported error, not a cryptic socket error', () => {
-    expect(() => resolveDaemonConfig({}, 'win32')).toThrow(/Windows is not yet supported/u);
-    let caught: unknown;
-    try {
-      resolveDaemonConfig({}, 'win32');
-    } catch (error) {
-      caught = error;
-    }
-    expect(caught).toBeInstanceOf(UnsupportedPlatformError);
-    expect((caught as UnsupportedPlatformError)._tag).toBe('UnsupportedPlatform');
+  it('resolves a \\\\.\\pipe\\ named pipe on win32 instead of a filesystem .sock path', () => {
+    const config = resolveDaemonConfig({ CARGO_CONDUCTOR_STATE_DIR: 'C:\\cc-test' }, 'win32');
+    expect(config.socketPath.startsWith('\\\\.\\pipe\\cargo-conductor-')).toBe(true);
+    expect(config.socketPath.endsWith('.sock')).toBe(false);
   });
 
   it('resolves normally on POSIX platforms', () => {

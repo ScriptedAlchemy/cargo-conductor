@@ -4,8 +4,9 @@ cargo-conductor is an [agent-bundle](https://github.com/ScriptedAlchemy/agent-bu
 plugin. The compile target is `plugin`, which emits Claude, Codex, and Cursor
 into one artifact.
 
-Supported platforms: Linux and macOS. Windows is not yet supported (unix
-socket, shell shim, POSIX fifo). Node >= 22.19 is required (`node:sqlite`).
+Supported platforms: Linux and macOS. Windows is experimental and untested
+(the daemon endpoint resolves to a named pipe, but the cargo PATH shim is
+POSIX-only and refuses to install). Node >= 22.19 is required (`node:sqlite`).
 
 ## Build
 

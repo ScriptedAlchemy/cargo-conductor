@@ -118,9 +118,11 @@ retrievable cross-session.
 
 ## Install
 
-Works on Linux and macOS; Windows is not yet supported (the daemon listens on
-a unix socket, the PATH shim is a shell script, and the jobserver uses a POSIX
-fifo). Requires Node >= 22.19 (`node:sqlite` without native deps).
+Works on Linux and macOS. Windows is experimental and untested: the daemon
+resolves a `\\.\pipe\` named pipe instead of a unix socket and the jobserver
+degrades to disabled, but the cargo PATH shim is a POSIX shell script and
+`install-shim` refuses to install it there. Requires Node >= 22.19
+(`node:sqlite` without native deps).
 
 ### The first five minutes
 
