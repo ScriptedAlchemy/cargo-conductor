@@ -34,7 +34,7 @@
         border: 1px solid var(--line);
         background: var(--panel);
         border-radius: 4px;
-        padding: 12px 14px 14px;
+        padding: 16px 18px 18px;
       }
       h2 {
         margin: 0 0 8px;
@@ -122,8 +122,9 @@
         white-space: nowrap;
         vertical-align: bottom;
       }
-      .stats { display: flex; gap: 22px; flex-wrap: wrap; align-items: flex-end; }
-      .stat { min-width: 88px; }
+      .stats { display: flex; gap: 16px 28px; flex-wrap: wrap; align-items: flex-end; }
+      .stats + .stats { margin-top: 16px; }
+      .stat { min-width: 96px; }
       .stat b { display: block; font-size: 1.3rem; }
       .stat span { color: var(--muted); font-size: 0.78rem; }
       .meterstat { min-width: 150px; }
@@ -146,7 +147,7 @@
         overflow: hidden;
       }
       .mini-meter-fill { height: 100%; background: var(--accent); }
-      .kache-section .stats { margin-bottom: 13px; }
+      .kache-section .stats { margin-bottom: 16px; }
       .kache-columns {
         display: grid;
         grid-template-columns: minmax(0, 1fr) minmax(0, 1.25fr);
@@ -154,7 +155,7 @@
       }
       .kache-columns.single { grid-template-columns: minmax(0, 1fr); }
       h3 {
-        margin: 0 0 5px;
+        margin: 0 0 8px;
         color: var(--muted);
         font-size: 0.72rem;
         font-weight: 500;
@@ -170,7 +171,7 @@
       }
       .compact-row {
         justify-content: space-between;
-        padding: 3px 0;
+        padding: 6px 0;
         border-bottom: 1px solid var(--line);
       }
       .compact-row .path { max-width: 440px; }
@@ -181,15 +182,15 @@
         font-size: 0.75rem;
         white-space: nowrap;
       }
-      .crate-row { padding: 2px 0 4px; }
-      .crate-group { margin-bottom: 9px; }
+      .crate-row { padding: 4px 0 6px; }
+      .crate-group { margin-bottom: 12px; }
       .crate-group-head {
         padding: 2px 0 1px;
         border-bottom: 1px solid var(--line);
         margin-bottom: 3px;
       }
       .crate-group-head .profile { font-size: 0.72rem; letter-spacing: 0.08em; text-transform: uppercase; }
-      .subcommand-split { margin-top: 13px; max-width: 460px; }
+      .subcommand-split { margin-top: 18px; max-width: 460px; }
       .subcommand-split .cmd { max-width: 300px; }
       .diskutil .est { font-size: 0.72rem; }
       .crate-name {
