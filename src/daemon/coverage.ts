@@ -97,7 +97,11 @@ const packagesCovered = (
   return weaker.packages.length > 0 && isSubset(weaker.packages, stronger.packages);
 };
 
-/** Target cover: `--all-targets` covers everything; otherwise subset (empty = default lib+bins). */
+/** Default (empty) target selection compiles the lib and every bin. */
+const coveredByDefaultTargets = (target: string): boolean =>
+  target === 'lib' || target === 'bins' || target.startsWith('bin:');
+
+/** Target cover: `--all-targets` covers everything; empty = default lib+bins. */
 const targetsCovered = (
   stronger: NormalizedCargoIntent,
   weaker: NormalizedCargoIntent,
@@ -105,8 +109,11 @@ const targetsCovered = (
   if (stronger.targets.includes('all-targets')) {
     return true;
   }
+  if (stronger.targets.length === 0) {
+    return weaker.targets.length === 0 || weaker.targets.every(coveredByDefaultTargets);
+  }
   if (weaker.targets.length === 0) {
-    return stronger.targets.length === 0;
+    return false;
   }
   return isSubset(weaker.targets, stronger.targets);
 };

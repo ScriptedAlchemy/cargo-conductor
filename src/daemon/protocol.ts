@@ -251,4 +251,14 @@ export class LineBuffer {
     }
     return lines;
   }
+
+  /** Returns the unterminated remainder (if any) and resets the buffer. */
+  flush(): string | null {
+    if (this.#pending.byteLength === 0) {
+      return null;
+    }
+    const remainder = this.#pending.toString('utf8');
+    this.#pending = Buffer.alloc(0);
+    return remainder.trim().length > 0 ? remainder : null;
+  }
 }

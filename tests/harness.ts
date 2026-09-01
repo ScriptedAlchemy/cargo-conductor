@@ -85,6 +85,7 @@ export interface ExecOptions {
   readonly sleep?: string;
   readonly exit?: string;
   readonly lateOut?: string;
+  readonly extraEnv?: Readonly<Record<string, string>>;
   readonly isTerminal?: (message: ServerMessage) => boolean;
   readonly timeoutMs?: number;
 }
@@ -92,6 +93,7 @@ export interface ExecOptions {
 export const execRequest = (fixture: Fixture, options: ExecOptions) => {
   const env: Record<string, string> = {
     PATH: `${fixture.binDir}:${process.env.PATH ?? ''}`,
+    ...options.extraEnv,
   };
   if (options.sleep !== undefined) {
     env.FAKE_SLEEP = options.sleep;

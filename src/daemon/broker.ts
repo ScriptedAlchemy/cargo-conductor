@@ -8,9 +8,10 @@ import * as Layer from 'effect/Layer';
 import * as Queue from 'effect/Queue';
 import * as Ref from 'effect/Ref';
 
+import { hasLibKind, parseCargoJsonLine } from './cargo-json.js';
 import { DaemonConfig } from './config.js';
 import { attachModeFor } from './coverage.js';
-import { executeCargo } from './executor.js';
+import { executeCargo, TailBuffer } from './executor.js';
 import type { ExecutionResult } from './executor.js';
 import { normalizeCargoIntent } from './intent-normalizer.js';
 import type { NormalizedCargoIntent } from './intent-normalizer.js';
@@ -113,6 +114,14 @@ interface Attachment {
   readonly pendingLive: ReplayChunk[];
 }
 
+/** Per-unit completion state accumulated from the cargo JSON message stream. */
+interface DemuxState {
+  /** Package name -> target kinds with a completed compiler-artifact. */
+  readonly unitKinds: Map<string, Set<string>>;
+  /** Packages whose lib-shaped unit produced an error-level diagnostic. */
+  readonly libErrors: Set<string>;
+}
+
 interface Job {
   readonly id: number;
   readonly ticket: string;
@@ -127,7 +136,58 @@ interface Job {
   readonly attachments: Map<string, Attachment>;
   /** Closed (in the same sync frame as settlement) before exit fan-out begins. */
   readonly attachGate: { open: boolean };
+  /** Argv actually executed (demux appends --message-format). */
+  readonly execArgv: readonly string[];
+  /** Non-null when the run is demultiplexed through cargo's JSON stream. */
+  readonly demux: DemuxState | null;
+  /** Leader-view output tail; authoritative for the ledger row. */
+  readonly tail: TailBuffer;
 }
+
+const demuxSubcommands = new Set(['build', 'check', 'clippy']);
+
+/**
+ * Demultiplexing rewrites the invocation to `--message-format=
+ * json-diagnostic-rendered-ansi` so per-unit completion can be observed.
+ * Skipped when the caller already chose a message format (their stream is
+ * forwarded verbatim, unparsed) or passes trailing `--` arguments whose
+ * semantics we do not model.
+ */
+const planDemux = (
+  intent: NormalizedCargoIntent,
+  argv: readonly string[],
+): { readonly execArgv: readonly string[]; readonly demux: DemuxState | null } => {
+  const eligible =
+    demuxSubcommands.has(intent.subcommand) &&
+    !argv.some((argument) => argument.startsWith('--message-format')) &&
+    !argv.includes('--');
+  if (!eligible) {
+    return { execArgv: argv, demux: null };
+  }
+  return {
+    execArgv: [...argv, '--message-format=json-diagnostic-rendered-ansi'],
+    demux: { unitKinds: new Map(), libErrors: new Set() },
+  };
+};
+
+/**
+ * A coverage attachment can be released the moment its whole demand is
+ * proven: v1 proves only `--lib` demands (a lib-shaped artifact for every
+ * requested package with no error diagnostics on those lib units). Broader
+ * demands wait for the leader (bin inventories need cargo metadata).
+ */
+const demandSatisfied = (intent: NormalizedCargoIntent, demux: DemuxState): boolean => {
+  if (intent.workspace || intent.packages.length === 0) {
+    return false;
+  }
+  if (intent.targets.length !== 1 || intent.targets[0] !== 'lib') {
+    return false;
+  }
+  return intent.packages.every((name) => {
+    const kinds = demux.unitKinds.get(name);
+    return kinds !== undefined && hasLibKind(kinds) && !demux.libErrors.has(name);
+  });
+};
 
 type InFlightEntry =
   | { readonly kind: 'leader'; readonly job: Job }
@@ -173,17 +233,27 @@ export const BrokerLive: Layer.Layer<
     const lanes = new Map<string, Lane>();
     const inFlight = new Map<string, InFlightEntry>();
 
-    /** Fan one output chunk to the leader, the replay buffer, and every live attachment. */
-    const emitOutput = (
+    /**
+     * Fans one output chunk to the leader, the replay buffer, the leader-view
+     * tail, and every attachment the filter admits. Coverage attachments see
+     * only chunks relevant to their scope in demux mode; identity attachments
+     * always see everything.
+     */
+    const emitChunk = (
       job: Job,
       channel: 'stdout' | 'stderr',
       data: Uint8Array,
+      coverageFilter: (attachment: Attachment) => boolean = () => true,
     ): Effect.Effect<void> =>
       Effect.gen(function* () {
         const liveAttachments = yield* Effect.sync(() => {
           job.replay.push(channel, data);
+          job.tail.push(data);
           const live: Attachment[] = [];
           for (const attachment of job.attachments.values()) {
+            if (attachment.mode === 'coverage' && !coverageFilter(attachment)) {
+              continue;
+            }
             if (attachment.live) {
               live.push(attachment);
             } else {
@@ -368,6 +438,7 @@ export const BrokerLive: Layer.Layer<
       Effect.gen(function* () {
         const killSignal = yield* Deferred.make<void>();
         const state = yield* Ref.make<JobState>('queued');
+        const plan = planDemux(intent, input.argv);
         return {
           id,
           ticket,
@@ -381,8 +452,144 @@ export const BrokerLive: Layer.Layer<
           replay: new ReplayBuffer(config.replayBufferBytes),
           attachments: new Map<string, Attachment>(),
           attachGate: { open: true },
+          execArgv: plan.execArgv,
+          demux: plan.demux,
+          tail: new TailBuffer(config.outputTailBytes),
         };
       });
+
+    /** Sync-removes one attachment from its leader; returns false if already gone. */
+    const removeAttachment = (job: Job, attachment: Attachment): Effect.Effect<boolean> =>
+      Effect.sync(() => {
+        const present = job.attachments.delete(attachment.ticket);
+        if (present) {
+          inFlight.delete(attachment.ticket);
+        }
+        return present;
+      });
+
+    /** Early release of coverage attachments whose demand is fully proven or disproven. */
+    const releaseSatisfiedAttachments = (job: Job): Effect.Effect<void> =>
+      Effect.gen(function* () {
+        const demux = job.demux;
+        if (demux === null) {
+          return;
+        }
+        const decided = yield* Effect.sync(() => {
+          const releases: { attachment: Attachment; failed: string | null }[] = [];
+          for (const attachment of job.attachments.values()) {
+            if (attachment.mode !== 'coverage') {
+              continue;
+            }
+            const errored = attachment.intent.packages.find((name) =>
+              demux.libErrors.has(name),
+            );
+            if (errored !== undefined) {
+              releases.push({ attachment, failed: errored });
+            } else if (demandSatisfied(attachment.intent, demux)) {
+              releases.push({ attachment, failed: null });
+            }
+          }
+          for (const release of releases) {
+            job.attachments.delete(release.attachment.ticket);
+            inFlight.delete(release.attachment.ticket);
+          }
+          return releases;
+        });
+        const atMs = Date.now();
+        yield* Effect.forEach(
+          decided,
+          ({ attachment, failed }) =>
+            Effect.gen(function* () {
+              yield* notifyAttachmentStarted(attachment, atMs);
+              yield* guarded(
+                attachment.callbacks.onOutput({
+                  ticket: attachment.ticket,
+                  channel: 'stderr',
+                  data: Buffer.from(
+                    failed === null
+                      ? `[cargo-conductor] released early: requested packages compiled cleanly under ${job.ticket}\n`
+                      : `[cargo-conductor] released early: ${failed} failed to compile under ${job.ticket}\n`,
+                  ),
+                }),
+              );
+              yield* finishAttachment(
+                attachment,
+                atMs,
+                failed === null
+                  ? { status: 'done', exitCode: 0, signal: null, error: null }
+                  : {
+                      status: 'failed',
+                      exitCode: 101,
+                      signal: null,
+                      error: `compile errors in ${failed}`,
+                    },
+                job.tail.toString(),
+              );
+            }),
+          { discard: true },
+        );
+      });
+
+    /** Routes one line of the leader's JSON stdout stream. */
+    const handleStdoutLine = (job: Job, line: string): Effect.Effect<void> => {
+      const demux = job.demux;
+      if (demux === null) {
+        return emitChunk(job, 'stdout', Buffer.from(`${line}\n`));
+      }
+      const event = parseCargoJsonLine(line);
+      if (event === null) {
+        // Non-JSON stdout (test binaries, stray prints): leader and identity
+        // attachments only — it cannot be attributed to a coverage scope.
+        return emitChunk(job, 'stdout', Buffer.from(`${line}\n`), () => false);
+      }
+      switch (event.kind) {
+        case 'artifact': {
+          if (event.packageName === null) {
+            return Effect.void;
+          }
+          const packageName = event.packageName;
+          return Effect.sync(() => {
+            const kinds = demux.unitKinds.get(packageName) ?? new Set<string>();
+            for (const kind of event.targetKinds) {
+              kinds.add(kind);
+            }
+            demux.unitKinds.set(packageName, kinds);
+          }).pipe(Effect.zipRight(releaseSatisfiedAttachments(job)));
+        }
+        case 'message': {
+          const packageName = event.packageName;
+          const record =
+            event.level === 'error' && packageName !== null && hasLibKind(event.targetKinds)
+              ? Effect.sync(() => {
+                  demux.libErrors.add(packageName);
+                })
+              : Effect.void;
+          const rendered = event.rendered;
+          const forward =
+            rendered === null || rendered.length === 0
+              ? Effect.void
+              : emitChunk(
+                  job,
+                  'stderr',
+                  Buffer.from(rendered.endsWith('\n') ? rendered : `${rendered}\n`),
+                  (attachment) =>
+                    packageName === null || attachment.intent.packages.includes(packageName),
+                );
+          return record.pipe(
+            Effect.zipRight(forward),
+            Effect.zipRight(releaseSatisfiedAttachments(job)),
+          );
+        }
+        case 'build-finished':
+        case 'other':
+          return Effect.void;
+        default: {
+          const exhaustive: never = event;
+          return exhaustive;
+        }
+      }
+    };
 
     /**
      * Closes the attachment gate and detaches every attachment in one sync
@@ -442,6 +649,7 @@ export const BrokerLive: Layer.Layer<
             if (won) {
               yield* replayThenGoLive(reattached.leader, revived);
             }
+            yield* releaseSatisfiedAttachments(reattached.leader);
           }
           return;
         }
@@ -475,9 +683,33 @@ export const BrokerLive: Layer.Layer<
         }
         const atMs = Date.now();
         for (const attachment of detached) {
+          // A failed leader can still prove a coverage demand: the demanded
+          // units may have compiled cleanly before an unrelated unit failed.
+          const provenDespiteFailure =
+            status === 'failed' &&
+            attachment.mode === 'coverage' &&
+            job.demux !== null &&
+            demandSatisfied(attachment.intent, job.demux);
           const mirrors =
             status === 'done' || (status === 'failed' && attachment.mode === 'identity');
-          if (mirrors) {
+          if (provenDespiteFailure) {
+            yield* notifyAttachmentStarted(attachment, atMs);
+            yield* guarded(
+              attachment.callbacks.onOutput({
+                ticket: attachment.ticket,
+                channel: 'stderr',
+                data: Buffer.from(
+                  `[cargo-conductor] ${job.ticket} failed elsewhere, but your requested packages compiled cleanly\n`,
+                ),
+              }),
+            );
+            yield* finishAttachment(
+              attachment,
+              atMs,
+              { status: 'done', exitCode: 0, signal: null, error: null },
+              outputTail,
+            );
+          } else if (mirrors) {
             yield* notifyAttachmentStarted(attachment, atMs);
             yield* finishAttachment(
               attachment,
@@ -562,12 +794,17 @@ export const BrokerLive: Layer.Layer<
           { discard: true },
         );
         const result: ExecutionResult = yield* executeCargo({
-          argv: job.input.argv,
+          argv: job.execArgv,
           cwd: job.input.cwd,
           env: job.input.env,
           killSignal: job.killSignal,
-          tailBytes: config.outputTailBytes,
-          onOutput: (channel, data) => emitOutput(job, channel, data),
+          // The broker-side tail (fed by emitChunk) is authoritative: in
+          // demux mode the executor's own tail would capture raw JSON.
+          tailBytes: 0,
+          onOutput: (channel, data) => emitChunk(job, channel, data),
+          ...(job.demux === null
+            ? {}
+            : { onStdoutLine: (line: string) => handleStdoutLine(job, line) }),
         }).pipe(
           Effect.provideService(CommandExecutor.CommandExecutor, commandExecutor),
           Effect.onInterrupt(() =>
@@ -588,12 +825,13 @@ export const BrokerLive: Layer.Layer<
           ),
         );
         const finishedAtMs = Date.now();
+        const outputTail = job.tail.toString();
         yield* ledger.markFinished(job.id, {
           status: result.outcome,
           atMs: finishedAtMs,
           exitCode: result.exitCode,
           signal: result.signal,
-          outputTail: result.outputTail,
+          outputTail,
           error: result.error,
         });
         yield* finishExit(lane, job);
@@ -615,7 +853,7 @@ export const BrokerLive: Layer.Layer<
           result.exitCode,
           result.signal,
           result.error,
-          result.outputTail,
+          outputTail,
         );
       });
 
@@ -784,6 +1022,9 @@ export const BrokerLive: Layer.Layer<
                 if (won) {
                   yield* replayThenGoLive(registered.leader, attachment);
                 }
+                // The demand may already be proven by units that finished
+                // before this attachment arrived.
+                yield* releaseSatisfiedAttachments(registered.leader);
               }
               return {
                 ticket: created.ticket,
@@ -816,11 +1057,7 @@ export const BrokerLive: Layer.Layer<
       readonly attachment: Attachment;
     }): Effect.Effect<boolean> =>
       Effect.gen(function* () {
-        const removed = yield* Effect.sync(() => {
-          const present = entry.leader.attachments.delete(entry.attachment.ticket);
-          inFlight.delete(entry.attachment.ticket);
-          return present;
-        });
+        const removed = yield* removeAttachment(entry.leader, entry.attachment);
         if (!removed) {
           return false;
         }

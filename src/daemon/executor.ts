@@ -5,6 +5,8 @@ import * as Effect from 'effect/Effect';
 import * as Fiber from 'effect/Fiber';
 import * as Stream from 'effect/Stream';
 
+import { LineBuffer } from './protocol.js';
+
 export interface ExecuteCargoOptions {
   readonly argv: readonly string[];
   readonly cwd: string;
@@ -14,6 +16,12 @@ export interface ExecuteCargoOptions {
   /** Capacity of the retained combined-output tail, in bytes. */
   readonly tailBytes: number;
   readonly onOutput: (channel: 'stdout' | 'stderr', data: Uint8Array) => Effect.Effect<void>;
+  /**
+   * When set, stdout is consumed line-by-line through this callback instead
+   * of `onOutput`, and raw stdout bytes stay out of the tail (the caller owns
+   * the rendered view). Used for `--message-format=json` demultiplexing.
+   */
+  readonly onStdoutLine?: (line: string) => Effect.Effect<void>;
 }
 
 export interface ExecutionResult {
@@ -131,11 +139,27 @@ export const executeCargo = (
         onFailure: (error) => Effect.succeed(spawnFailure(error.message)),
         onSuccess: (child) =>
           Effect.gen(function* () {
+            const onStdoutLine = options.onStdoutLine;
+            const stdoutLines = new LineBuffer();
             const consume = (channel: 'stdout' | 'stderr') =>
               Stream.runForEach(channel === 'stdout' ? child.stdout : child.stderr, (chunk) => {
+                if (channel === 'stdout' && onStdoutLine !== undefined) {
+                  return Effect.forEach(stdoutLines.push(chunk), onStdoutLine, {
+                    discard: true,
+                  });
+                }
                 tail.push(chunk);
                 return options.onOutput(channel, chunk);
-              });
+              }).pipe(
+                Effect.zipRight(
+                  channel === 'stdout' && onStdoutLine !== undefined
+                    ? Effect.suspend(() => {
+                        const remainder = stdoutLines.flush();
+                        return remainder === null ? Effect.void : onStdoutLine(remainder);
+                      })
+                    : Effect.void,
+                ),
+              );
 
             const stdoutFiber = yield* Effect.fork(consume('stdout'));
             const stderrFiber = yield* Effect.fork(consume('stderr'));
