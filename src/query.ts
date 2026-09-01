@@ -42,6 +42,25 @@ const shortId = (): string => randomBytes(6).toString('hex');
 
 const requestWord = (count: number): string => (count === 1 ? 'request' : 'requests');
 
+const countWord = (count: number, singular: string): string =>
+  `${count} ${count === 1 ? singular : `${singular}s`}`;
+
+export const describeRequestRecord = (
+  ticket: string,
+  request:
+    | Pick<RequestRecord, 'ticket' | 'status' | 'errorCount' | 'warningCount'>
+    | null,
+): string => {
+  if (request === null) {
+    return `${ticket} not found`;
+  }
+  const counts =
+    request.errorCount === null || request.warningCount === null
+      ? ''
+      : ` (${countWord(request.errorCount, 'error')}, ${countWord(request.warningCount, 'warning')})`;
+  return `${request.ticket} ${request.status}${counts}`;
+};
+
 const stoppedSummary = (recentCount: number): string => {
   if (recentCount === 0) {
     return 'cargo-conductor daemon is not running';

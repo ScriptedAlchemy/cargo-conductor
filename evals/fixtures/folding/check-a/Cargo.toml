@@ -1,0 +1,7 @@
+[package]
+name = "check-a"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+path = "../shared.rs"

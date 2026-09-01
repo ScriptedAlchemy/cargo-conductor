@@ -53,6 +53,14 @@ export interface SubmitInput {
   readonly holdStop?: boolean | undefined;
 }
 
+export interface AttemptInput {
+  readonly argv: readonly string[];
+  readonly cwd: string;
+  readonly session?: string | undefined;
+  readonly host?: string | undefined;
+  readonly reason: string;
+}
+
 export interface StartedInfo {
   readonly ticket: string;
   readonly waitMs: number;
@@ -124,6 +132,9 @@ export interface BrokerApi {
     input: SubmitInput,
     callbacks: SubmitCallbacks,
   ) => Effect.Effect<SubmitResult, CargoIntentError>;
+  readonly recordAttempt: (
+    input: AttemptInput,
+  ) => Effect.Effect<{ readonly ticket: string }>;
   readonly kill: (ticket: string, options?: KillOptions) => Effect.Effect<boolean>;
   readonly report: (recentLimit?: number) => Effect.Effect<StatusReport>;
   readonly getTicket: (ticket: string) => Effect.Effect<RequestRecord | null>;
@@ -158,6 +169,7 @@ interface Attachment {
   startNotified: boolean;
   startedAtMs: number | null;
   readonly pendingLive: ReplayChunk[];
+  diagnostics: DiagnosticAccumulator | null;
 }
 
 /** A fresh, not-yet-live attachment; `mode` may be reassigned at registration. */
@@ -181,7 +193,19 @@ const makeAttachment = (
   startNotified: false,
   startedAtMs: null,
   pendingLive: [],
+  diagnostics: null,
 });
+
+interface DiagnosticEntry {
+  readonly order: number;
+  readonly rendered: string;
+}
+
+interface DiagnosticAccumulator {
+  errorCount: number;
+  warningCount: number;
+  readonly diagnostics: DiagnosticEntry[];
+}
 
 /** Per-unit completion state accumulated from the cargo JSON message stream. */
 interface DemuxState {
@@ -189,6 +213,10 @@ interface DemuxState {
   readonly unitKinds: Map<string, Set<string>>;
   /** Packages whose lib-shaped unit produced an error-level diagnostic. */
   readonly libErrors: Set<string>;
+  readonly globalDiagnostics: DiagnosticAccumulator;
+  readonly unscopedDiagnostics: DiagnosticAccumulator;
+  readonly packageDiagnostics: Map<string, DiagnosticAccumulator>;
+  nextDiagnosticOrder: number;
 }
 
 interface Job {
@@ -222,6 +250,86 @@ interface Job {
 }
 
 const demuxSubcommands = new Set(['build', 'check', 'clippy']);
+const maxDiagnostics = 5;
+const maxDiagnosticLength = 2_000;
+
+const makeDiagnosticAccumulator = (): DiagnosticAccumulator => ({
+  errorCount: 0,
+  warningCount: 0,
+  diagnostics: [],
+});
+
+const copyDiagnosticAccumulator = (
+  accumulator: DiagnosticAccumulator,
+): DiagnosticAccumulator => ({
+  errorCount: accumulator.errorCount,
+  warningCount: accumulator.warningCount,
+  diagnostics: [...accumulator.diagnostics],
+});
+
+const addDiagnostic = (
+  accumulator: DiagnosticAccumulator,
+  level: string | null,
+  rendered: string | null,
+  order: number,
+): void => {
+  if (level === 'error') {
+    accumulator.errorCount += 1;
+  } else if (level === 'warning') {
+    accumulator.warningCount += 1;
+  } else {
+    return;
+  }
+  if (rendered !== null && rendered.length > 0 && accumulator.diagnostics.length < maxDiagnostics) {
+    accumulator.diagnostics.push({
+      order,
+      rendered: rendered.slice(0, maxDiagnosticLength),
+    });
+  }
+};
+
+const mergeDiagnosticAccumulators = (
+  accumulators: readonly DiagnosticAccumulator[],
+): DiagnosticAccumulator => ({
+  errorCount: accumulators.reduce((sum, item) => sum + item.errorCount, 0),
+  warningCount: accumulators.reduce((sum, item) => sum + item.warningCount, 0),
+  diagnostics: accumulators
+    .flatMap((item) => item.diagnostics)
+    .sort((left, right) => left.order - right.order)
+    .slice(0, maxDiagnostics),
+});
+
+const diagnosticsForAttachment = (
+  demux: DemuxState,
+  attachment: Attachment,
+): DiagnosticAccumulator => {
+  if (attachment.mode === 'identity') {
+    return copyDiagnosticAccumulator(demux.globalDiagnostics);
+  }
+  const accumulators = [demux.unscopedDiagnostics];
+  for (const packageName of new Set(attachment.intent.packages)) {
+    const scoped = demux.packageDiagnostics.get(packageName);
+    if (scoped !== undefined) {
+      accumulators.push(scoped);
+    }
+  }
+  return mergeDiagnosticAccumulators(accumulators);
+};
+
+const diagnosticFinishFields = (
+  accumulator: DiagnosticAccumulator | null,
+): {
+  readonly errorCount?: number;
+  readonly warningCount?: number;
+  readonly diagnostics?: readonly string[];
+} =>
+  accumulator === null
+    ? {}
+    : {
+        errorCount: accumulator.errorCount,
+        warningCount: accumulator.warningCount,
+        diagnostics: accumulator.diagnostics.map((entry) => entry.rendered),
+      };
 
 /**
  * Demultiplexing rewrites the invocation to `--message-format=
@@ -243,7 +351,14 @@ const planDemux = (
   }
   return {
     execArgv: [...argv, '--message-format=json-diagnostic-rendered-ansi'],
-    demux: { unitKinds: new Map(), libErrors: new Set() },
+    demux: {
+      unitKinds: new Map(),
+      libErrors: new Set(),
+      globalDiagnostics: makeDiagnosticAccumulator(),
+      unscopedDiagnostics: makeDiagnosticAccumulator(),
+      packageDiagnostics: new Map(),
+      nextDiagnosticOrder: 0,
+    },
   };
 };
 
@@ -299,7 +414,11 @@ const attachModeMetric = Metric.frequency('attach_mode', {
 });
 
 const isTerminalStatus = (status: string): boolean =>
-  status === 'done' || status === 'failed' || status === 'killed';
+  status === 'done' ||
+  status === 'failed' ||
+  status === 'killed' ||
+  status === 'denied' ||
+  status === 'passthrough';
 
 const guarded = (effect: Effect.Effect<void>): Effect.Effect<void> =>
   effect.pipe(
@@ -348,6 +467,7 @@ export const BrokerLive: Layer.Layer<
   Effect.gen(function* () {
     const config = yield* DaemonConfig;
     const ledger = yield* Ledger;
+    yield* ledger.ingestPassthroughSpool(config.stateDir);
     const costModel = yield* CostModel;
     const topology = yield* Topology;
     const commandExecutor = yield* CommandExecutor.CommandExecutor;
@@ -546,6 +666,7 @@ export const BrokerLive: Layer.Layer<
           signal: exit.signal,
           outputTail: attachment.tail.toString(),
           error: exit.error,
+          ...diagnosticFinishFields(attachment.diagnostics),
         });
         yield* Metric.update(jobOutcomeMetric, exit.status);
         yield* notifyWaiters(attachment.ticket);
@@ -605,6 +726,9 @@ export const BrokerLive: Layer.Layer<
         const register = (job: Job, mode: AttachMode): { leader: Job; mode: AttachMode } => {
           attachment.mode = mode;
           attachment.attachedAtMs = Date.now();
+          if (job.demux !== null) {
+            attachment.diagnostics = diagnosticsForAttachment(job.demux, attachment);
+          }
           job.attachments.set(attachment.ticket, attachment);
           inFlight.set(attachment.ticket, { kind: 'attachment', leader: job, attachment });
           return { leader: job, mode };
@@ -774,6 +898,12 @@ export const BrokerLive: Layer.Layer<
               tail: new TailBuffer(config.outputTailBytes),
               attachedAtMs: atMs,
             });
+            if (leader.demux !== null) {
+              candidateAttachment.diagnostics = diagnosticsForAttachment(
+                leader.demux,
+                candidateAttachment,
+              );
+            }
             leader.attachments.set(candidateAttachment.ticket, candidateAttachment);
             inFlight.set(candidateAttachment.ticket, {
               kind: 'attachment',
@@ -973,6 +1103,30 @@ export const BrokerLive: Layer.Layer<
         }
         case 'message': {
           const packageName = event.packageName;
+          const recordDiagnostics = Effect.sync(() => {
+            const order = demux.nextDiagnosticOrder;
+            demux.nextDiagnosticOrder += 1;
+            addDiagnostic(demux.globalDiagnostics, event.level, event.rendered, order);
+            const scoped =
+              packageName === null
+                ? demux.unscopedDiagnostics
+                : (demux.packageDiagnostics.get(packageName) ??
+                  makeDiagnosticAccumulator());
+            addDiagnostic(scoped, event.level, event.rendered, order);
+            if (packageName !== null) {
+              demux.packageDiagnostics.set(packageName, scoped);
+            }
+            const audience: ReplayAudience =
+              packageName === null ? { kind: 'all' } : { kind: 'package', packageName };
+            for (const attachment of job.attachments.values()) {
+              if (!attachmentReceives(attachment, audience)) {
+                continue;
+              }
+              const diagnostics = attachment.diagnostics ?? makeDiagnosticAccumulator();
+              addDiagnostic(diagnostics, event.level, event.rendered, order);
+              attachment.diagnostics = diagnostics;
+            }
+          });
           const record =
             event.level === 'error' && packageName !== null && hasLibKind(event.targetKinds)
               ? Effect.sync(() => {
@@ -991,7 +1145,8 @@ export const BrokerLive: Layer.Layer<
                     ? { kind: 'all' }
                     : { kind: 'package', packageName },
                 );
-          return record.pipe(
+          return recordDiagnostics.pipe(
+            Effect.zipRight(record),
             Effect.zipRight(forward),
             Effect.zipRight(releaseSatisfiedAttachments(job)),
           );
@@ -1172,6 +1327,7 @@ export const BrokerLive: Layer.Layer<
             signal,
             outputTail: startedAtMs === null ? null : job.tail.toString(),
             error,
+            ...diagnosticFinishFields(job.demux?.globalDiagnostics ?? null),
           });
           yield* Metric.update(jobOutcomeMetric, status);
           yield* notifyWaiters(job.ticket);
@@ -1441,7 +1597,7 @@ export const BrokerLive: Layer.Layer<
       Effect.gen(function* () {
         const createdAtMs = Date.now();
         const workspaceRoot = yield* Effect.sync(
-          () => input.workspaceRoot ?? locateWorkspaceRoot(input.cwd),
+          () => input.workspaceRoot ?? locateWorkspaceRoot(input.cwd, { argv: input.argv }),
         );
         const normalized = yield* Effect.try({
           try: () =>
@@ -1450,7 +1606,10 @@ export const BrokerLive: Layer.Layer<
               cwd: input.cwd,
               env: input.env ?? {},
               workspaceRoot,
-              configuredTargetDir: findConfiguredTargetDir(input.cwd, workspaceRoot),
+              configuredTargetDir: findConfiguredTargetDir(input.cwd, workspaceRoot, {
+                argv: input.argv,
+                env: input.env ?? {},
+              }),
             }),
           catch: (cause) =>
             new CargoIntentError({
@@ -1473,7 +1632,13 @@ export const BrokerLive: Layer.Layer<
           Effect.gen(function* () {
             const holdStop =
               input.holdStop ?? (input.session !== undefined && input.background !== true);
-            const estimate = yield* costModel.estimate(normalized);
+            // Closure-aware ETA: uncompiled workspace dependencies dominate
+            // cold builds. The topology lookup is cached and non-blocking.
+            const closure = yield* topology.dependencyClosure(
+              normalized.workspaceRoot,
+              normalized.packages,
+            );
+            const estimate = yield* costModel.estimate(normalized, closure);
             const created = yield* ledger.createRequest({
               createdAtMs,
               session: input.session ?? null,
@@ -1544,6 +1709,21 @@ export const BrokerLive: Layer.Layer<
 
     const getTicket = (ticket: string): Effect.Effect<RequestRecord | null> =>
       ledger.getRequestByTicket(ticket);
+
+    const recordAttempt = (
+      input: AttemptInput,
+    ): Effect.Effect<{ readonly ticket: string }> =>
+      ledger
+        .recordAttempt({
+          argv: input.argv,
+          atMs: Date.now(),
+          cwd: input.cwd,
+          error: input.reason,
+          host: input.host ?? null,
+          session: input.session ?? null,
+          status: 'denied',
+        })
+        .pipe(Effect.map(({ ticket }) => ({ ticket })));
 
     const awaitTicket = (ticket: string, maxWaitMs: number): Effect.Effect<AwaitTicketResult> =>
       Effect.acquireUseRelease(
@@ -1681,6 +1861,7 @@ export const BrokerLive: Layer.Layer<
 
     const report = (recentLimit = 50): Effect.Effect<StatusReport> =>
       Effect.gen(function* () {
+        yield* ledger.ingestPassthroughSpool(config.stateDir);
         const laneStatuses: LaneStatus[] = [];
         for (const lane of lanes.values()) {
           laneStatuses.push(
@@ -1758,6 +1939,7 @@ export const BrokerLive: Layer.Layer<
 
     return {
       submit,
+      recordAttempt,
       kill,
       report,
       getTicket,

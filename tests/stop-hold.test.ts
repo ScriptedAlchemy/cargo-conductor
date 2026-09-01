@@ -65,7 +65,14 @@ describe('stop-hold hook', () => {
       { sessionId: 'sess-1', stopHookActive: false },
       services({
         waitForTickets: async () => [
-          { error: null, exitCode: 0, status: 'done', ticket: 'cc-7' },
+          {
+            error: null,
+            errorCount: null,
+            exitCode: 0,
+            status: 'done',
+            ticket: 'cc-7',
+            warningCount: null,
+          },
         ],
       }),
     );

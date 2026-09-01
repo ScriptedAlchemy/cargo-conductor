@@ -1,4 +1,11 @@
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -9,8 +16,12 @@ import * as Schedule from 'effect/Schedule';
 import { runExecClient } from '../src/client/exec.js';
 import { resolveDaemonConfig } from '../src/daemon/config.js';
 import type { DaemonConfigShape } from '../src/daemon/config.js';
-import { pingDaemon } from '../src/daemon/control.js';
+import { pingDaemon, requestOverSocket } from '../src/daemon/control.js';
 import { runDaemon } from '../src/daemon/main.js';
+import {
+  passthroughSpoolFileName,
+  type StatusResultMessage,
+} from '../src/daemon/protocol.js';
 
 const fakeCargoScript = `#!/usr/bin/env bash
 echo "fake-out:$*"
@@ -155,6 +166,48 @@ describe('runExecClient', () => {
       expect(collected.stdout()).toContain('fake-out:build');
       expect(collected.stderr()).toContain('fake-err:build');
       expect(collected.stderr()).toContain('daemon unreachable; running cargo directly');
+
+      const lines = readFileSync(join(fixture.config.stateDir, passthroughSpoolFileName), 'utf8')
+        .trim()
+        .split('\n')
+        .map((line) => JSON.parse(line) as Record<string, unknown>);
+      expect(lines).toEqual([
+        expect.objectContaining({
+          argv: ['cargo', 'build'],
+          cwd: fixture.workspace,
+          exitCode: 0,
+          kind: 'passthrough',
+          version: 1,
+        }),
+      ]);
+
+      await Effect.runPromise(
+        Effect.scoped(
+          Effect.gen(function* () {
+            yield* Effect.forkScoped(runDaemon(fixture.config));
+            yield* pingDaemon(fixture.config.socketPath, 500).pipe(
+              Effect.retry(
+                Schedule.spaced('50 millis').pipe(Schedule.intersect(Schedule.recurs(100))),
+              ),
+            );
+            const messages = yield* requestOverSocket({
+              isTerminal: (message) => message.type === 'status-result',
+              message: { id: 'passthrough-ingest', limit: 10, type: 'status' },
+              socketPath: fixture.config.socketPath,
+            });
+            const status = messages.find(
+              (message): message is StatusResultMessage => message.type === 'status-result',
+            );
+            expect(status?.report.recent).toEqual([
+              expect.objectContaining({
+                argv: ['cargo', 'build'],
+                exitCode: 0,
+                status: 'passthrough',
+              }),
+            ]);
+          }),
+        ),
+      );
     } finally {
       rmSync(fixture.root, { recursive: true, force: true });
     }

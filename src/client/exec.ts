@@ -1,4 +1,6 @@
 import { randomBytes } from 'node:crypto';
+import { appendFileSync, mkdirSync } from 'node:fs';
+import { join } from 'node:path';
 
 import * as Socket from '@effect/platform/Socket';
 import * as NodeContext from '@effect/platform-node/NodeContext';
@@ -21,9 +23,14 @@ import {
 import {
   encodeClientMessage,
   LineBuffer,
+  passthroughSpoolFileName,
   parseServerMessageLine,
 } from '../daemon/protocol.js';
-import type { ExitMessage, ServerMessage } from '../daemon/protocol.js';
+import type {
+  ExitMessage,
+  PassthroughSpoolRecord,
+  ServerMessage,
+} from '../daemon/protocol.js';
 
 import { ensureDaemonRunning, type EnsureDaemonError } from './ensure-daemon.js';
 import { shouldAutoBackground } from './host-cap.js';
@@ -83,8 +90,12 @@ const mapOpenError = (error: Socket.SocketError, socketPath: string): DaemonUnre
   }
 };
 
-const passthrough = (options: RunExecOptions): Effect.Effect<RunExecResult> =>
+const passthrough = (
+  options: RunExecOptions,
+  config: DaemonConfigShape,
+): Effect.Effect<RunExecResult> =>
   Effect.gen(function* () {
+    const atMs = Date.now();
     options.io.writeStderr(formatProgressLine({ kind: 'passthrough', reason: 'daemon unreachable' }));
     const killSignal = yield* Deferred.make<void>();
     const result = yield* executeCargo({
@@ -94,6 +105,28 @@ const passthrough = (options: RunExecOptions): Effect.Effect<RunExecResult> =>
       killSignal,
       onOutput: (channel, data) => Effect.sync(() => writeChannel(options.io, channel, data)),
       tailBytes: 0,
+    });
+    yield* Effect.sync(() => {
+      try {
+        mkdirSync(config.stateDir, { recursive: true });
+        const record: PassthroughSpoolRecord = {
+          version: 1,
+          id: shortId(),
+          kind: 'passthrough',
+          atMs,
+          argv: [...options.argv],
+          cwd: options.cwd,
+          session: options.session ?? null,
+          host: options.host ?? null,
+          exitCode: result.exitCode,
+        };
+        appendFileSync(
+          join(config.stateDir, passthroughSpoolFileName),
+          `${JSON.stringify(record)}\n`,
+        );
+      } catch {
+        // Passthrough must preserve cargo's result even when the state dir is unwritable.
+      }
     });
     return {
       exitCode: result.exitCode ?? 1,
@@ -191,6 +224,7 @@ const handleServerMessage = (
       case 'result-result':
       case 'session-pending-result':
       case 'session-completed-result':
+      case 'attempt-recorded':
         return;
       default: {
         const exhaustive: never = message;
@@ -345,7 +379,7 @@ export const runExecClient = (
     Effect.catchTag('DaemonUnreachable', () =>
       Effect.gen(function* () {
         if (options.autoSpawn === false) {
-          return yield* passthrough(options);
+          return yield* passthrough(options, config);
         }
         const ensure = options.ensureDaemon ?? (() => ensureDaemonRunning(config).pipe(Effect.asVoid));
         yield* ensure().pipe(
@@ -360,7 +394,7 @@ export const runExecClient = (
           Effect.ignore,
         );
         return yield* brokeredOrUnreachable(options, config).pipe(
-          Effect.catchTag('DaemonUnreachable', () => passthrough(options)),
+          Effect.catchTag('DaemonUnreachable', () => passthrough(options, config)),
         );
       }),
     ),

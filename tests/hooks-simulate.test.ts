@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 
 import { listHooks, simulateHook } from 'agent-bundle/api';
 import { describe, expect, it } from '@rstest/core';
+import * as Effect from 'effect/Effect';
 
 import { handleAfterShell } from '../src/hooks/after-shell.js';
 import {
@@ -13,6 +14,9 @@ import {
   type HookContext,
 } from '../src/hooks/before-shell.js';
 import type { HookRecord } from '../src/hooks/record.js';
+import { recordDeniedAttempt } from '../src/hooks/rpc.js';
+
+import { pollReport, withDaemon } from './harness.js';
 
 const repoRoot = fileURLToPath(new URL('..', import.meta.url));
 const fixtureRoot = join(repoRoot, 'tests', 'fixtures', 'hooks');
@@ -123,6 +127,51 @@ describe('host envelope fixtures', () => {
       expect.objectContaining({ host: 'cursor', phase: 'afterTool', session: 'sess-cursor' }),
     ]);
   });
+
+  it('records a denied destructive hook attempt in the daemon ledger', () =>
+    withDaemon(1, (fixture) =>
+      Effect.gen(function* () {
+        const result = yield* Effect.promise(() =>
+          handleBeforeShell(
+            {
+              cwd: fixture.ws1,
+              sessionId: 'deny-session',
+              toolInput: { command: 'cargo clean' },
+              toolName: 'Bash',
+            },
+            { nativeEvent: 'preToolUse', target: 'plugin' },
+            {
+              hasActiveBuilds: () => true,
+              record: () => undefined,
+              recordAttempt: (attempt) =>
+                recordDeniedAttempt(attempt, fixture.config.socketPath),
+            },
+          ),
+        );
+        expect(result).toEqual(
+          expect.objectContaining({
+            outcome: 'deny',
+            reason: expect.stringContaining('cargo clean is blocked'),
+          }),
+        );
+
+        const report = yield* pollReport(fixture, (candidate) =>
+          candidate.recent.some((request) => request.status === 'denied'),
+        );
+        expect(report.recent).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({
+              argv: ['cargo', 'clean'],
+              cwd: fixture.ws1,
+              error: expect.stringContaining('cargo clean is blocked'),
+              host: 'cursor',
+              session: 'deny-session',
+              status: 'denied',
+            }),
+          ]),
+        );
+      }),
+    ));
 });
 
 describe('agent-bundle hooks simulate', () => {

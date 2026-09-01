@@ -1,5 +1,5 @@
 import type { HookRecord } from './record.js';
-import type { FinishedTicket } from './rpc.js';
+import type { DeniedAttempt, FinishedTicket } from './rpc.js';
 
 export interface HookContext {
   readonly nativeEvent?: string;
@@ -14,26 +14,33 @@ export interface HookServices {
   readonly nowMs?: () => number;
   readonly readCursor?: (session: string) => number;
   readonly record?: (event: HookRecord) => void | Promise<void>;
+  readonly recordAttempt?: (attempt: DeniedAttempt) => void | Promise<void>;
   readonly writeCursor?: (session: string, atMs: number) => void;
 }
 
 export const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
 
+const countWord = (count: number, singular: string): string =>
+  `${count} ${count === 1 ? singular : `${singular}s`}`;
+
+const diagnosticCounts = (ticket: FinishedTicket): string | null =>
+  ticket.errorCount === null || ticket.warningCount === null
+    ? null
+    : `${countWord(ticket.errorCount, 'error')}, ${countWord(ticket.warningCount, 'warning')}`;
+
 export const formatFinishedTicket = (ticket: FinishedTicket): string => {
+  const counts = diagnosticCounts(ticket);
   switch (ticket.status) {
-    case 'done': {
-      const summary =
-        ticket.exitCode === null || ticket.exitCode === 0 ? '0 errors' : `exit ${ticket.exitCode}`;
-      return `ticket ${ticket.ticket} finished: success, ${summary} — call conductor_result ${ticket.ticket}`;
-    }
+    case 'done':
+      return `ticket ${ticket.ticket} finished: success${counts === null ? '' : `, ${counts}`} — call conductor_result ${ticket.ticket}`;
     case 'failed': {
       const detail =
         ticket.error === null || ticket.error.length === 0 ? '' : ` (${ticket.error})`;
-      return `ticket ${ticket.ticket} finished: failed${detail} — call conductor_result ${ticket.ticket}`;
+      return `ticket ${ticket.ticket} finished: failed${counts === null ? '' : `, ${counts}`}${detail} — call conductor_result ${ticket.ticket}`;
     }
     case 'killed':
-      return `ticket ${ticket.ticket} finished: killed — call conductor_result ${ticket.ticket}`;
+      return `ticket ${ticket.ticket} finished: killed${counts === null ? '' : `, ${counts}`} — call conductor_result ${ticket.ticket}`;
     default: {
       const exhaustive: never = ticket.status;
       return exhaustive;

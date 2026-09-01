@@ -41,6 +41,14 @@ const errorLine = (name: string, rendered: string, kind = 'lib'): string =>
     message: { rendered: `${rendered}\n`, level: 'error' },
   });
 
+const warningLine = (name: string, rendered: string, kind = 'lib'): string =>
+  JSON.stringify({
+    reason: 'compiler-message',
+    package_id: `path+file:///fx#${name}@0.1.0`,
+    target: { kind: [kind], name },
+    message: { rendered: `${rendered}\n`, level: 'warning' },
+  });
+
 let stageCounter = 0;
 
 const stagedCargo = (
@@ -59,6 +67,65 @@ const stagedCargo = (
 };
 
 describe('json demux early release', () => {
+  it('persists diagnostic counts per leader and follower package scope', () =>
+    withDaemon(5, (fixture) =>
+      Effect.gen(function* () {
+        const staged = stagedCargo(fixture, [
+          'sleep:0.4',
+          warningLine('aa', 'warning: aa is deprecated'),
+          artifactLine('aa'),
+          'sleep:0.4',
+          errorLine('bb', 'error[E0999]: bb broke'),
+          '{"reason":"build-finished","success":false}',
+          'exit:101',
+        ]);
+        const leaderFiber = yield* Effect.fork(
+          execRequest(fixture, {
+            cwd: fixture.ws1,
+            argv: [staged.cargoPath, 'check', '-p', 'aa', '-p', 'bb'],
+            extraEnv: staged.extraEnv,
+            timeoutMs: 15_000,
+          }),
+        );
+        yield* pollReport(fixture, (report) =>
+          report.active.some((record) => record.status === 'running'),
+        );
+
+        const followerMessages = yield* execRequest(fixture, {
+          cwd: fixture.ws1,
+          argv: [staged.cargoPath, 'check', '-p', 'aa', '--lib'],
+          extraEnv: staged.extraEnv,
+          timeoutMs: 15_000,
+        });
+        const followerExit = findExit(followerMessages);
+        expect(followerExit.status).toBe('done');
+        const leaderExit = findExit(yield* Fiber.join(leaderFiber));
+        expect(leaderExit.status).toBe('failed');
+
+        const report = yield* pollReport(fixture, (candidate) =>
+          candidate.recent.some((record) => record.ticket === leaderExit.ticket),
+        );
+        const follower = report.recent.find(
+          (record) => record.ticket === followerExit.ticket,
+        );
+        const leader = report.recent.find((record) => record.ticket === leaderExit.ticket);
+        expect(follower).toEqual(
+          expect.objectContaining({
+            diagnostics: ['warning: aa is deprecated\n'],
+            errorCount: 0,
+            warningCount: 1,
+          }),
+        );
+        expect(leader).toEqual(
+          expect.objectContaining({
+            diagnostics: ['warning: aa is deprecated\n', 'error[E0999]: bb broke\n'],
+            errorCount: 1,
+            warningCount: 1,
+          }),
+        );
+      }),
+    ));
+
   it('releases a --lib coverage waiter as soon as its packages compile, before the leader finishes', () =>
     withDaemon(5, (fixture) =>
       Effect.gen(function* () {

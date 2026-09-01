@@ -14,9 +14,19 @@ export interface PendingTicket {
 
 export interface FinishedTicket {
   readonly error: string | null;
+  readonly errorCount: number | null;
   readonly exitCode: number | null;
   readonly status: 'done' | 'failed' | 'killed';
   readonly ticket: string;
+  readonly warningCount: number | null;
+}
+
+export interface DeniedAttempt {
+  readonly argv: readonly string[];
+  readonly cwd: string;
+  readonly host: string;
+  readonly reason: string;
+  readonly session: string;
 }
 
 const asPending = (value: unknown): PendingTicket | null => {
@@ -43,9 +53,11 @@ const asFinished = (value: unknown): FinishedTicket | null => {
   }
   return {
     error: typeof value.error === 'string' ? value.error : null,
+    errorCount: typeof value.errorCount === 'number' ? value.errorCount : null,
     exitCode: typeof value.exitCode === 'number' ? value.exitCode : null,
     status,
     ticket: value.ticket,
+    warningCount: typeof value.warningCount === 'number' ? value.warningCount : null,
   };
 };
 
@@ -107,6 +119,26 @@ export const requestJson = (
       }
     });
   });
+
+export const recordDeniedAttempt = async (
+  attempt: DeniedAttempt,
+  socketPath: string = resolveHookSocketPath(),
+): Promise<void> => {
+  await requestJson(
+    {
+      argv: [...attempt.argv],
+      cwd: attempt.cwd,
+      host: attempt.host,
+      id: `hook-attempt-${Date.now()}`,
+      kind: 'denied',
+      reason: attempt.reason,
+      session: attempt.session,
+      type: 'attempt',
+    },
+    socketPath,
+    30,
+  );
+};
 
 export const listSessionPending = async (
   session: string,

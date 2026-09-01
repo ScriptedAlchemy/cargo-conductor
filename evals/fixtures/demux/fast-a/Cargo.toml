@@ -1,0 +1,8 @@
+[package]
+name = "fast-a"
+version.workspace = true
+edition.workspace = true
+build = "../build.rs"
+
+[lib]
+path = "../shared.rs"

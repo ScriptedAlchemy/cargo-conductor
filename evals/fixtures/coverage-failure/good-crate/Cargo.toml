@@ -1,0 +1,4 @@
+[package]
+name = "good-crate"
+version.workspace = true
+edition.workspace = true
