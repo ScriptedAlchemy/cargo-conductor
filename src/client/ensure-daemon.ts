@@ -42,22 +42,32 @@ const absentSocketCodes = new Set(['ECONNREFUSED', 'ENOENT']);
 
 const errorCode = (cause: unknown): string | null => {
   let current = cause;
-  for (let depth = 0; depth < 4; depth += 1) {
+  // Walk both `cause` chains and v4 Socket error wrappers: SocketError nests
+  // the syscall error (with its ECONNREFUSED/ENOENT code) under `.reason`,
+  // not `.cause` — missing that made a dead socket look like a non-absent
+  // failure, so clients never spawned the daemon.
+  for (let depth = 0; depth < 6; depth += 1) {
     if (typeof current !== 'object' || current === null) {
       return null;
     }
     if ('code' in current && typeof current.code === 'string') {
       return current.code;
     }
-    if (!('cause' in current)) {
-      return null;
+    if ('cause' in current && current.cause !== undefined && current.cause !== null) {
+      current = current.cause;
+      continue;
     }
-    current = current.cause;
+    if ('reason' in current && current.reason !== undefined && current.reason !== null) {
+      current = current.reason;
+      continue;
+    }
+    return null;
   }
   return null;
 };
 
-const daemonIsAbsent = (cause: unknown): boolean => {
+/** Exported for the regression test against real socket error shapes. */
+export const daemonIsAbsent = (cause: unknown): boolean => {
   const code = errorCode(cause);
   return code !== null && absentSocketCodes.has(code);
 };

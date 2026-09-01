@@ -6,7 +6,8 @@ import { describe, expect, it } from '@rstest/core';
 import * as Effect from 'effect/Effect';
 
 import type { DaemonConfigShape } from '../src/daemon/config.js';
-import { spawnDetachedDaemon } from '../src/client/ensure-daemon.js';
+import { daemonIsAbsent, spawnDetachedDaemon } from '../src/client/ensure-daemon.js';
+import { pingDaemon } from '../src/daemon/control.js';
 
 const configAt = (stateDir: string): DaemonConfigShape => ({
   stateDir,
@@ -47,6 +48,24 @@ describe('spawnDetachedDaemon', () => {
       expect(error._tag).toBe('SpawnDaemonError');
       expect(error.cause).toBeInstanceOf(Error);
       expect(() => fstatSync(logFd)).toThrow();
+    } finally {
+      rmSync(stateDir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('daemonIsAbsent', () => {
+  it('classifies a real dead-socket ping failure as absent (v4 nests the code under reason)', async () => {
+    const stateDir = mkdtempSync(join(tmpdir(), 'cc-absent-'));
+    try {
+      const error = await Effect.runPromise(
+        Effect.flip(pingDaemon(join(stateDir, 'missing.sock'), 300)),
+      );
+      expect(error._tag).toBe('DaemonUnreachable');
+      // The regression: v4 Socket errors wrap the syscall error under
+      // `.reason`; a walk that only follows `.cause` never finds the code,
+      // classifies the daemon as non-absent, and clients never spawn it.
+      expect(daemonIsAbsent(error.cause)).toBe(true);
     } finally {
       rmSync(stateDir, { recursive: true, force: true });
     }
