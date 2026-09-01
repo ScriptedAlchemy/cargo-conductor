@@ -35,6 +35,7 @@ import type {
 
 import { ensureDaemonRunning, type EnsureDaemonError } from './ensure-daemon.js';
 import { shouldAutoBackground } from './host-cap.js';
+import { localQueryReason } from './local-invocation.js';
 import { formatProgressLine } from './progress.js';
 
 export interface ExecIo {
@@ -75,13 +76,24 @@ const writeChannel = (io: ExecIo, channel: 'stdout' | 'stderr', data: Uint8Array
   io.writeStderr(data);
 };
 
+interface PassthroughMode {
+  readonly reason: string;
+  /**
+   * Missed real work is spooled so the daemon can ingest it into cost
+   * history later; local queries (help/version/metadata) are not work and
+   * would only pollute that history.
+   */
+  readonly spool: boolean;
+}
+
 const passthrough = (
   options: RunExecOptions,
   config: DaemonConfigShape,
+  mode: PassthroughMode,
 ): Effect.Effect<RunExecResult> =>
   Effect.gen(function* () {
     const atMs = Date.now();
-    options.io.writeStderr(formatProgressLine({ kind: 'passthrough', reason: 'daemon unreachable' }));
+    options.io.writeStderr(formatProgressLine({ kind: 'passthrough', reason: mode.reason }));
     const killSignal = yield* Deferred.make<void>();
     const result = yield* executeCargo({
       argv: options.argv,
@@ -91,33 +103,37 @@ const passthrough = (
       onOutput: (channel, data) => Effect.sync(() => writeChannel(options.io, channel, data)),
       tailBytes: 0,
     });
-    yield* Effect.sync(() => {
-      try {
-        mkdirSync(config.stateDir, { recursive: true });
-        const record: PassthroughSpoolRecord = {
-          version: 1,
-          id: shortId(),
-          kind: 'passthrough',
-          atMs,
-          argv: [...options.argv],
-          cwd: options.cwd,
-          session: options.session ?? null,
-          host: options.host ?? null,
-          exitCode: result.exitCode,
-        };
-        appendFileSync(
-          join(config.stateDir, passthroughSpoolFileName),
-          `${JSON.stringify(record)}\n`,
-        );
-      } catch {
-        // Passthrough must preserve cargo's result even when the state dir is unwritable.
-      }
-    });
+    if (mode.spool) {
+      yield* Effect.sync(() => {
+        try {
+          mkdirSync(config.stateDir, { recursive: true });
+          const record: PassthroughSpoolRecord = {
+            version: 1,
+            id: shortId(),
+            kind: 'passthrough',
+            atMs,
+            argv: [...options.argv],
+            cwd: options.cwd,
+            session: options.session ?? null,
+            host: options.host ?? null,
+            exitCode: result.exitCode,
+          };
+          appendFileSync(
+            join(config.stateDir, passthroughSpoolFileName),
+            `${JSON.stringify(record)}\n`,
+          );
+        } catch {
+          // Passthrough must preserve cargo's result even when the state dir is unwritable.
+        }
+      });
+    }
     return {
       exitCode: result.exitCode ?? 1,
       mode: 'passthrough' as const,
     };
   }).pipe(Effect.provide(NodeServices.layer));
+
+const unreachableMode: PassthroughMode = { reason: 'daemon unreachable', spool: true };
 
 const handleServerMessage = (
   options: RunExecOptions,
@@ -368,11 +384,20 @@ export const runExecClient = (
   options: RunExecOptions,
 ): Effect.Effect<RunExecResult> => {
   const config = options.config ?? resolveDaemonConfig();
+  // Help/version and other non-compiling queries never take a ticket: a
+  // brokered query would hold a lane slot behind a generic multi-minute
+  // estimate and record a spurious job outcome (observed with
+  // `cargo conductor --help` ticketed at a ~120s ETA and counted as a
+  // failed job). They run in place and stay out of the spool.
+  const localReason = localQueryReason(options.argv);
+  if (localReason !== null) {
+    return passthrough(options, config, { reason: localReason, spool: false });
+  }
   return brokeredOrUnreachable(options, config).pipe(
     Effect.catchTag('DaemonUnreachable', () =>
       Effect.gen(function* () {
         if (options.autoSpawn === false) {
-          return yield* passthrough(options, config);
+          return yield* passthrough(options, config, unreachableMode);
         }
         const ensure = options.ensureDaemon ?? (() => ensureDaemonRunning(config).pipe(Effect.asVoid));
         yield* ensure().pipe(
@@ -387,7 +412,7 @@ export const runExecClient = (
           Effect.ignore,
         );
         return yield* brokeredOrUnreachable(options, config).pipe(
-          Effect.catchTag('DaemonUnreachable', () => passthrough(options, config)),
+          Effect.catchTag('DaemonUnreachable', () => passthrough(options, config, unreachableMode)),
         );
       }),
     ),

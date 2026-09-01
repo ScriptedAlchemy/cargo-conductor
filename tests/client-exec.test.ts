@@ -89,6 +89,30 @@ describe('runExecClient', () => {
       }),
     ));
 
+  it('runs help/version queries in place without a ticket or a spool record', () =>
+    withFixture(5, (fixture) =>
+      Effect.gen(function* () {
+        const collected = collectIo();
+        const result = yield* runExecClient({
+          argv: ['cargo', 'conductor', '--help'],
+          autoSpawn: false,
+          config: fixture.config,
+          cwd: fixture.ws1,
+          env: cargoEnv(fixture),
+          io: collected.io,
+        });
+
+        expect(result).toEqual({ exitCode: 0, mode: 'passthrough' });
+        expect(collected.stdout()).toContain('fake-out:conductor --help');
+        expect(collected.stderr()).toContain('--help is a local query');
+        // Local queries are not missed work: nothing is spooled for the
+        // daemon to ingest into cost history.
+        expect(() =>
+          readFileSync(join(fixture.config.stateDir, passthroughSpoolFileName), 'utf8'),
+        ).toThrow();
+      }),
+    ));
+
   it('falls through to a local cargo process when the daemon is unreachable', () =>
     withFixture(5, (fixture) =>
       Effect.gen(function* () {

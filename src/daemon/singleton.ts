@@ -8,6 +8,7 @@ import type * as Scope from 'effect/Scope';
 import { lock } from 'proper-lockfile';
 
 import { DaemonConfig } from './config.js';
+import { armSharedJobserver, releaseSharedJobserver } from './jobserver.js';
 
 export class DaemonAlreadyRunningError extends Data.TaggedError('DaemonAlreadyRunning')<{
   readonly lockTargetPath: string;
@@ -149,4 +150,12 @@ export const acquireSingletonLock: Effect.Effect<
     try: () => writeFile(config.lockTargetPath, `${process.pid}\n`),
     catch: (cause) => new SingletonLockError({ cause }),
   });
+
+  // The singleton daemon owns the machine-wide cargo jobserver pool; its
+  // tokens live exactly as long as this retained descriptor. Arming is a
+  // best-effort optimization: on failure every spawn behaves as before.
+  yield* Effect.acquireRelease(
+    Effect.sync(() => armSharedJobserver({ stateDir: config.stateDir })),
+    () => Effect.sync(() => releaseSharedJobserver()),
+  );
 });
