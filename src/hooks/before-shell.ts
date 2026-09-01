@@ -33,6 +33,7 @@ const continueResult = (): BeforeShellResult => ({ outcome: 'continue' });
 const denyCleanReason =
   'cargo clean is blocked while cargo-conductor has in-flight builds; wait for them to finish or run conductor status';
 
+// Telemetry only: whitespace splitting intentionally does not preserve quoted arguments.
 const attemptArgv = (command: string): readonly string[] => command.trim().split(/\s+/u);
 
 const decideBeforeShell = async (

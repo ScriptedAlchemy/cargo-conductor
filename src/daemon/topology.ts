@@ -8,6 +8,8 @@ import type * as Scope from 'effect/Scope';
 import * as ChildProcess from 'effect/unstable/process/ChildProcess';
 import * as ChildProcessSpawner from 'effect/unstable/process/ChildProcessSpawner';
 
+import { isRecord } from '../lib/guards.js';
+
 import { realCargoBin } from './real-cargo.js';
 
 export interface TopologyApi {
@@ -60,9 +62,6 @@ interface EditCacheEntry {
   readonly atMs: number;
   readonly edited: boolean;
 }
-
-const isRecord = (value: unknown): value is Record<string, unknown> =>
-  typeof value === 'object' && value !== null && !Array.isArray(value);
 
 /**
  * Parses `cargo metadata --no-deps` output into the workspace-internal
@@ -296,7 +295,15 @@ export const makeTopology = (
             return true;
           });
           if (shouldRefresh) {
-            yield* Effect.forkIn(refreshEdit(packageDir), scope);
+            yield* Effect.forkIn(
+              refreshEdit(packageDir).pipe(
+                Effect.tapCause((cause) =>
+                  Effect.logDebug('topology edit refresh failed', cause),
+                ),
+                Effect.catch(() => Effect.void),
+              ),
+              scope,
+            );
           }
         }
         return edited;

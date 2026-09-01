@@ -1,9 +1,13 @@
+import { namedPackagesInArgv } from '../src/lib/argv.js';
+import { packageVersion } from '../src/lib/version.js';
+
 /**
  * Pure logic for the dashboard widget, kept DOM-free so unit tests can import
  * it directly (the widget entry touches `document` at module scope).
  */
 
 export const DEMUX_FLAG = '--message-format=json-diagnostic-rendered-ansi';
+export const dashboardVersion = packageVersion;
 
 const asStrings = (value: unknown): readonly string[] | null =>
   Array.isArray(value) && value.every((part) => typeof part === 'string')
@@ -27,23 +31,12 @@ export const argvText = (argv: unknown): string => {
 
 export const argvTitle = (argv: unknown): string => asStrings(argv)?.join(' ') ?? '';
 
-const namedPackages = (argv: readonly string[]): Set<string> => {
-  const named = new Set<string>();
-  for (let index = 0; index < argv.length; index += 1) {
-    const part = argv[index];
-    if (part === '-p' || part === '--package') {
-      const name = argv[index + 1];
-      if (name !== undefined) {
-        named.add(name);
-      }
-      continue;
-    }
-    if (part !== undefined && part.startsWith('--package=')) {
-      named.add(part.slice('--package='.length));
-    }
-  }
-  return named;
-};
+export const escapeHtml = (value: string): string =>
+  value
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;');
 
 interface RanAs {
   readonly command: string;
@@ -66,9 +59,9 @@ export const ranAsFor = (argvValue: unknown, execArgvValue: unknown): RanAs | nu
   if (cleaned.length === argv.length && cleaned.every((part, index) => part === argv[index])) {
     return null;
   }
-  const requested = namedPackages(argv);
+  const requested = namedPackagesInArgv(argv);
   let extraPackages = 0;
-  for (const name of namedPackages(cleaned)) {
+  for (const name of namedPackagesInArgv(cleaned)) {
     if (!requested.has(name)) {
       extraPackages += 1;
     }

@@ -72,7 +72,11 @@ cat > "$dest/hooks/hooks.json" <<HOOKS
 }
 HOOKS
 
-mcp_entry="$(ls "$artifact"/mcp/mcp-conductor-*.mjs | head -1)"
+mcp_entry="$(ls "$artifact"/mcp/mcp-conductor-*.mjs 2>/dev/null | head -1 || true)"
+[ -n "$mcp_entry" ] || {
+  echo "missing MCP entry mcp-conductor-*.mjs in $artifact/mcp" >&2
+  exit 1
+}
 cat > "$dest/mcp.json" <<MCP
 {
   "mcpServers": {

@@ -19,6 +19,7 @@ import type { DaemonConfigShape } from '../daemon/config.js';
 import {
   ConnectionClosedError,
   DaemonUnreachableError,
+  mapSocketFailure as mapOpenError,
 } from '../daemon/control.js';
 import {
   encodeClientMessage,
@@ -72,21 +73,6 @@ const writeChannel = (io: ExecIo, channel: 'stdout' | 'stderr', data: Uint8Array
     return;
   }
   io.writeStderr(data);
-};
-
-const mapOpenError = (error: Socket.SocketError, socketPath: string): DaemonUnreachableError | ConnectionClosedError => {
-  switch (error.reason._tag) {
-    case 'SocketOpenError':
-      return new DaemonUnreachableError({ cause: error, socketPath });
-    case 'SocketWriteError':
-    case 'SocketReadError':
-    case 'SocketCloseError':
-      return new ConnectionClosedError({ received: [], socketPath });
-    default: {
-      const exhaustive: never = error.reason;
-      return exhaustive;
-    }
-  }
 };
 
 const passthrough = (
@@ -278,7 +264,13 @@ const streamBrokered = (
           Effect.gen(function* () {
             for (const line of lines.push(data)) {
               const message = parseServerMessageLine(line);
-              received.push(message);
+              // Output chunks are piped through, not retained: a long build
+              // would otherwise accumulate its whole log (base64-inflated)
+              // in this client. Disconnect recovery only needs control
+              // messages (exit, ack, errors), which are small and bounded.
+              if (message.type !== 'output') {
+                received.push(message);
+              }
               yield* handleServerMessage(options, message, ticket, phase, finished, (target) =>
                 write(encodeClientMessage({ type: 'detach', id: `${id}-detach`, ticket: target })).pipe(
                   Effect.ignore,

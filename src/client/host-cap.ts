@@ -12,12 +12,8 @@ const capsMs: Readonly<Record<string, number>> = {
 
 const defaultCapMs = capsMs.claude;
 
-export const hostShellCapMs = (host: string | undefined): number => {
-  if (host === undefined) {
-    return defaultCapMs;
-  }
-  return capsMs[host] ?? defaultCapMs;
-};
+export const hostShellCapMs = (host: string | undefined): number =>
+  capsMs[host ?? ''] ?? defaultCapMs;
 
 export const shouldAutoBackground = (estimateMs: number, host: string | undefined): boolean =>
   host !== undefined && estimateMs > hostShellCapMs(host);

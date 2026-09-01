@@ -1,6 +1,11 @@
 import { describe, expect, it } from '@rstest/core';
 
-import { scheduleScore, selectNextIndex, type ScheduleCandidate } from '../src/daemon/scheduler.js';
+import {
+  scheduleScore,
+  selectNextIndex,
+  shouldDeferAdmission,
+  type ScheduleCandidate,
+} from '../src/daemon/scheduler.js';
 
 const candidate = (overrides: Partial<ScheduleCandidate> & Pick<ScheduleCandidate, 'id'>): ScheduleCandidate => ({
   ageMs: 0,
@@ -58,5 +63,27 @@ describe('selectNextIndex', () => {
       candidate({ estimateMs: 10_000, id: 2 }),
     ];
     expect(selectNextIndex(candidates)).toBe(2);
+  });
+});
+
+describe('shouldDeferAdmission', () => {
+  const base = { loadPerCore: 5, minConcurrent: 2, running: 3, thresholdPerCore: 2.5 };
+
+  it('defers above the threshold once the minimum concurrency is running', () => {
+    expect(shouldDeferAdmission(base)).toBe(true);
+  });
+
+  it('never throttles below the minimum concurrency, whatever the load', () => {
+    expect(shouldDeferAdmission({ ...base, running: 1 })).toBe(false);
+    expect(shouldDeferAdmission({ ...base, loadPerCore: 100, running: 0 })).toBe(false);
+  });
+
+  it('admits freely under the threshold', () => {
+    expect(shouldDeferAdmission({ ...base, loadPerCore: 2.4 })).toBe(false);
+  });
+
+  it('floors the minimum at one running build', () => {
+    expect(shouldDeferAdmission({ ...base, minConcurrent: 0, running: 1 })).toBe(true);
+    expect(shouldDeferAdmission({ ...base, minConcurrent: 0, running: 0 })).toBe(false);
   });
 });

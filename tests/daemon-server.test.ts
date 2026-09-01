@@ -110,6 +110,28 @@ describe('daemon connection output buffering', () => {
       'slow client',
     );
   });
+
+  it('drains every currently queued message in FIFO order', () => {
+    const buffer = new ConnectionOutputBuffer();
+    buffer.offer({ type: 'started', id: 'exec-1', ticket: 'cc-1', waitMs: 0 });
+    buffer.offer(output(1));
+    buffer.offer({
+      type: 'exit',
+      id: 'exec-1',
+      ticket: 'cc-1',
+      status: 'done',
+      exitCode: 0,
+      signal: null,
+      waitMs: 0,
+      runMs: 1,
+      error: null,
+    });
+
+    expect(buffer.drain().map((message) => message.type)).toEqual(['started', 'output', 'exit']);
+    expect(buffer.size).toBe(0);
+    expect(buffer.bufferedOutputBytes).toBe(0);
+    expect(buffer.bufferedOutputMessages).toBe(0);
+  });
 });
 
 describe('daemon connection defect boundaries', () => {
@@ -169,6 +191,40 @@ describe('daemon connection defect boundaries', () => {
       code: 'internal',
       message: 'internal daemon error',
     });
+  });
+
+  it('writes broker-encoded output bytes without encoding them again', async () => {
+    const encoded = Buffer.from('identical follower bytes\n').toString('base64');
+    const replies = await runMessages(
+      [
+        `${JSON.stringify({
+          type: 'exec',
+          id: 'exec-encoded',
+          argv: ['cargo', 'check'],
+          cwd: '/tmp/workspace',
+        })}\n`,
+      ],
+      brokerWith({
+        submit: (_input, callbacks) =>
+          callbacks
+            .onOutput({ channel: 'stdout', data: encoded, ticket: 'cc-1' })
+            .pipe(
+              Effect.as({
+                laneKey: 'lane',
+                position: 0,
+                ticket: 'cc-1',
+              }),
+            ),
+      }),
+    );
+
+    const message = replies.find(
+      (candidate): candidate is OutputMessage => candidate.type === 'output',
+    );
+    expect(message?.data).toBe(encoded);
+    expect(Buffer.from(message?.data ?? '', 'base64').toString('utf8')).toBe(
+      'identical follower bytes\n',
+    );
   });
 
   it('handles kill promptly while await is pending on the same connection', async () => {

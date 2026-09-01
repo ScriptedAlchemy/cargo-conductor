@@ -58,6 +58,34 @@ export const makeFixture = (maxConcurrent: number): Fixture => {
   return { config, root, binDir, ws1: makeWorkspace('ws1'), ws2: makeWorkspace('ws2') };
 };
 
+export const withTempDir = async <A>(
+  prefix: string,
+  use: (directory: string) => A | PromiseLike<A>,
+): Promise<A> => {
+  const directory = mkdtempSync(join(tmpdir(), prefix));
+  try {
+    return await use(directory);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+};
+
+export const withFixture = <A>(
+  maxConcurrent: number,
+  use: (fixture: Fixture) => Effect.Effect<A, unknown>,
+): Promise<A> =>
+  Effect.runPromise(
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fixture = makeFixture(maxConcurrent);
+        yield* Effect.addFinalizer(() =>
+          Effect.sync(() => rmSync(fixture.root, { recursive: true, force: true })),
+        );
+        return yield* use(fixture);
+      }),
+    ),
+  );
+
 export const withDaemon = <A>(
   maxConcurrent: number,
   use: (fixture: Fixture) => Effect.Effect<A, unknown>,

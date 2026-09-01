@@ -1,5 +1,3 @@
-import { randomBytes } from 'node:crypto';
-
 import * as NodeSocket from '@effect/platform-node/NodeSocket';
 import * as Data from 'effect/Data';
 import * as Deferred from 'effect/Deferred';
@@ -7,6 +5,8 @@ import * as Effect from 'effect/Effect';
 import * as Fiber from 'effect/Fiber';
 import type { Scope } from 'effect/Scope';
 import * as Socket from 'effect/unstable/socket/Socket';
+
+import { shortId } from '../lib/id.js';
 
 import type { ClientMessage, PongMessage, ServerMessage } from './protocol.js';
 import { encodeClientMessage, LineBuffer, parseServerMessageLine } from './protocol.js';
@@ -39,10 +39,10 @@ const defaultTimeoutMs = 10_000;
 
 const snapshot = (received: readonly ServerMessage[]): readonly ServerMessage[] => received.slice();
 
-const mapSocketFailure = (
+export const mapSocketFailure = (
   error: Socket.SocketError,
   socketPath: string,
-  received: readonly ServerMessage[],
+  received: readonly ServerMessage[] = [],
 ): DaemonUnreachableError | ConnectionClosedError => {
   switch (error.reason._tag) {
     case 'SocketOpenError':
@@ -170,17 +170,35 @@ export const requestOverSocket = (
   DaemonUnreachableError | ControlTimeoutError | ConnectionClosedError
 > => Effect.scoped(runRequest(options));
 
+export const requestExpecting = <T extends ServerMessage>(
+  options: Omit<RequestOverSocketOptions, 'isTerminal'>,
+  guard: (message: ServerMessage) => message is T,
+): Effect.Effect<
+  T | undefined,
+  DaemonUnreachableError | ControlTimeoutError | ConnectionClosedError
+> =>
+  requestOverSocket({ ...options, isTerminal: guard }).pipe(
+    Effect.map((messages) => messages.find(guard)),
+  );
+
 export const pingDaemon = (
   socketPath: string,
   timeoutMs?: number,
 ): Effect.Effect<PongMessage, DaemonUnreachableError | ControlTimeoutError | ConnectionClosedError> =>
-  Effect.gen(function* () {
-    const id = randomBytes(6).toString('hex');
-    const messages = yield* requestOverSocket({
-      socketPath,
-      message: { type: 'ping', id },
-      isTerminal: (message) => message.type === 'pong' && message.id === id,
-      timeoutMs,
-    });
-    return messages.find((message) => message.type === 'pong' && message.id === id) as PongMessage;
+  Effect.suspend(() => {
+    const id = shortId();
+    return requestExpecting(
+      {
+        socketPath,
+        message: { type: 'ping', id },
+        timeoutMs,
+      },
+      (message): message is PongMessage => message.type === 'pong' && message.id === id,
+    ).pipe(
+      Effect.flatMap((pong) =>
+        pong === undefined
+          ? Effect.fail(new ConnectionClosedError({ socketPath, received: [] }))
+          : Effect.succeed(pong),
+      ),
+    );
   });

@@ -10,6 +10,10 @@ const appHtml = join(repoRoot, 'artifact', 'plugin', 'mcp-apps', 'dashboard.html
 const conductorCli = join(repoRoot, 'artifact', 'plugin', 'scripts', 'conductor.mjs');
 const portFlag = process.argv.indexOf('--port');
 const port = portFlag === -1 ? 4941 : Number(process.argv[portFlag + 1]);
+if (!Number.isInteger(port) || port < 1 || port > 65_535) {
+  console.error('--port requires an integer from 1 to 65535');
+  process.exit(1);
+}
 
 const harness = `<!doctype html>
 <html>

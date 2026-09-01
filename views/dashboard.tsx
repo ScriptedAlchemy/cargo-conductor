@@ -7,6 +7,7 @@ import { createRoot } from 'react-dom/client';
 import {
   argvText,
   argvTitle,
+  dashboardVersion,
   DEMUX_FLAG,
   formatMs,
   ranAsFor,
@@ -482,7 +483,7 @@ const DashboardApp = () => {
     setInitialization({ _tag: 'Initializing' });
     void rpcRequest('ui/initialize', {
       appCapabilities: { availableDisplayModes: ['inline'] },
-      appInfo: { name: 'cargo-conductor', version: '0.1.0' },
+      appInfo: { name: 'cargo-conductor', version: dashboardVersion },
       protocolVersion: '2026-01-26',
     }).then(
       () => {

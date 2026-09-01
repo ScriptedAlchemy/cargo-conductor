@@ -8,6 +8,8 @@ import * as Layer from 'effect/Layer';
 import * as References from 'effect/References';
 import type * as SocketServer from 'effect/unstable/socket/SocketServer';
 
+import { packageVersion } from '../lib/version.js';
+
 import { Broker, BrokerLive } from './broker.js';
 import { DaemonConfig, resolveDaemonConfig } from './config.js';
 import type { DaemonConfigShape } from './config.js';
@@ -18,7 +20,7 @@ import type { SingletonLockError } from './singleton.js';
 import { acquireSingletonLock } from './singleton.js';
 import { TopologyLive } from './topology.js';
 
-export const daemonVersion = '0.1.0';
+export const daemonVersion = packageVersion;
 
 const appLayer = (config: DaemonConfigShape) =>
   BrokerLive.pipe(

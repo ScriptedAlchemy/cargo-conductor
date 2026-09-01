@@ -1,4 +1,3 @@
-import { randomBytes } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import type { DatabaseSync } from 'node:sqlite';
 
@@ -7,7 +6,7 @@ import type * as Scope from 'effect/Scope';
 
 import { resolveDaemonConfig } from './daemon/config.js';
 import type { DaemonConfigShape } from './daemon/config.js';
-import { requestOverSocket } from './daemon/control.js';
+import { requestExpecting } from './daemon/control.js';
 import { createLedgerApi, openLedgerDatabase, openLedgerDatabaseReadOnly } from './daemon/ledger.js';
 import type {
   LaneStatus,
@@ -16,6 +15,8 @@ import type {
   StatusReport,
   StatusResultMessage,
 } from './daemon/protocol.js';
+import { shortId } from './lib/id.js';
+import { countWord } from './lib/text.js';
 
 export interface ConductorSnapshot {
   readonly active: readonly RequestRecord[];
@@ -25,6 +26,7 @@ export interface ConductorSnapshot {
   readonly metrics?: StatusMetrics;
   readonly pid: number | null;
   readonly recent: readonly RequestRecord[];
+  readonly report: StatusReport | null;
   readonly socketPath: string;
   readonly startedAtMs: number | null;
   readonly stateRoot: string;
@@ -38,12 +40,7 @@ export interface LoadSnapshotOptions {
 
 const defaultRecentLimit = 50;
 
-const shortId = (): string => randomBytes(6).toString('hex');
-
 const requestWord = (count: number): string => (count === 1 ? 'request' : 'requests');
-
-const countWord = (count: number, singular: string): string =>
-  `${count} ${count === 1 ? singular : `${singular}s`}`;
 
 export const describeRequestRecord = (
   ticket: string,
@@ -74,32 +71,50 @@ const runningSummary = (report: StatusReport): string => {
   return `cargo-conductor daemon is running (pid ${report.pid}); ${queued} queued, ${running} running`;
 };
 
-const fromReport = (report: StatusReport, config: DaemonConfigShape): ConductorSnapshot => ({
-  active: report.active,
-  daemon: 'running',
-  lanes: report.lanes,
-  maxConcurrent: report.maxConcurrent,
-  ...(report.metrics === undefined ? {} : { metrics: report.metrics }),
-  pid: report.pid,
-  recent: report.recent,
-  socketPath: report.socketPath,
-  startedAtMs: report.startedAtMs,
-  stateRoot: config.stateDir,
-  summary: runningSummary(report),
-});
+/** Keep the internal raw report off the strict public status-result object spread. */
+const withReport = (
+  snapshot: Omit<ConductorSnapshot, 'report'>,
+  report: StatusReport | null,
+): ConductorSnapshot =>
+  Object.defineProperty(snapshot, 'report', {
+    enumerable: false,
+    value: report,
+  }) as ConductorSnapshot;
 
-const emptyStopped = (config: DaemonConfigShape): ConductorSnapshot => ({
-  active: [],
-  daemon: 'stopped',
-  lanes: [],
-  maxConcurrent: null,
-  pid: null,
-  recent: [],
-  socketPath: config.socketPath,
-  startedAtMs: null,
-  stateRoot: config.stateDir,
-  summary: stoppedSummary(0),
-});
+const fromReport = (report: StatusReport, config: DaemonConfigShape): ConductorSnapshot =>
+  withReport(
+    {
+      active: report.active,
+      daemon: 'running',
+      lanes: report.lanes,
+      maxConcurrent: report.maxConcurrent,
+      ...(report.metrics === undefined ? {} : { metrics: report.metrics }),
+      pid: report.pid,
+      recent: report.recent,
+      socketPath: report.socketPath,
+      startedAtMs: report.startedAtMs,
+      stateRoot: config.stateDir,
+      summary: runningSummary(report),
+    },
+    report,
+  );
+
+const emptyStopped = (config: DaemonConfigShape): ConductorSnapshot =>
+  withReport(
+    {
+      active: [],
+      daemon: 'stopped',
+      lanes: [],
+      maxConcurrent: null,
+      pid: null,
+      recent: [],
+      socketPath: config.socketPath,
+      startedAtMs: null,
+      stateRoot: config.stateDir,
+      summary: stoppedSummary(0),
+    },
+    null,
+  );
 
 /**
  * Scoped ledger handle for stopped-daemon reads: read-only when possible,
@@ -127,18 +142,21 @@ const fromLedger = (
       const ledger = createLedgerApi(db);
       const recent = yield* ledger.recentRequests(recentLimit);
       const active = yield* ledger.activeRequests();
-      return {
-        active,
-        daemon: 'stopped' as const,
-        lanes: [],
-        maxConcurrent: null,
-        pid: null,
-        recent,
-        socketPath: config.socketPath,
-        startedAtMs: null,
-        stateRoot: config.stateDir,
-        summary: stoppedSummary(recent.length),
-      };
+      return withReport(
+        {
+          active,
+          daemon: 'stopped' as const,
+          lanes: [],
+          maxConcurrent: null,
+          pid: null,
+          recent,
+          socketPath: config.socketPath,
+          startedAtMs: null,
+          stateRoot: config.stateDir,
+          summary: stoppedSummary(recent.length),
+        },
+        null,
+      );
     }),
   );
 };
@@ -148,16 +166,15 @@ export const loadConductorSnapshot = (
 ): Effect.Effect<ConductorSnapshot> => {
   const config = options.config ?? resolveDaemonConfig();
   const recentLimit = options.recentLimit ?? defaultRecentLimit;
-  return requestOverSocket({
-    isTerminal: (message) => message.type === 'status-result',
-    message: { id: shortId(), limit: recentLimit, type: 'status' },
-    socketPath: config.socketPath,
-    timeoutMs: 2_000,
-  }).pipe(
-    Effect.flatMap((messages) => {
-      const result = messages.find(
-        (message): message is StatusResultMessage => message.type === 'status-result',
-      );
+  return requestExpecting(
+    {
+      message: { id: shortId(), limit: recentLimit, type: 'status' },
+      socketPath: config.socketPath,
+      timeoutMs: 2_000,
+    },
+    (message): message is StatusResultMessage => message.type === 'status-result',
+  ).pipe(
+    Effect.flatMap((result) => {
       return result === undefined
         ? fromLedger(config, recentLimit)
         : Effect.succeed(fromReport(result.report, config));
@@ -178,8 +195,13 @@ const unresponsiveSnapshot = (
   what: string,
 ): Effect.Effect<ConductorSnapshot> =>
   fromLedger(config, recentLimit).pipe(
-    Effect.map((snapshot) => ({
-      ...snapshot,
-      summary: `cargo-conductor daemon ${what}; showing ledger data (${snapshot.recent.length} recorded)`,
-    })),
+    Effect.map((snapshot) =>
+      withReport(
+        {
+          ...snapshot,
+          summary: `cargo-conductor daemon ${what}; showing ledger data (${snapshot.recent.length} recorded)`,
+        },
+        snapshot.report,
+      ),
+    ),
   );

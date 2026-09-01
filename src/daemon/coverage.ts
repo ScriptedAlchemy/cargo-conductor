@@ -41,7 +41,7 @@ const coverageWeaker = new Set(['check']);
  */
 const coverageStronger = new Set(['build', 'check']);
 
-const stringArraysEqual = (left: readonly string[], right: readonly string[]): boolean =>
+export const stringArraysEqual = (left: readonly string[], right: readonly string[]): boolean =>
   left.length === right.length && left.every((value, index) => value === right[index]);
 
 const isSubset = (subset: readonly string[], superset: readonly string[]): boolean =>
