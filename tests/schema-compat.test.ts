@@ -190,6 +190,43 @@ describe('schema forward compatibility (issue #4)', () => {
     expect('kache' in oldClient).toBe(false);
   });
 
+  it('round-trips disk/io pressure fields and tolerates their absence', () => {
+    const base = {
+      active: [],
+      daemon: 'running',
+      lanes: [],
+      maxConcurrent: 5,
+      operation: 'status',
+      pid: 42,
+      recent: [],
+      socketPath: '/tmp/cc/daemon.sock',
+      startedAtMs: 1,
+      stateRoot: '/tmp/cc',
+      summary: 'running',
+    };
+    const withIo = statusResultSchema.parse({
+      ...base,
+      system: {
+        clampThresholdPerCore: null,
+        cores: 16,
+        disks: [{ device: 'nvme0n1p2', utilPercent: 63.2 }],
+        ioWaitPercent: 12.5,
+        loadAvg1: 3.2,
+      },
+    });
+    expect(withIo.system?.ioWaitPercent).toBe(12.5);
+    expect(withIo.system?.disks).toEqual([{ device: 'nvme0n1p2', utilPercent: 63.2 }]);
+
+    // A daemon without an honest sample (first report, macOS, Windows)
+    // omits the fields entirely rather than sending zeros.
+    const withoutIo = statusResultSchema.parse({
+      ...base,
+      system: { clampThresholdPerCore: 1.5, cores: 16, loadAvg1: 3.2 },
+    });
+    expect(withoutIo.system?.ioWaitPercent).toBeUndefined();
+    expect(withoutIo.system?.disks).toBeUndefined();
+  });
+
   it('accepts denied and passthrough terminal request records', () => {
     expect(requestRecordSchema.parse({ ...baseRecord, status: 'denied' }).status).toBe('denied');
     expect(

@@ -73,6 +73,39 @@ describe('readKacheStatusSnapshot', () => {
     }
   });
 
+  it('caps slowest crates per profile instead of ranking across profiles', () => {
+    const root = mkdtempSync(join(tmpdir(), 'cc-kache-status-profiles-'));
+    const indexPath = join(root, 'index.db');
+    try {
+      const database = new DatabaseSync(indexPath);
+      database.exec(
+        'CREATE TABLE entries (crate_name TEXT, profile TEXT, compile_time_ms INTEGER)',
+      );
+      const insert = database.prepare(
+        'INSERT INTO entries (crate_name, profile, compile_time_ms) VALUES (?, ?, ?)',
+      );
+      // Seven release timings, all slower than every dev timing: a global
+      // top-N would evict dev entirely.
+      for (let index = 0; index < 7; index += 1) {
+        insert.run(`release-${index}`, 'release', 100_000 - index);
+      }
+      insert.run('dev-a', 'dev', 900);
+      insert.run('dev-b', 'dev', 800);
+      database.close();
+
+      const { status } = readKacheStatusSnapshot(indexPath, { nowMs: 1_000 });
+      const byProfile = new Map<string, number>();
+      for (const row of status.topCrates) {
+        byProfile.set(row.profile, (byProfile.get(row.profile) ?? 0) + 1);
+      }
+      expect(byProfile.get('release')).toBe(5);
+      expect(byProfile.get('dev')).toBe(2);
+      expect(status.topCrates.map((row) => row.crate)).toContain('dev-b');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it('reports an unavailable configured index without throwing', () => {
     const root = mkdtempSync(join(tmpdir(), 'cc-kache-status-missing-'));
     try {

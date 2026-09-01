@@ -7,17 +7,23 @@ import { createRoot } from 'react-dom/client';
 import {
   argvText,
   argvTitle,
+  attachSavings,
   dashboardVersion,
   DEMUX_FLAG,
+  diagnosticBadges,
   formatBytes,
   formatCompactNumber,
   formatMs,
   frequencyEntries,
   frequencyTotal,
   kacheColumns,
+  kacheProfileGroups,
+  laneIsActive,
+  outputTextFor,
   pathBasename,
   percentileMinSamples,
   pollStatus,
+  queuedWaitMs,
   ranAsFor,
   relativeTime,
   remainingEstimateMs,
@@ -25,6 +31,7 @@ import {
   runMetricsView,
   sectionOrder,
   shortenPath,
+  subcommandTimings,
   terminalStatuses,
   ticketDetailFrom,
   type RunHistogramShape,
@@ -49,6 +56,13 @@ interface SystemLoadShape {
   readonly loadAvg1?: unknown;
   readonly cores?: unknown;
   readonly clampThresholdPerCore?: unknown;
+  readonly ioWaitPercent?: unknown;
+  readonly disks?: unknown;
+}
+
+interface DiskUtilShape {
+  readonly device?: unknown;
+  readonly utilPercent?: unknown;
 }
 
 interface StructuredContent {
@@ -88,6 +102,9 @@ interface RequestRow {
   readonly startedAtMs?: unknown;
   readonly estimateMs?: unknown;
   readonly workspaceRoot?: unknown;
+  readonly intentJson?: unknown;
+  readonly errorCount?: unknown;
+  readonly warningCount?: unknown;
 }
 
 interface LaneRow {
@@ -258,17 +275,53 @@ const who = (row: RequestRow): ReactNode => {
   );
 };
 
-/** Running rows: elapsed plus a remaining hint, gated so estimate ≈ elapsed never fakes a countdown. */
-const elapsedCell = (sinceMs: unknown, estimateMs: unknown, nowMs: number): ReactNode => {
+/**
+ * Running rows: elapsed plus a remaining hint, gated so estimate ≈ elapsed
+ * never fakes a countdown, plus the queue wait when the row queued first —
+ * elapsed alone understates how long the requester has been waiting.
+ */
+const elapsedCell = (
+  sinceMs: unknown,
+  estimateMs: unknown,
+  waitMs: unknown,
+  nowMs: number,
+): ReactNode => {
   if (typeof sinceMs !== 'number') {
     return '—';
   }
   const elapsed = Math.max(0, nowMs - sinceMs);
   const remaining = remainingEstimateMs(elapsed, estimateMs);
+  const waited = queuedWaitMs(waitMs);
   return (
     <>
       <span className="dur">{formatMs(elapsed)}</span>
       {remaining === null ? null : <span className="est"> · ~{formatMs(remaining)} left</span>}
+      {waited === null ? null : (
+        <span className="est" title="time spent queued before this run started">
+          {' '}· waited {formatMs(waited)}
+        </span>
+      )}
+    </>
+  );
+};
+
+/** Error/warning count badges for a row; nothing renders when both are zero or unknown. */
+const DiagBadges = ({ row }: { readonly row: RequestRow }): ReactNode => {
+  const badges = diagnosticBadges(row.errorCount, row.warningCount);
+  if (badges.length === 0) {
+    return null;
+  }
+  return (
+    <>
+      {badges.map((badge) => (
+        <span
+          className={`badge ${badge.kind === 'errors' ? 'err' : 'warn'}`}
+          key={badge.kind}
+          title={`${badge.count} ${badge.kind === 'errors' ? 'error' : 'warning'}${badge.count === 1 ? '' : 's'} from cargo diagnostics`}
+        >
+          {badge.count}{badge.kind === 'errors' ? 'E' : 'W'}
+        </span>
+      ))}
     </>
   );
 };
@@ -327,7 +380,7 @@ const Command = ({ row }: { readonly row: RequestRow }): ReactNode => {
 
 const requestCells = (row: RequestRow): readonly ReactNode[] => [
   ticket(row.ticket),
-  <Command row={row} />,
+  <><Command row={row} /><DiagBadges row={row} /></>,
   workspace(row.workspaceRoot),
   who(row),
 ];
@@ -388,13 +441,15 @@ const Table = ({
 const Stat = ({
   barPercent,
   label,
+  title,
   value,
 }: {
   readonly barPercent?: number;
   readonly label: string;
+  readonly title?: string;
   readonly value: string;
 }): ReactNode => (
-  <div className="stat">
+  <div className="stat" title={title}>
     <b>{value}</b>
     <span>{label}</span>
     {barPercent === undefined ? null : (
@@ -459,6 +514,53 @@ const LoadStat = ({ system }: { readonly system: SystemLoadShape | null }): Reac
   );
 };
 
+/**
+ * Disk/IO pressure beside loadavg: high iowait with a modest loadavg is the
+ * disk-stalled-build tell that load alone hides. The daemon only sends these
+ * fields when it has an honest Linux /proc delta, so absence renders nothing
+ * rather than a fabricated zero.
+ */
+const DiskIoStat = ({ system }: { readonly system: SystemLoadShape | null }): ReactNode => {
+  const ioWait = typeof system?.ioWaitPercent === 'number' ? system.ioWaitPercent : null;
+  const disks = (Array.isArray(system?.disks) ? system.disks : []).filter(
+    (disk: DiskUtilShape) =>
+      typeof disk.device === 'string' && typeof disk.utilPercent === 'number',
+  );
+  if (ioWait === null && disks.length === 0) {
+    return null;
+  }
+  return (
+    <>
+      {ioWait === null ? null : (
+        <div
+          className="stat"
+          title="share of CPU time spent waiting on disk I/O since the previous status sample; high iowait beside a modest loadavg means builds are stalled on disk, not CPU"
+        >
+          <b>{ioWait.toFixed(ioWait < 10 ? 1 : 0)}%</b>
+          <span>iowait (cpu)</span>
+        </div>
+      )}
+      {disks.length === 0 ? null : (
+        <div
+          className="stat"
+          title="percent of wall time each device backing the state dir and in-flight target dirs had I/O in flight, since the previous status sample"
+        >
+          <b>
+            {disks.map((disk, index) => (
+              <span className="diskutil" key={String(disk.device)}>
+                {index > 0 ? ' ' : ''}
+                <span className="est">{String(disk.device)}</span>{' '}
+                {Number(disk.utilPercent).toFixed(0)}%
+              </span>
+            ))}
+          </b>
+          <span>disk busy</span>
+        </div>
+      )}
+    </>
+  );
+};
+
 const StatusPill = ({ status }: { readonly status: unknown }): ReactNode => {
   const value = typeof status === 'string' && status.length > 0 ? status : 'unknown';
   return <span className={`pill ${terminalStatuses.has(value) ? value : 'neutral'}`}>{value}</span>;
@@ -476,16 +578,20 @@ const DrawerOutput = ({ state }: { readonly state: Exclude<DrawerState, { _tag: 
       return <p className="empty">Loading output…</p>;
     case 'Failed':
       return <p className="drawer-error">Could not load output: {state.message}</p>;
-    case 'Loaded':
-      return state.detail.outputTail === null ? (
+    case 'Loaded': {
+      // A live daemon nulls outputTail on status rows; the rendered
+      // diagnostics the ledger kept are the next-best evidence.
+      const text = outputTextFor(state.detail);
+      return text === null ? (
         <p className="empty">
           {terminalStatuses.has(state.detail.status)
             ? 'No output was captured for this ticket.'
             : 'No output yet — the tail is captured when the run finishes.'}
         </p>
       ) : (
-        <pre className="output">{state.detail.outputTail}</pre>
+        <pre className="output">{text}</pre>
       );
+    }
     default: {
       const exhaustive: never = state;
       return exhaustive;
@@ -564,9 +670,12 @@ const frequencyText = (entries: readonly (readonly [string, number])[]): string 
 const MetricsSection = ({
   finished,
   metrics,
+  rows,
 }: {
   readonly finished: readonly RequestRow[];
   readonly metrics: StatusMetricsShape | null;
+  /** Every visible row (active + recent): attach savings needs leaders in flight too. */
+  readonly rows: readonly RequestRow[];
 }): ReactNode => {
   const runs = runMetricsView(metrics?.cargo_run_ms);
   // Queue latency derives from the visible finished rows: honest about its
@@ -578,15 +687,31 @@ const MetricsSection = ({
   const waitP50 = waits.length === 0 ? null : waits[Math.floor((waits.length - 1) * 0.5)];
   const waitMax = waits.length === 0 ? null : waits[waits.length - 1];
   const outcomes = frequencyEntries(metrics?.job_outcome);
+  const outcomeTotal = frequencyTotal(metrics?.job_outcome);
   const attachEntries = frequencyEntries(metrics?.attach_mode);
   const attachTotal = frequencyTotal(metrics?.attach_mode);
   const percentileScale = runs.p95Ms ?? runs.p50Ms ?? 0;
+  // Check and test are different populations: the since-start histogram
+  // cannot be split retroactively, so the split comes from the visible
+  // finished rows, each line carrying its own honest n.
+  const bySubcommand = subcommandTimings(finished);
+  const savings = attachSavings(rows);
+  const savedText =
+    savings.savedExactMs > 0
+      ? `${formatMs(savings.savedExactMs)}${savings.savedEstimatedMs > 0 ? ` +~${formatMs(savings.savedEstimatedMs)} est` : ''}`
+      : savings.savedEstimatedMs > 0
+        ? `~${formatMs(savings.savedEstimatedMs)} est`
+        : null;
 
   return (
     <section>
       <h2>Metrics <span className="count">(since daemon start)</span></h2>
       <div className="stats">
-        <Stat label="runs tracked (n)" value={formatCompactNumber(runs.count)} />
+        <Stat
+          label="runs timed (n)"
+          title="leader cargo runs with a recorded duration since daemon start; all subcommands blended — see the per-command split below"
+          value={formatCompactNumber(runs.count)}
+        />
         <Stat
           barPercent={
             runs.p50Ms === null || percentileScale <= 0
@@ -594,6 +719,7 @@ const MetricsSection = ({
               : (runs.p50Ms / percentileScale) * 100
           }
           label="run p50"
+          title="all subcommands blended; per-command timings are split below"
           value={runs.p50Ms === null ? '—' : `≤${formatMs(runs.p50Ms)}`}
         />
         {/* p95 on a tiny sample is just "slowest run so far": gated in runMetricsView. */}
@@ -608,6 +734,7 @@ const MetricsSection = ({
           <Stat
             barPercent={percentileScale <= 0 ? undefined : (runs.p95Ms / percentileScale) * 100}
             label="run p95"
+            title="all subcommands blended; per-command timings are split below"
             value={`≤${formatMs(runs.p95Ms)}`}
           />
         )}
@@ -618,17 +745,47 @@ const MetricsSection = ({
         />
         <Stat label="wait max" value={waitMax === null ? '—' : formatMs(waitMax)} />
         {attachTotal > 0 ? (
-          <Stat label="runs avoided" value={formatCompactNumber(attachTotal)} />
+          <Stat
+            label="runs avoided (attach)"
+            title="requests served by attaching to another in-flight run (identity, coverage, or batch coalescing) — conductor scheduling, not kache cache hits"
+            value={formatCompactNumber(attachTotal)}
+          />
         ) : null}
       </div>
-      {outcomes.length === 0 && attachEntries.length === 0 ? null : (
+      {outcomes.length === 0 && attachEntries.length === 0 && savedText === null ? null : (
         <div className="stats metricsdetail">
           {outcomes.length === 0 ? null : (
-            <Stat label="outcomes" value={frequencyText(outcomes)} />
+            <Stat
+              label={`outcomes (n=${formatCompactNumber(outcomeTotal)})`}
+              title="finished requests by outcome since daemon start — a different population from timed runs: attached and denied requests finish without a timed leader run"
+              value={frequencyText(outcomes)}
+            />
           )}
           {attachEntries.length === 0 ? null : (
-            <Stat label="attach modes (runs avoided)" value={frequencyText(attachEntries)} />
+            <Stat label="attach modes" value={frequencyText(attachEntries)} />
           )}
+          {savedText === null ? null : (
+            <Stat
+              label="attach time saved (visible rows)"
+              title="runtime attached requests never spent: the leader's real duration when it finished on screen, otherwise the follower's own prior-run estimate (marked est) — kache compile timings never feed this number"
+              value={`${savedText}${savings.batchExtraPackages > 0 ? ` · +${savings.batchExtraPackages} pkg${savings.batchExtraPackages === 1 ? '' : 's'} folded` : ''}`}
+            />
+          )}
+        </div>
+      )}
+      {bySubcommand.length === 0 ? null : (
+        <div className="subcommand-split">
+          <h3>
+            By command <span>(last {finished.length} finished — separate populations, not the histogram above)</span>
+          </h3>
+          {bySubcommand.map((timing) => (
+            <div className="compact-row" key={timing.subcommand}>
+              <span className="cmd">cargo {timing.subcommand}</span>
+              <span className="row-value">
+                n={timing.count} · p50 {formatMs(timing.p50Ms)} · max {formatMs(timing.maxMs)}
+              </span>
+            </div>
+          ))}
         </div>
       )}
     </section>
@@ -649,10 +806,6 @@ const KacheSection = ({ value }: { readonly value: unknown }): ReactNode => {
       typeof row.profile === 'string' &&
       typeof row.ms === 'number' &&
       row.ms > 0,
-  );
-  const maximumMs = topCrates.reduce(
-    (maximum, row) => Math.max(maximum, typeof row.ms === 'number' ? row.ms : 0),
-    0,
   );
   const countValue = (value: unknown): string =>
     typeof value === 'number' ? formatCompactNumber(value) : '—';
@@ -678,7 +831,7 @@ const KacheSection = ({ value }: { readonly value: unknown }): ReactNode => {
           }
         />
       </div>
-      <KacheColumns maximumMs={maximumMs} roots={roots} topCrates={topCrates} />
+      <KacheColumns roots={roots} topCrates={topCrates} />
     </section>
   );
 };
@@ -686,11 +839,9 @@ const KacheSection = ({ value }: { readonly value: unknown }): ReactNode => {
 // Empty kache sub-panels collapse like the top-level sections: no
 // "No recent heartbeats." placeholder on an idle machine.
 const KacheColumns = ({
-  maximumMs,
   roots,
   topCrates,
 }: {
-  readonly maximumMs: number;
   readonly roots: readonly KacheRootRow[];
   readonly topCrates: readonly KacheTopCrateRow[];
 }): ReactNode => {
@@ -722,31 +873,37 @@ const KacheColumns = ({
               </div>
             );
           case 'crates':
+            // Grouped by profile: dev/release/test timings are different
+            // populations, so crates are never ranked — and never metered —
+            // across profiles; each group's meter is relative to its own max.
             return (
               <div key="crates">
-                <h3>Slowest crates</h3>
-                <div className="crate-list">
-                  {topCrates.map((row, index) => {
-                    const crate = typeof row.crate === 'string' ? row.crate : '';
-                    const profile = typeof row.profile === 'string' ? row.profile : '';
-                    const ms = typeof row.ms === 'number' ? row.ms : 0;
-                    return (
-                      <div className="crate-row" key={`${crate}-${profile}-${index}`}>
-                        <div className="crate-label">
-                          <span className="crate-name" title={crate}>{crate}</span>
-                          <span className="profile">{profile}</span>
-                          <span className="row-value">{formatMs(ms)}</span>
+                <h3>Slowest crates <span>(per profile)</span></h3>
+                {kacheProfileGroups(topCrates).map((group) => (
+                  <div className="crate-group" key={group.profile}>
+                    <div className="crate-group-head">
+                      <span className="profile">{group.profile}</span>
+                    </div>
+                    <div className="crate-list">
+                      {group.rows.map((row) => (
+                        <div className="crate-row" key={`${group.profile}-${row.crate}`}>
+                          <div className="crate-label">
+                            <span className="crate-name" title={row.crate}>{row.crate}</span>
+                            <span className="row-value">{formatMs(row.ms)}</span>
+                          </div>
+                          <div className="crate-meter" aria-hidden="true">
+                            <div
+                              className="crate-meter-fill"
+                              style={{
+                                width: `${group.maxMs > 0 ? (row.ms / group.maxMs) * 100 : 0}%`,
+                              }}
+                            />
+                          </div>
                         </div>
-                        <div className="crate-meter" aria-hidden="true">
-                          <div
-                            className="crate-meter-fill"
-                            style={{ width: `${maximumMs > 0 ? (ms / maximumMs) * 100 : 0}%` }}
-                          />
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
+                      ))}
+                    </div>
+                  </div>
+                ))}
               </div>
             );
           default: {
@@ -771,11 +928,8 @@ const DashboardContent = ({ structured }: { readonly structured: StructuredConte
   const attached = active.filter((row) => typeof row.attachedTo === 'string');
   const maxConcurrent = typeof structured?.maxConcurrent === 'number' ? structured.maxConcurrent : 0;
   const queueRows = queued.concat(attached.filter((row) => row.status !== 'running'));
-  const activeLanes = lanes.filter(
-    (lane) =>
-      (typeof lane.queued === 'number' && lane.queued > 0) ||
-      typeof lane.runningTicket === 'string',
-  );
+  // Idle lanes (nothing running, nothing queued) collapse out of the table.
+  const activeLanes = lanes.filter(laneIsActive);
   const finished = recent
     .filter((row) => typeof row.status === 'string' && terminalStatuses.has(row.status))
     .slice(0, 20);
@@ -829,6 +983,7 @@ const DashboardContent = ({ structured }: { readonly structured: StructuredConte
             {daemonUp ? (
               <div className="stats">
                 <LoadStat system={system} />
+                <DiskIoStat system={system} />
                 <AdmissionMeter
                   permitHolders={permitHolders}
                   riders={riders}
@@ -854,7 +1009,7 @@ const DashboardContent = ({ structured }: { readonly structured: StructuredConte
               rows={running.map((row) => ({
                 cells: [
                   ...requestCells(row),
-                  elapsedCell(row.startedAtMs ?? row.createdAtMs, row.estimateMs, nowMs),
+                  elapsedCell(row.startedAtMs ?? row.createdAtMs, row.estimateMs, row.waitMs, nowMs),
                 ],
                 onSelect: selectRow(row),
               }))}
@@ -881,7 +1036,14 @@ const DashboardContent = ({ structured }: { readonly structured: StructuredConte
           </section>
         );
       case 'metrics':
-        return <MetricsSection finished={finished} key="metrics" metrics={metrics} />;
+        return (
+          <MetricsSection
+            finished={finished}
+            key="metrics"
+            metrics={metrics}
+            rows={active.concat(recent)}
+          />
+        );
       case 'kache':
         return <KacheSection key="kache" value={structured?.kache} />;
       case 'lanes':
@@ -913,7 +1075,7 @@ const DashboardContent = ({ structured }: { readonly structured: StructuredConte
               rows={finished.map((row) => ({
                 cells: [
                   ticket(row.ticket),
-                  <StatusPill status={row.status} />,
+                  <><StatusPill status={row.status} /><DiagBadges row={row} /></>,
                   who(row),
                   typeof row.createdAtMs === 'number' ? relativeTime(row.createdAtMs, nowMs) : '—',
                   duration(row.waitMs),
