@@ -50,7 +50,7 @@ afterEach(() => {
   }
 });
 
-const unusedKill = (): Deferred.Deferred<void> => Effect.runSync(Deferred.make<void>());
+const unusedKill = (): Deferred.Deferred<void> => Deferred.makeUnsafe<void>();
 
 const runExecute = (options: ExecuteCargoOptions): Promise<ExecutionResult> =>
   Effect.runPromise(executeCargo(options).pipe(Effect.provide(NodeServices.layer)));

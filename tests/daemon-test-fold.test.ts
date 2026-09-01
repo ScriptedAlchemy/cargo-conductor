@@ -116,8 +116,9 @@ describe('test batch folding', () => {
           expect(output).toContain('filter_a');
           expect(output).toContain('filter_b');
 
-          yield* Effect.all(
-            [alpha, alphaFollowerOne, alphaFollowerTwo, beta].map(Fiber.join),
+          yield* Effect.forEach(
+            [alpha, alphaFollowerOne, alphaFollowerTwo, beta],
+            Fiber.join,
             { concurrency: 'unbounded', discard: true },
           );
         }),

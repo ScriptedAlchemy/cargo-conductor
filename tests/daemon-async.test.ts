@@ -97,7 +97,7 @@ describe('async tickets', () => {
       Layer.provideMerge(Layer.succeed(DaemonConfig, fixture.config)),
       Layer.provideMerge(NodeServices.layer),
     );
-    const started = Effect.runSync(Deferred.make<void>());
+    const started = Deferred.makeUnsafe<void>();
     const callbacks = {
       onExit: () => Effect.void,
       onOutput: () => Effect.void,
@@ -240,10 +240,10 @@ describe('async tickets', () => {
     const fixture = makeFixture(1);
     const db = openLedgerDatabase(fixture.config.databasePath);
     const baseLedger = createLedgerApi(db);
-    const readStarted = Effect.runSync(Deferred.make<void>());
-    const releaseRead = Effect.runSync(Deferred.make<void>());
-    const runStarted = Effect.runSync(Deferred.make<void>());
-    const runFinished = Effect.runSync(Deferred.make<void>());
+    const readStarted = Deferred.makeUnsafe<void>();
+    const releaseRead = Deferred.makeUnsafe<void>();
+    const runStarted = Deferred.makeUnsafe<void>();
+    const runFinished = Deferred.makeUnsafe<void>();
     let delayNextRead = false;
     let delayed = false;
     const ledger: LedgerApi = {

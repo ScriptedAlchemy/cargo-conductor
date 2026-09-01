@@ -279,7 +279,7 @@ describe('deterministic cargo-conductor acceptance evals', () => {
               ),
             600,
           );
-          const clients = yield* Effect.all(fibers.map(Fiber.join), {
+          const clients = yield* Effect.forEach(fibers, Fiber.join, {
             concurrency: 'unbounded',
           });
           const exits = clients.map(findExit);

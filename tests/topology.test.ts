@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { describe, expect, it } from '@rstest/core';
+import * as Data from 'effect/Data';
 import * as Deferred from 'effect/Deferred';
 import * as Effect from 'effect/Effect';
 
@@ -37,6 +38,8 @@ const metadataJson = JSON.stringify({
     },
   ],
 });
+
+class FixtureError extends Data.TaggedError('FixtureError')<{ readonly reason: string }> {}
 
 describe('parseWorkspaceMetadata', () => {
   it('keeps only workspace-internal dependency edges', () => {
@@ -119,11 +122,11 @@ const awaitSettled = <A, E>(deferred: Deferred.Deferred<A, E>): Effect.Effect<A,
 describe('makeTopology', () => {
   it('returns edit data immediately, refreshes in the background, and retries after failure', async () => {
     const packageDir = '/workspace/alpha';
-    const metadataLoaded = Effect.runSync(Deferred.make<void>());
-    const firstScanStarted = Effect.runSync(Deferred.make<void>());
-    const releaseFirstScan = Effect.runSync(Deferred.make<void>());
-    const firstScanFinished = Effect.runSync(Deferred.make<void>());
-    const secondScanFinished = Effect.runSync(Deferred.make<void>());
+    const metadataLoaded = Deferred.makeUnsafe<void>();
+    const firstScanStarted = Deferred.makeUnsafe<void>();
+    const releaseFirstScan = Deferred.makeUnsafe<void>();
+    const firstScanFinished = Deferred.makeUnsafe<void>();
+    const secondScanFinished = Deferred.makeUnsafe<void>();
     let scans = 0;
     const metadata = {
       packageDirs: new Map([['alpha', packageDir]]),
@@ -142,7 +145,7 @@ describe('makeTopology', () => {
                 if (scans === 1) {
                   return Deferred.succeed(firstScanStarted, undefined).pipe(
                     Effect.andThen(Deferred.await(releaseFirstScan)),
-                    Effect.andThen(Effect.fail(new Error('stat failed'))),
+                    Effect.andThen(Effect.fail(new FixtureError({ reason: 'stat failed' }))),
                     Effect.ensuring(Deferred.succeed(firstScanFinished, undefined)),
                   );
                 }
@@ -171,8 +174,8 @@ describe('makeTopology', () => {
   });
 
   it('clears metadata refresh bookkeeping after failure and caches only success', async () => {
-    const firstLoadFinished = Effect.runSync(Deferred.make<void>());
-    const secondLoadFinished = Effect.runSync(Deferred.make<void>());
+    const firstLoadFinished = Deferred.makeUnsafe<void>();
+    const secondLoadFinished = Deferred.makeUnsafe<void>();
     let loads = 0;
     const metadata = parseWorkspaceMetadata(metadataJson);
 
@@ -184,7 +187,7 @@ describe('makeTopology', () => {
               Effect.suspend(() => {
                 loads += 1;
                 if (loads === 1) {
-                  return Effect.fail(new Error('metadata failed')).pipe(
+                  return Effect.fail(new FixtureError({ reason: 'metadata failed' })).pipe(
                     Effect.ensuring(Deferred.succeed(firstLoadFinished, undefined)),
                   );
                 }

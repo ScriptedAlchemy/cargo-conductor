@@ -340,7 +340,7 @@ describe('conductor daemon', () => {
           for (let attempt = 0; attempt < 30; attempt += 1) {
             const alive = yield* pingDaemon(fixture.config.socketPath, 300).pipe(
               Effect.map(() => true),
-              Effect.catch(() => Effect.succeed(false)),
+              Effect.orElseSucceed(() => false),
             );
             if (!alive) {
               return true;

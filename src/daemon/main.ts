@@ -80,8 +80,8 @@ export const runDaemon = (
     // Defects escaping any daemon fiber must land in the log at Error, not
     // vanish at the default level.
     Effect.provideService(References.UnhandledLogLevel, 'Error'),
-    Effect.provide(appLayer(config)),
-    Effect.provide(minimumLogLevelLayer),
+    // One merged provide: chained provides can split layer lifecycles.
+    Effect.provide(Layer.mergeAll(appLayer(config), minimumLogLevelLayer)),
     Effect.as('completed' as const),
     Effect.catchTag('DaemonAlreadyRunning', () => Effect.succeed('already-running' as const)),
   );

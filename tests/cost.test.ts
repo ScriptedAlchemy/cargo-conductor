@@ -6,6 +6,7 @@ import { DatabaseSync } from 'node:sqlite';
 
 import { describe, expect, it } from '@rstest/core';
 import * as Deferred from 'effect/Deferred';
+import * as Data from 'effect/Data';
 import * as Effect from 'effect/Effect';
 import * as Fiber from 'effect/Fiber';
 
@@ -29,6 +30,8 @@ const intent = (argv: readonly string[], cwd = '/tmp/ws') =>
 const indexPriors = (
   compileTimeMs: KacheIndexPriors['compileTimeMs'],
 ): KacheIndexPriors => ({ compileTimeMs });
+
+class TransientError extends Data.TaggedError('TransientError')<{}> {}
 
 describe('defaultEstimateFor', () => {
   it('uses mined p50 priors and doubles workspace-wide work', () => {
@@ -210,7 +213,7 @@ describe('createCostModel', () => {
       `${JSON.stringify({ crate_name: 'alpha', profile: 'dev', compile_time_ms: 3_000 })}\n`,
     );
     const loaded = readKacheEventPriors(eventsPath);
-    const releaseLoad = Effect.runSync(Deferred.make<void>());
+    const releaseLoad = Deferred.makeUnsafe<void>();
     let attempts = 0;
     try {
       const model = createCostModel({
@@ -218,7 +221,7 @@ describe('createCostModel', () => {
           load: () => {
             attempts += 1;
             return attempts === 1
-              ? Effect.fail(new Error('transient'))
+              ? Effect.fail(new TransientError())
               : Deferred.await(releaseLoad).pipe(Effect.as(loaded));
           },
           ttlMs: 0,
@@ -338,8 +341,8 @@ describe('createCostModel', () => {
   });
 
   it('does not overwrite a concurrent outcome with stale seed data', async () => {
-    const seedStarted = Effect.runSync(Deferred.make<void>());
-    const releaseSeed = Effect.runSync(Deferred.make<void>());
+    const seedStarted = Deferred.makeUnsafe<void>();
+    const releaseSeed = Deferred.makeUnsafe<void>();
     const model = createCostModel({
       kacheReader: null,
       seedDurations: () =>

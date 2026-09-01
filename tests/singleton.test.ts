@@ -6,7 +6,7 @@ import { makeSingletonCompromiseController } from '../src/daemon/singleton.js';
 
 describe('makeSingletonCompromiseController', () => {
   it('signals fatal teardown and arms a forced-exit fallback without exiting immediately', async () => {
-    const fatalShutdown = Effect.runSync(Deferred.make<Error>());
+    const fatalShutdown = Deferred.makeUnsafe<Error>();
     const stderr: string[] = [];
     let exitCode: number | undefined;
     let forceExit: (() => void) | undefined;

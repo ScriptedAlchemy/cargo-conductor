@@ -238,7 +238,7 @@ export const makeTopology = (
                 Effect.tapCause((cause) =>
                   Effect.logDebug('topology metadata refresh failed', cause),
                 ),
-                Effect.catch(() => Effect.void),
+                Effect.ignore,
               ),
               scope,
             );
@@ -300,7 +300,7 @@ export const makeTopology = (
                 Effect.tapCause((cause) =>
                   Effect.logDebug('topology edit refresh failed', cause),
                 ),
-                Effect.catch(() => Effect.void),
+                Effect.ignore,
               ),
               scope,
             );
