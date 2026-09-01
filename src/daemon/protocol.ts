@@ -1,5 +1,7 @@
 import { z } from 'zod';
 
+export { LineBuffer } from '../lib/ndjson.js';
+
 /**
  * Wire protocol for the conductor daemon: one JSON document per line
  * (NDJSON) in each direction over the daemon's unix socket. This module is
@@ -103,11 +105,14 @@ export const detachRequestSchema = z.object({
   ticket: z.string().min(1),
 });
 
+/** Await ceiling (2h) — the single source for daemon wire and operation schemas. */
+export const awaitCeilingMs = 7_200_000;
+
 export const awaitRequestSchema = z.object({
   type: z.literal('await'),
   id: z.string().min(1),
   ticket: z.string().min(1),
-  maxWaitMs: z.number().int().min(0).max(900_000).optional(),
+  maxWaitMs: z.number().int().min(0).max(awaitCeilingMs).optional(),
 });
 
 export const resultRequestSchema = z.object({
@@ -371,6 +376,13 @@ export const parseServerMessageLine = (line: string): ServerMessage =>
 
 export const formatTicket = (id: number): string => `cc-${id}`;
 
+const ticketPattern = /^cc-(\d+)$/u;
+
+export const parseTicket = (ticket: string): number | null => {
+  const match = ticketPattern.exec(ticket);
+  return match === null ? null : Number(match[1]);
+};
+
 export const passthroughSpoolFileName = 'passthrough-attempts.v1.jsonl';
 
 export interface PassthroughSpoolRecord {
@@ -383,37 +395,4 @@ export interface PassthroughSpoolRecord {
   readonly session: string | null;
   readonly host: string | null;
   readonly exitCode: number | null;
-}
-
-/**
- * Incremental NDJSON framing over a byte stream. Buffers bytes (not strings)
- * so multi-byte UTF-8 sequences split across socket chunks decode correctly.
- */
-export class LineBuffer {
-  #pending: Buffer = Buffer.alloc(0);
-
-  push(data: Uint8Array): string[] {
-    this.#pending = Buffer.concat([this.#pending, Buffer.from(data)]);
-    const lines: string[] = [];
-    let newlineIndex = this.#pending.indexOf(0x0a);
-    while (newlineIndex !== -1) {
-      const line = this.#pending.subarray(0, newlineIndex).toString('utf8');
-      this.#pending = this.#pending.subarray(newlineIndex + 1);
-      if (line.trim().length > 0) {
-        lines.push(line);
-      }
-      newlineIndex = this.#pending.indexOf(0x0a);
-    }
-    return lines;
-  }
-
-  /** Returns the unterminated remainder (if any) and resets the buffer. */
-  flush(): string | null {
-    if (this.#pending.byteLength === 0) {
-      return null;
-    }
-    const remainder = this.#pending.toString('utf8');
-    this.#pending = Buffer.alloc(0);
-    return remainder.trim().length > 0 ? remainder : null;
-  }
 }

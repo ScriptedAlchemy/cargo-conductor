@@ -10,6 +10,8 @@ import * as Logger from 'effect/Logger';
 import * as LogLevel from 'effect/LogLevel';
 import * as Option from 'effect/Option';
 
+import { packageVersion } from '../lib/version.js';
+
 import { Broker, BrokerLive } from './broker.js';
 import { DaemonConfig, resolveDaemonConfig } from './config.js';
 import type { DaemonConfigShape } from './config.js';
@@ -20,7 +22,7 @@ import type { SingletonLockError } from './singleton.js';
 import { acquireSingletonLock } from './singleton.js';
 import { TopologyLive } from './topology.js';
 
-export const daemonVersion = '0.1.0';
+export const daemonVersion = packageVersion;
 
 const appLayer = (config: DaemonConfigShape) =>
   BrokerLive.pipe(

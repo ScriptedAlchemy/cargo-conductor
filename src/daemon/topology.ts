@@ -8,6 +8,8 @@ import * as Effect from 'effect/Effect';
 import * as Layer from 'effect/Layer';
 import type * as Scope from 'effect/Scope';
 
+import { isRecord } from '../lib/guards.js';
+
 import { realCargoBin } from './real-cargo.js';
 
 export interface TopologyApi {
@@ -58,9 +60,6 @@ interface EditCacheEntry {
   readonly atMs: number;
   readonly edited: boolean;
 }
-
-const isRecord = (value: unknown): value is Record<string, unknown> =>
-  typeof value === 'object' && value !== null && !Array.isArray(value);
 
 /**
  * Parses `cargo metadata --no-deps` output into the workspace-internal
@@ -294,7 +293,15 @@ export const makeTopology = (
             return true;
           });
           if (shouldRefresh) {
-            yield* Effect.forkIn(refreshEdit(packageDir), scope);
+            yield* Effect.forkIn(
+              refreshEdit(packageDir).pipe(
+                Effect.tapErrorCause((cause) =>
+                  Effect.logDebug('topology edit refresh failed', cause),
+                ),
+                Effect.catchAll(() => Effect.void),
+              ),
+              scope,
+            );
           }
         }
         return edited;

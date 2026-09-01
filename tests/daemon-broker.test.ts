@@ -55,7 +55,7 @@ describe('conductor daemon', () => {
         );
         const record = report.recent.find((candidate) => candidate.ticket === exit.ticket);
         expect(record?.status).toBe('done');
-        expect(record?.outputTail).toContain('fake-out:check');
+        expect(record?.outputTail).toBeNull();
         expect(record?.intentKey).not.toBeNull();
         expect(record?.targetDir).toBe(join(fixture.ws1, 'target'));
         // An idle lane worker parked in Queue.take must not surface as -1 queued.
@@ -75,10 +75,13 @@ describe('conductor daemon', () => {
         });
 
         const db = openLedgerDatabase(fixture.config.databasePath);
-        const transitions = yield* createLedgerApi(db).transitionsFor(
+        const ledger = createLedgerApi(db);
+        const durable = yield* ledger.getRequestByTicket(exit.ticket);
+        const transitions = yield* ledger.transitionsFor(
           Number(exit.ticket.slice('cc-'.length)),
         );
         db.close();
+        expect(durable?.outputTail).toContain('fake-out:check');
         expect(transitions.map((transition) => transition.toStatus)).toEqual([
           'requested',
           'queued',

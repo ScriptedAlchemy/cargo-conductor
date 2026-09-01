@@ -1,4 +1,6 @@
-import { sameCompileSurface } from './coverage.js';
+import { namedPackagesInArgv } from '../lib/argv.js';
+
+import { sameCompileSurface, stringArraysEqual } from './coverage.js';
 import { cargoExecutablePattern } from './intent-normalizer.js';
 import type { NormalizedCargoIntent } from './intent-normalizer.js';
 
@@ -11,11 +13,8 @@ const testFoldSubcommands = new Set(['nextest', 'test']);
 /** Upper bound on packages merged into one composite invocation. */
 export const maxBatchPackages = 16;
 
-const stringArraysEqual = (left: readonly string[], right: readonly string[]): boolean =>
-  left.length === right.length && left.every((value, index) => value === right[index]);
-
 /** Whether an intent has the explicit-package shape composable into a batch. */
-export const batchLeaderEligible = (intent: NormalizedCargoIntent): boolean =>
+const batchLeaderEligible = (intent: NormalizedCargoIntent): boolean =>
   batchableSubcommands.has(intent.subcommand) &&
   !intent.workspace &&
   intent.packages.length > 0 &&
@@ -45,24 +44,6 @@ export const extraPackagesFor = (
   leader: NormalizedCargoIntent,
   candidate: NormalizedCargoIntent,
 ): readonly string[] => candidate.packages.filter((name) => !leader.packages.includes(name));
-
-const namedPackagesInArgv = (argv: readonly string[]): Set<string> => {
-  const named = new Set<string>();
-  for (let index = 0; index < argv.length; index += 1) {
-    const part = argv[index];
-    if (part === '-p' || part === '--package') {
-      const name = argv[index + 1];
-      if (name !== undefined) {
-        named.add(name);
-      }
-      continue;
-    }
-    if (part !== undefined && part.startsWith('--package=')) {
-      named.add(part.slice('--package='.length));
-    }
-  }
-  return named;
-};
 
 const trailerIndex = (argv: readonly string[]): number => {
   const passthrough = argv.indexOf('--');
@@ -119,7 +100,7 @@ const onlyIntegrationTestTargets = (targets: readonly string[]): boolean =>
  * are pure libtest name filters (harness flags like `--exact` change filter
  * semantics for the whole run), and no unmodeled cargo flags.
  */
-export const testBatchEligible = (intent: NormalizedCargoIntent): boolean =>
+const testBatchEligible = (intent: NormalizedCargoIntent): boolean =>
   intent.subcommand === 'test' &&
   !intent.workspace &&
   intent.packages.length > 0 &&
@@ -135,7 +116,7 @@ export const testBatchEligible = (intent: NormalizedCargoIntent): boolean =>
  * expressible as one filterset — positional filters and trailing arguments
  * intersect with `-E` in nextest, so their presence disqualifies folding.
  */
-export const nextestBatchEligible = (intent: NormalizedCargoIntent): boolean =>
+const nextestBatchEligible = (intent: NormalizedCargoIntent): boolean =>
   intent.subcommand === 'nextest' &&
   intent.nextestCommand === 'run' &&
   !intent.workspace &&
@@ -358,7 +339,7 @@ const withoutFilterExpressions = (argv: readonly string[]): string[] => {
 };
 
 /** One participant's selection as a nextest filterset expression. */
-export const nextestSelectionExpression = (intent: NormalizedCargoIntent): string => {
+const nextestSelectionExpression = (intent: NormalizedCargoIntent): string => {
   const expressions =
     intent.filterExpressions.length > 0
       ? intent.filterExpressions

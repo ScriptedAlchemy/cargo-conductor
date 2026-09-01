@@ -1,5 +1,7 @@
 import { createConnection } from 'node:net';
 
+import { LineBuffer } from '../lib/ndjson.js';
+
 import { resolveHookSocketPath } from './paths.js';
 import { isRecord } from './shared.js';
 
@@ -77,7 +79,7 @@ export const requestJson = (
       resolve(value);
     };
     const socket = createConnection({ path: socketPath });
-    const chunks: Buffer[] = [];
+    const lines = new LineBuffer();
     const timer = setTimeout(() => {
       socket.destroy();
       finish(null);
@@ -86,12 +88,7 @@ export const requestJson = (
       socket.write(`${JSON.stringify(message)}\n`);
     });
     socket.on('data', (chunk) => {
-      chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
-      const lines = Buffer.concat(chunks).toString('utf8').split('\n');
-      for (const line of lines) {
-        if (line.trim().length === 0) {
-          continue;
-        }
+      for (const line of lines.push(chunk)) {
         try {
           const parsed = JSON.parse(line) as unknown;
           if (isRecord(parsed)) {

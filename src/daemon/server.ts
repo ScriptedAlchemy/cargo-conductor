@@ -103,6 +103,14 @@ export class ConnectionOutputBuffer {
     return envelope.message;
   }
 
+  drain(): readonly ServerMessage[] {
+    const messages: ServerMessage[] = [];
+    for (let message = this.take(); message !== null; message = this.take()) {
+      messages.push(message);
+    }
+    return messages;
+  }
+
   #recordDrop(message: OutputMessage): void {
     this.#droppedPayloadBytes += Buffer.byteLength(message.data, 'base64');
     if (this.#truncation !== null) {
@@ -203,7 +211,7 @@ export const makeConnectionHandler =
 
         // Jobs outlive connections by design (results stay retrievable from
         // the ledger), so sends become no-ops once the peer is gone. The
-        // The wake queue is never shut down and has dropping capacity one:
+        // wake queue is never shut down and has dropping capacity one:
         // offers never block or interrupt a lane worker delivering output.
         const send = (message: ServerMessage): Effect.Effect<void> =>
           Effect.uninterruptible(
@@ -251,7 +259,8 @@ export const makeConnectionHandler =
           Effect.forever(
             Effect.gen(function* () {
               const message = yield* takeOutbound();
-              yield* write(encodeServerMessage(message));
+              const batch = [message, ...outbound.drain()];
+              yield* write(batch.map(encodeServerMessage).join(''));
             }),
           ).pipe(
             Effect.catchAllCause(() =>
@@ -296,7 +305,7 @@ export const makeConnectionHandler =
                       id: message.id,
                       ticket: info.ticket,
                       channel: info.channel,
-                      data: Buffer.from(info.data).toString('base64'),
+                      data: info.data,
                     }),
                   onExit: (info) =>
                     Effect.gen(function* () {
@@ -428,7 +437,11 @@ export const makeConnectionHandler =
             case 'session-pending':
               return Effect.gen(function* () {
                 const requests = yield* options.broker.sessionPending(message.session);
-                yield* send({ type: 'session-pending-result', id: message.id, requests });
+                yield* send({
+                  type: 'session-pending-result',
+                  id: message.id,
+                  requests,
+                } as unknown as ServerMessage);
               });
             case 'session-completed':
               return Effect.gen(function* () {
@@ -436,7 +449,11 @@ export const makeConnectionHandler =
                   message.session,
                   message.sinceMs,
                 );
-                yield* send({ type: 'session-completed-result', id: message.id, requests });
+                yield* send({
+                  type: 'session-completed-result',
+                  id: message.id,
+                  requests,
+                } as unknown as ServerMessage);
               });
             case 'shutdown':
               // Written directly (not via the queue) so the ack is flushed

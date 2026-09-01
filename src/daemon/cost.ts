@@ -51,8 +51,10 @@ const maximumEstimateMs = 24 * 60 * 60_000;
 const defaultEffectiveParallelism = 4;
 const defaultEventTailBytes = 8 * 1024 * 1024;
 const defaultEventTtlMs = 5 * 60_000;
+const defaultIndexTtlMs = 10 * 60_000;
 const eventEwmaAlpha = 0.25;
 const eventPriorWeight = 0.65;
+const observationCacheLimit = 4_096;
 
 const finitePositiveMs = (value: number): number | null =>
   Number.isFinite(value) && value > 0 ? value : null;
@@ -84,8 +86,12 @@ const kacheProfilesFor = (profile: string): readonly string[] => {
 };
 
 interface KacheReader {
-  readonly maxCompileTimeMs: (crateName: string, profiles: readonly string[]) => number | null;
+  readonly load: () => KacheIndexPriors;
   readonly close: () => void;
+}
+
+export interface KacheIndexPriors {
+  readonly compileTimeMs: (crateName: string, profiles: readonly string[]) => number | null;
 }
 
 export interface KacheEventPriors {
@@ -99,6 +105,10 @@ const emptyEventPriors: KacheEventPriors = {
   bytesRead: 0,
   crateCount: 0,
   sampleCount: 0,
+  compileTimeMs: () => null,
+};
+
+const emptyIndexPriors: KacheIndexPriors = {
   compileTimeMs: () => null,
 };
 
@@ -263,9 +273,15 @@ export const openKacheReader = (indexPath: string): KacheReader | null => {
     return null;
   }
   let db: DatabaseSync | undefined;
+  let aggregate: ReturnType<DatabaseSync['prepare']>;
   try {
     db = new DatabaseSync(indexPath, { readOnly: true });
     db.prepare('SELECT compile_time_ms FROM entries LIMIT 1').get();
+    aggregate = db.prepare(
+      `SELECT crate_name, profile, MAX(compile_time_ms) AS compile_time_ms
+       FROM entries
+       GROUP BY crate_name, profile`,
+    );
   } catch {
     try {
       db?.close();
@@ -275,94 +291,56 @@ export const openKacheReader = (indexPath: string): KacheReader | null => {
     return null;
   }
   const readerDb = db;
-  // The live index can hold ~100k rows with no crate_name index, so a scan
-  // costs real time on a loaded machine. One combined scan per lookup, and a
-  // TTL memo keeps repeat submissions off the submit critical path.
-  const memoTtlMs = 10 * 60_000;
-  const memo = new Map<string, { readonly atMs: number; readonly ms: number | null }>();
   return {
     close: () => {
       readerDb.close();
     },
-    maxCompileTimeMs: (crateName, profiles) => {
-      const memoKey = `${crateName}\0${profiles.join(',')}`;
-      const cached = memo.get(memoKey);
-      if (cached !== undefined && Date.now() - cached.atMs < memoTtlMs) {
-        return cached.ms;
-      }
-      let ms: number | null = null;
-      try {
-        const placeholders = profiles.map(() => '?').join(', ');
-        const row = readerDb
-          .prepare(
-            `SELECT
-               MAX(CASE WHEN profile IN (${placeholders}) THEN compile_time_ms END) AS exact_ms,
-               MAX(compile_time_ms) AS any_ms
-             FROM entries WHERE crate_name = ?`,
-          )
-          .get(...profiles, crateName);
-        const exactMs = row === undefined ? null : Number(row.exact_ms);
-        const anyMs = row === undefined ? null : Number(row.any_ms);
-        if (exactMs !== null && Number.isFinite(exactMs) && exactMs > 0) {
-          ms = exactMs;
-        } else if (anyMs !== null && Number.isFinite(anyMs) && anyMs > 0) {
-          ms = anyMs;
+    load: () => {
+      const timings = new Map<string, number>();
+      const maximumByCrate = new Map<string, number>();
+      for (const row of aggregate.all()) {
+        const crateName = String(row.crate_name);
+        const profile = String(row.profile);
+        const compileTimeMs = finitePositiveMs(Number(row.compile_time_ms));
+        if (compileTimeMs === null) {
+          continue;
         }
-      } catch {
-        ms = null;
+        timings.set(eventPriorKey(crateName, profile), compileTimeMs);
+        maximumByCrate.set(
+          crateName,
+          Math.max(maximumByCrate.get(crateName) ?? 0, compileTimeMs),
+        );
       }
-      memo.set(memoKey, { atMs: Date.now(), ms });
-      return ms;
+      return {
+        compileTimeMs: (crateName, profiles) => {
+          let exact: number | null = null;
+          for (const profile of profiles) {
+            const timing = timings.get(eventPriorKey(crateName, profile));
+            if (timing !== undefined) {
+              exact = Math.max(exact ?? 0, timing);
+            }
+          }
+          return exact ?? maximumByCrate.get(crateName) ?? null;
+        },
+      };
     },
   };
 };
 
 const kacheEstimate = (
-  reader: KacheReader | null,
+  indexPriors: KacheIndexPriors,
   eventPriors: KacheEventPriors,
   crateName: string,
   profiles: readonly string[],
 ): number | null => {
-  let indexMs: number | null = null;
-  if (reader !== null) {
-    try {
-      const value = reader.maxCompileTimeMs(crateName, profiles);
-      indexMs = value === null ? null : finitePositiveMs(value);
-    } catch {
-      indexMs = null;
-    }
-  }
-  let eventMs: number | null = null;
-  try {
-    const value = eventPriors.compileTimeMs(crateName, profiles);
-    eventMs = value === null ? null : finitePositiveMs(value);
-  } catch {
-    eventMs = null;
-  }
+  const indexValue = indexPriors.compileTimeMs(crateName, profiles);
+  const indexMs = indexValue === null ? null : finitePositiveMs(indexValue);
+  const eventValue = eventPriors.compileTimeMs(crateName, profiles);
+  const eventMs = eventValue === null ? null : finitePositiveMs(eventValue);
   if (indexMs !== null && eventMs !== null) {
     return eventPriorWeight * eventMs + (1 - eventPriorWeight) * indexMs;
   }
   return eventMs ?? indexMs;
-};
-
-export interface CrateObservationStore {
-  readonly get: (key: string) => number | null;
-  readonly set: (key: string, value: number) => void;
-}
-
-/**
- * Daemon-lifetime crate observations live behind a tiny store boundary so a
- * future ledger-backed implementation can add persistence without changing
- * estimate or recordOutcome call sites.
- */
-export const makeInMemoryCrateObservationStore = (): CrateObservationStore => {
-  const observations = new Map<string, number>();
-  return {
-    get: (key) => observations.get(key) ?? null,
-    set: (key, value) => {
-      observations.set(key, value);
-    },
-  };
 };
 
 export interface EventPriorCacheOptions {
@@ -371,10 +349,15 @@ export interface EventPriorCacheOptions {
   readonly ttlMs?: number;
 }
 
+export interface KachePriorCacheOptions {
+  readonly initial?: KacheIndexPriors;
+  readonly ttlMs?: number;
+}
+
 export interface CreateCostModelOptions {
-  readonly crateObservations?: CrateObservationStore;
   readonly effectiveParallelism?: number;
   readonly eventPriors?: EventPriorCacheOptions;
+  readonly kachePriors?: KachePriorCacheOptions;
   readonly kacheReader: KacheReader | null;
   readonly now?: () => number;
   readonly seedDurations: (intentKey: string, limit: number) => Effect.Effect<readonly number[]>;
@@ -409,10 +392,44 @@ interface IntentObservationContext {
   readonly parallelism: number;
 }
 
-export const createCostModel = (options: CreateCostModelOptions): CostModelApi => {
+interface CostModelWithPrewarm extends CostModelApi {
+  readonly prewarmIndexPriors: Effect.Effect<void>;
+}
+
+const lruSet = <K, V>(
+  current: ReadonlyMap<K, V>,
+  key: K,
+  value: V,
+): ReadonlyMap<K, V> => {
+  const updated = new Map(current);
+  updated.delete(key);
+  updated.set(key, value);
+  while (updated.size > observationCacheLimit) {
+    const oldest = updated.keys().next().value as K | undefined;
+    if (oldest === undefined) {
+      break;
+    }
+    updated.delete(oldest);
+  }
+  return updated;
+};
+
+const lruSetMutable = <K, V>(map: Map<K, V>, key: K, value: V): void => {
+  map.delete(key);
+  map.set(key, value);
+  while (map.size > observationCacheLimit) {
+    const oldest = map.keys().next().value as K | undefined;
+    if (oldest === undefined) {
+      break;
+    }
+    map.delete(oldest);
+  }
+};
+
+export const createCostModel = (options: CreateCostModelOptions): CostModelWithPrewarm => {
   /** intentKey -> EWMA of observed run durations; null marks "seeded, empty". */
   const ewma = SynchronizedRef.unsafeMake<ReadonlyMap<string, number | null>>(new Map());
-  const crateObservations = options.crateObservations ?? makeInMemoryCrateObservationStore();
+  const crateObservations = new Map<string, number>();
   const intentContexts = new Map<string, IntentObservationContext>();
   const now = options.now ?? Date.now;
   const suppliedParallelism = options.effectiveParallelism ?? configuredParallelism();
@@ -426,11 +443,18 @@ export const createCostModel = (options: CreateCostModelOptions): CostModelApi =
       ? undefined
       : { atMs: now(), priors: options.eventPriors.initial };
   let refreshingEvents = false;
+  const indexTtlMs = Math.max(0, options.kachePriors?.ttlMs ?? defaultIndexTtlMs);
+  let indexCache =
+    options.kachePriors?.initial === undefined
+      ? undefined
+      : { atMs: now(), priors: options.kachePriors.initial };
+  let refreshingIndex = false;
 
   const seededEwma = (intentKey: string): Effect.Effect<number | null> =>
     SynchronizedRef.modifyEffect(ewma, (current) => {
       if (current.has(intentKey)) {
-        return Effect.succeed([current.get(intentKey) ?? null, current] as const);
+        const value = current.get(intentKey) ?? null;
+        return Effect.succeed([value, lruSet(current, intentKey, value)] as const);
       }
       return options.seedDurations(intentKey, ewmaSeedLimit).pipe(
         Effect.catchAllCause(() => Effect.succeed([])),
@@ -444,11 +468,41 @@ export const createCostModel = (options: CreateCostModelOptions): CostModelApi =
                 value === null ? validRunMs : value + ewmaAlpha * (validRunMs - value);
             }
           }
-          const updated = new Map(current);
-          updated.set(intentKey, value);
-          return [value, updated] as const;
+          return [value, lruSet(current, intentKey, value)] as const;
         }),
       );
+    });
+
+  const refreshIndexPriors = (): Effect.Effect<void> =>
+    Effect.suspend(() => {
+      if (options.kacheReader === null || refreshingIndex) {
+        return Effect.void;
+      }
+      refreshingIndex = true;
+      return Effect.sync(() => options.kacheReader?.load() ?? emptyIndexPriors).pipe(
+        Effect.tap((priors) =>
+          Effect.sync(() => {
+            indexCache = { atMs: now(), priors };
+          }),
+        ),
+        Effect.asVoid,
+        Effect.ensuring(
+          Effect.sync(() => {
+            refreshingIndex = false;
+          }),
+        ),
+        Effect.catchAllCause(() => Effect.void),
+      );
+    });
+
+  const currentIndexPriors = (): Effect.Effect<KacheIndexPriors> =>
+    Effect.gen(function* () {
+      const cached = indexCache;
+      const fresh = cached !== undefined && now() - cached.atMs < indexTtlMs;
+      if (!fresh) {
+        yield* Effect.forkDaemon(refreshIndexPriors());
+      }
+      return cached?.priors ?? emptyIndexPriors;
     });
 
   const currentEventPriors = (): Effect.Effect<KacheEventPriors> =>
@@ -481,16 +535,26 @@ export const createCostModel = (options: CreateCostModelOptions): CostModelApi =
     });
 
   return {
+    prewarmIndexPriors: Effect.gen(function* () {
+      const cached = indexCache;
+      if (cached === undefined || now() - cached.atMs >= indexTtlMs) {
+        yield* refreshIndexPriors();
+      }
+    }),
     estimate: (intent, closurePackages = []) =>
       Effect.gen(function* () {
         const packageNames = [
           ...new Set<string>([...intent.packages, ...closurePackages]),
         ];
         const commandClass = subcommandClass(intent.subcommand);
-        const crateKeys = packageNames.map((crateName) =>
-          crateObservationKey(crateName, intent.profile, commandClass),
-        );
-        intentContexts.set(intent.key, { crateKeys, parallelism });
+        const crates = packageNames.map((crateName) => ({
+          crateName,
+          observationKey: crateObservationKey(crateName, intent.profile, commandClass),
+        }));
+        lruSetMutable(intentContexts, intent.key, {
+          crateKeys: crates.map(({ observationKey }) => observationKey),
+          parallelism,
+        });
 
         const observed = yield* seededEwma(intent.key);
         if (observed !== null) {
@@ -503,17 +567,18 @@ export const createCostModel = (options: CreateCostModelOptions): CostModelApi =
           };
         }
         const events = yield* currentEventPriors();
+        const indexPriors = yield* currentIndexPriors();
         const profiles = kacheProfilesFor(intent.profile);
         const fallback = defaultEstimateFor(intent);
         let hasCrateObservation = false;
         let hasKachePrior = false;
         let maximum = 0;
         let total = 0;
-        for (let index = 0; index < packageNames.length; index += 1) {
-          const crateObserved = crateObservations.get(crateKeys[index] ?? '');
+        for (const { crateName, observationKey } of crates) {
+          const crateObserved = crateObservations.get(observationKey) ?? null;
           const prior =
             crateObserved === null
-              ? kacheEstimate(options.kacheReader, events, packageNames[index] ?? '', profiles)
+              ? kacheEstimate(indexPriors, events, crateName, profiles)
               : null;
           const crateMs = crateObserved ?? prior ?? fallback;
           hasCrateObservation ||= crateObserved !== null;
@@ -544,9 +609,11 @@ export const createCostModel = (options: CreateCostModelOptions): CostModelApi =
         yield* SynchronizedRef.update(ewma, (current) => {
           const observed = current.get(intentKey);
           const base = observed === undefined || observed === null ? validRunMs : observed;
-          const updated = new Map(current);
-          updated.set(intentKey, base + ewmaAlpha * (validRunMs - base));
-          return updated;
+          return lruSet(
+            current,
+            intentKey,
+            base + ewmaAlpha * (validRunMs - base),
+          );
         });
         const context = intentContexts.get(intentKey);
         if (context === undefined || context.crateKeys.length === 0) {
@@ -557,7 +624,7 @@ export const createCostModel = (options: CreateCostModelOptions): CostModelApi =
         const workFactor = Math.max(1, context.crateKeys.length / context.parallelism);
         const sampleMs = validRunMs / workFactor;
         for (const key of context.crateKeys) {
-          const previous = crateObservations.get(key);
+          const previous = crateObservations.get(key) ?? null;
           crateObservations.set(
             key,
             previous === null ? sampleMs : previous + ewmaAlpha * (sampleMs - previous),
@@ -581,7 +648,7 @@ export const CostModelLive: Layer.Layer<CostModel, never, DaemonConfig | Ledger>
               reader.close();
             }),
     );
-    return createCostModel({
+    const model = createCostModel({
       effectiveParallelism: config.jobsGrant > 0 ? config.jobsGrant : configuredParallelism(),
       eventPriors:
         config.kacheIndexPath.length === 0
@@ -595,5 +662,7 @@ export const CostModelLive: Layer.Layer<CostModel, never, DaemonConfig | Ledger>
       kacheReader,
       seedDurations: (intentKey, limit) => ledger.recentDurations(intentKey, limit),
     });
+    yield* Effect.forkScoped(model.prewarmIndexPriors);
+    return model;
   }),
 );

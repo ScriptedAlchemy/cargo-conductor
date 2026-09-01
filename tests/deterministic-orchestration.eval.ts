@@ -13,6 +13,7 @@ import type {
   StatusReport,
   TransitionRecord,
 } from '../src/daemon/protocol.js';
+import { parseTicket } from '../src/daemon/protocol.js';
 import { realCargoBin } from '../src/daemon/real-cargo.js';
 
 import {
@@ -52,8 +53,8 @@ const requireRecord = (report: StatusReport, ticket: string): RequestRecord => {
 };
 
 const ticketId = (ticket: string): number => {
-  const id = Number(ticket.slice('cc-'.length));
-  if (!Number.isInteger(id)) {
+  const id = parseTicket(ticket);
+  if (id === null) {
     throw new Error(`invalid ticket ${ticket}`);
   }
   return id;

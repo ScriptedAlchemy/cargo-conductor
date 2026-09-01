@@ -1,3 +1,5 @@
+import { availableParallelism, loadavg } from 'node:os';
+
 import * as CommandExecutor from '@effect/platform/CommandExecutor';
 import * as Cause from 'effect/Cause';
 import * as Context from 'effect/Context';
@@ -29,6 +31,7 @@ import type { ExecutionResult } from './executor.js';
 import { normalizeCargoIntent } from './intent-normalizer.js';
 import type { NormalizedCargoIntent } from './intent-normalizer.js';
 import { Ledger } from './ledger.js';
+import type { SessionCompletedRecord, SessionPendingRecord } from './ledger.js';
 import type {
   AttachMode,
   FinishedStatus,
@@ -38,7 +41,7 @@ import type {
 } from './protocol.js';
 import { ReplayBuffer } from './replay.js';
 import type { ReplayAudience, ReplayChunk } from './replay.js';
-import { selectNextIndex } from './scheduler.js';
+import { selectNextIndex, shouldDeferAdmission } from './scheduler.js';
 import { Topology } from './topology.js';
 import { findConfiguredTargetDir, locateWorkspaceRoot } from './workspace.js';
 
@@ -69,7 +72,7 @@ export interface StartedInfo {
 export interface OutputInfo {
   readonly ticket: string;
   readonly channel: 'stdout' | 'stderr';
-  readonly data: Uint8Array;
+  readonly data: string;
 }
 
 export interface ExitInfo {
@@ -141,11 +144,11 @@ export interface BrokerApi {
   readonly awaitTicket: (ticket: string, maxWaitMs: number) => Effect.Effect<AwaitTicketResult>;
   /** Test-only visibility for interruption cleanup assertions. */
   readonly _testWaiterCount: (ticket?: string) => Effect.Effect<number>;
-  readonly sessionPending: (session: string) => Effect.Effect<readonly RequestRecord[]>;
+  readonly sessionPending: (session: string) => Effect.Effect<readonly SessionPendingRecord[]>;
   readonly sessionCompleted: (
     session: string,
     sinceMs: number,
-  ) => Effect.Effect<readonly RequestRecord[]>;
+  ) => Effect.Effect<readonly SessionCompletedRecord[]>;
 }
 
 export class Broker extends Context.Tag('cargo-conductor/Broker')<Broker, BrokerApi>() {}
@@ -475,6 +478,7 @@ export const BrokerLive: Layer.Layer<
     const startedAtMs = Date.now();
 
     const admission = yield* Effect.makeSemaphore(config.maxConcurrent);
+    const admittedCount = yield* Ref.make(0);
     const laneCreation = yield* Effect.makeSemaphore(1);
     const lanes = new Map<string, Lane>();
     const laneWorkers = new Set<Fiber.RuntimeFiber<never, never>>();
@@ -529,8 +533,9 @@ export const BrokerLive: Layer.Layer<
       audience: ReplayAudience = { kind: 'all' },
     ): Effect.Effect<void> =>
       Effect.gen(function* () {
+        const encodedData = Buffer.from(data).toString('base64');
         const liveAttachments = yield* Effect.sync(() => {
-          job.replay.push(channel, data, audience);
+          job.replay.push(channel, data, audience, encodedData);
           job.tail.push(data);
           const live: Attachment[] = [];
           for (const attachment of job.attachments.values()) {
@@ -540,19 +545,30 @@ export const BrokerLive: Layer.Layer<
             if (attachment.live) {
               live.push(attachment);
             } else {
-              attachment.pendingLive.push({ channel, data: Buffer.from(data), audience });
+              attachment.pendingLive.push({
+                channel,
+                data: Buffer.from(data),
+                encodedData,
+                audience,
+              });
             }
           }
           return live;
         });
-        yield* guarded(job.callbacks.onOutput({ ticket: job.ticket, channel, data }));
+        yield* guarded(
+          job.callbacks.onOutput({ ticket: job.ticket, channel, data: encodedData }),
+        );
         yield* Effect.forEach(
           liveAttachments,
           (attachment) =>
             Effect.sync(() => attachment.tail.push(data)).pipe(
               Effect.zipRight(
                 guarded(
-                  attachment.callbacks.onOutput({ ticket: attachment.ticket, channel, data }),
+                  attachment.callbacks.onOutput({
+                    ticket: attachment.ticket,
+                    channel,
+                    data: encodedData,
+                  }),
                 ),
               ),
             ),
@@ -573,7 +589,7 @@ export const BrokerLive: Layer.Layer<
                 attachment.callbacks.onOutput({
                   ticket: attachment.ticket,
                   channel: chunk.channel,
-                  data: chunk.data,
+                  data: chunk.encodedData,
                 }),
               ),
             ),
@@ -593,12 +609,13 @@ export const BrokerLive: Layer.Layer<
           const notice = Buffer.from(
             `[cargo-conductor] replay truncated: ${snapshot.droppedBytes} earlier output bytes dropped\n`,
           );
+          const encodedNotice = notice.toString('base64');
           yield* Effect.sync(() => attachment.tail.push(notice));
           yield* guarded(
             attachment.callbacks.onOutput({
               ticket: attachment.ticket,
               channel: 'stderr',
-              data: notice,
+              data: encodedNotice,
             }),
           );
         }
@@ -702,12 +719,13 @@ export const BrokerLive: Layer.Layer<
       Effect.gen(function* () {
         yield* notifyAttachmentStarted(attachment, atMs);
         const noteData = Buffer.from(note);
+        const encodedNote = noteData.toString('base64');
         yield* Effect.sync(() => attachment.tail.push(noteData));
         yield* guarded(
           attachment.callbacks.onOutput({
             ticket: attachment.ticket,
             channel: 'stderr',
-            data: noteData,
+            data: encodedNote,
           }),
         );
         yield* finishAttachment(attachment, atMs, exit);
@@ -1458,6 +1476,38 @@ export const BrokerLive: Layer.Layer<
         }),
       );
 
+    // Opt-in load clamp: when CARGO_CONDUCTOR_LOAD_THRESHOLD is set, defer
+    // new admissions while per-core loadavg exceeds it — but never below
+    // loadMinConcurrent running builds, and never beyond a bounded wait, so
+    // a saturated machine still makes progress and jobs stay killable
+    // (the job is still 'queued' while gated).
+    const loadGateDeadlineMs = 120_000;
+    const waitForLoadHeadroom: Effect.Effect<void> =
+      config.loadThresholdPerCore === null
+        ? Effect.void
+        : Effect.gen(function* () {
+            const thresholdPerCore = config.loadThresholdPerCore ?? 0;
+            const deadline = Date.now() + loadGateDeadlineMs;
+            while (Date.now() < deadline) {
+              const running = yield* Ref.get(admittedCount);
+              const loadPerCore = loadavg()[0] / availableParallelism();
+              if (
+                !shouldDeferAdmission({
+                  loadPerCore,
+                  minConcurrent: config.loadMinConcurrent,
+                  running,
+                  thresholdPerCore,
+                })
+              ) {
+                return;
+              }
+              yield* Effect.logDebug(
+                `admission deferred: load/core ${loadPerCore.toFixed(2)} > ${thresholdPerCore} with ${running} running`,
+              );
+              yield* Effect.sleep('2 seconds');
+            }
+          });
+
     const processJob = (lane: Lane, job: Job): Effect.Effect<void> =>
       Effect.gen(function* () {
         const state = yield* Ref.get(job.state);
@@ -1468,7 +1518,13 @@ export const BrokerLive: Layer.Layer<
         if (state === 'finished') {
           return;
         }
-        yield* admission.withPermits(1)(runAdmitted(lane, job));
+        yield* waitForLoadHeadroom;
+        yield* admission.withPermits(1)(
+          Ref.update(admittedCount, (count) => count + 1).pipe(
+            Effect.zipRight(runAdmitted(lane, job)),
+            Effect.ensuring(Ref.update(admittedCount, (count) => count - 1)),
+          ),
+        );
       }).pipe(Effect.onInterrupt(() => settleInterruptedJob(job)));
 
     const processLaneJob = (lane: Lane, job: Job): Effect.Effect<void> =>
@@ -1768,26 +1824,14 @@ export const BrokerLive: Layer.Layer<
           : (ticketWaiters.get(ticket)?.length ?? 0),
       );
 
-    const sessionPending = (session: string): Effect.Effect<readonly RequestRecord[]> =>
-      Effect.gen(function* () {
-        const active = yield* ledger.activeRequests();
-        return active.filter((record) => record.session === session && record.holdStop);
-      });
+    const sessionPending = (session: string): Effect.Effect<readonly SessionPendingRecord[]> =>
+      ledger.sessionPending(session);
 
     const sessionCompleted = (
       session: string,
       sinceMs: number,
-    ): Effect.Effect<readonly RequestRecord[]> =>
-      Effect.gen(function* () {
-        const recent = yield* ledger.recentRequests(200);
-        return recent.filter(
-          (record) =>
-            record.session === session &&
-            record.finishedAtMs !== null &&
-            record.finishedAtMs >= sinceMs &&
-            isTerminalStatus(record.status),
-        );
-      });
+    ): Effect.Effect<readonly SessionCompletedRecord[]> =>
+      ledger.sessionCompleted(session, sinceMs);
 
     const killAttachment = (entry: {
       readonly leader: Job;
@@ -1885,8 +1929,8 @@ export const BrokerLive: Layer.Layer<
           socketPath: config.socketPath,
           maxConcurrent: config.maxConcurrent,
           lanes: laneStatuses,
-          active,
-          recent,
+          active: active.map((record) => ({ ...record, outputTail: null })),
+          recent: recent.map((record) => ({ ...record, outputTail: null })),
           metrics: {
             cargo_run_ms: {
               buckets: cargoRun.buckets.map(([boundary, count]) => [

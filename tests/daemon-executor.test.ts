@@ -73,6 +73,12 @@ describe('TailBuffer', () => {
     tail.push(Buffer.from('world'));
     expect(tail.toString()).toBe('hello world');
   });
+
+  it('keeps only the final capacity bytes of one oversized chunk', () => {
+    const tail = new TailBuffer(5);
+    tail.push(Buffer.from('0123456789'));
+    expect(tail.toString()).toBe('56789');
+  });
 });
 
 describe('executeCargo', () => {

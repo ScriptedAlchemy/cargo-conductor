@@ -1,11 +1,10 @@
-import { randomUUID } from 'node:crypto';
-
 import * as Cause from 'effect/Cause';
 import * as Effect from 'effect/Effect';
 import * as Exit from 'effect/Exit';
 import * as Fiber from 'effect/Fiber';
 
 import { ensureDaemonRunning } from '../client/ensure-daemon.js';
+import { shortId } from '../lib/id.js';
 import { loadConductorSnapshot } from '../query.js';
 
 import { resolveDaemonConfig } from './config.js';
@@ -27,7 +26,6 @@ export interface DaemonControlResult {
   readonly subcommand: DaemonSubcommand;
 }
 
-const shortId = (): string => randomUUID().slice(0, 8);
 const signalShutdownGraceMs = 5_000;
 
 type ShutdownSignal = 'SIGINT' | 'SIGTERM';
@@ -207,19 +205,7 @@ export const statusDaemon = (
       result(config, 'status', {
         message: snapshot.summary,
         pid: snapshot.pid,
-        report:
-          snapshot.daemon === 'running'
-            ? {
-                active: snapshot.active,
-                lanes: snapshot.lanes,
-                maxConcurrent: snapshot.maxConcurrent ?? 5,
-                ...(snapshot.metrics === undefined ? {} : { metrics: snapshot.metrics }),
-                pid: snapshot.pid ?? 0,
-                recent: snapshot.recent,
-                socketPath: snapshot.socketPath,
-                startedAtMs: snapshot.startedAtMs ?? 0,
-              }
-            : null,
+        report: snapshot.report,
         running: snapshot.daemon === 'running',
       }),
     ),

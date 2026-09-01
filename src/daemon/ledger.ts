@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { DatabaseSync } from 'node:sqlite';
+import { DatabaseSync, type StatementSync } from 'node:sqlite';
 
 import * as Context from 'effect/Context';
 import * as Effect from 'effect/Effect';
@@ -64,6 +64,24 @@ export interface AttachRequestInput {
   readonly mode: AttachMode;
 }
 
+export interface SessionPendingRecord {
+  readonly createdAtMs: number;
+  readonly estimateMs: number | null;
+  readonly holdStop: boolean;
+  readonly startedAtMs: number | null;
+  readonly status: RequestStatus;
+  readonly ticket: string;
+}
+
+export interface SessionCompletedRecord {
+  readonly error: string | null;
+  readonly errorCount: number | null;
+  readonly exitCode: number | null;
+  readonly status: FinishedStatus;
+  readonly ticket: string;
+  readonly warningCount: number | null;
+}
+
 export interface LedgerApi {
   readonly createRequest: (
     input: CreateRequestInput,
@@ -89,6 +107,13 @@ export interface LedgerApi {
     intentKey: string,
     limit: number,
   ) => Effect.Effect<readonly number[]>;
+  readonly sessionPending: (
+    session: string,
+  ) => Effect.Effect<readonly SessionPendingRecord[]>;
+  readonly sessionCompleted: (
+    session: string,
+    sinceMs: number,
+  ) => Effect.Effect<readonly SessionCompletedRecord[]>;
   readonly recentRequests: (limit: number) => Effect.Effect<readonly RequestRecord[]>;
   readonly activeRequests: () => Effect.Effect<readonly RequestRecord[]>;
   readonly transitionsFor: (id: number) => Effect.Effect<readonly TransitionRecord[]>;
@@ -132,6 +157,8 @@ CREATE TABLE IF NOT EXISTS transitions (
 );
 CREATE INDEX IF NOT EXISTS requests_status_idx ON requests (status);
 CREATE INDEX IF NOT EXISTS requests_created_at_ms_idx ON requests (created_at_ms);
+CREATE INDEX IF NOT EXISTS requests_session_finished_idx ON requests (session, finished_at_ms);
+CREATE INDEX IF NOT EXISTS requests_intent_status_id_idx ON requests (intent_key, status, id);
 CREATE INDEX IF NOT EXISTS transitions_request_id_idx ON transitions (request_id);
 `;
 
@@ -233,24 +260,22 @@ const parseTicket = (ticket: string): number | null => {
 };
 
 const recordTransition = (
-  db: DatabaseSync,
+  statement: StatementSync,
   requestId: number,
   atMs: number,
   fromStatus: RequestStatus | null,
   toStatus: RequestStatus,
 ): void => {
-  db.prepare(
-    'INSERT INTO transitions (request_id, at_ms, from_status, to_status) VALUES (?, ?, ?, ?)',
-  ).run(requestId, atMs, fromStatus, toStatus);
+  statement.run(requestId, atMs, fromStatus, toStatus);
 };
 
-const readStatus = (db: DatabaseSync, id: number): RequestStatus | null => {
-  const row = db.prepare('SELECT status FROM requests WHERE id = ?').get(id);
+const readStatus = (statement: StatementSync, id: number): RequestStatus | null => {
+  const row = statement.get(id);
   return row === undefined ? null : (toText(row.status) as RequestStatus);
 };
 
-const selectRequestById = (db: DatabaseSync, id: number): RequestRecord | null => {
-  const row = db.prepare(`SELECT ${requestColumns} FROM requests WHERE id = ?`).get(id);
+const selectRequestById = (statement: StatementSync, id: number): RequestRecord | null => {
+  const row = statement.get(id);
   return row === undefined ? null : toRequestRecord(row);
 };
 
@@ -318,18 +343,122 @@ const parsePassthroughSpoolRecord = (line: string): PassthroughSpoolRecord | nul
   return value as unknown as PassthroughSpoolRecord;
 };
 
-const insertAttempt = (
-  db: DatabaseSync,
-  input: RecordAttemptInput,
-): { readonly id: number; readonly ticket: string } => {
-  const result = db
-    .prepare(
-      `INSERT OR IGNORE INTO requests (
-         created_at_ms, session, host, cwd, workspace_root, target_dir, lane_key, argv_json,
-         intent_key, intent_json, status, finished_at_ms, exit_code, error, source_attempt_id
-       ) VALUES (?, ?, ?, ?, ?, '', 'attempt', ?, NULL, NULL, ?, ?, ?, ?, ?)`,
-    )
-    .run(
+/** A failing ledger is a defect, not a recoverable condition, so nothing here has a typed error. */
+export const createLedgerApi = (db: DatabaseSync): LedgerApi => {
+  const insertTransition = db.prepare(
+    'INSERT INTO transitions (request_id, at_ms, from_status, to_status) VALUES (?, ?, ?, ?)',
+  );
+  const selectStatus = db.prepare('SELECT status FROM requests WHERE id = ?');
+  const selectRequest = db.prepare(`SELECT ${requestColumns} FROM requests WHERE id = ?`);
+  const insertAttemptStatement = db.prepare(
+    `INSERT OR IGNORE INTO requests (
+       created_at_ms, session, host, cwd, workspace_root, target_dir, lane_key, argv_json,
+       intent_key, intent_json, status, finished_at_ms, exit_code, error, source_attempt_id
+     ) VALUES (?, ?, ?, ?, ?, '', 'attempt', ?, NULL, NULL, ?, ?, ?, ?, ?)`,
+  );
+  const selectAttemptBySource = db.prepare(
+    'SELECT id FROM requests WHERE source_attempt_id = ?',
+  );
+  const insertRequest = db.prepare(
+    `INSERT INTO requests (created_at_ms, session, host, cwd, workspace_root, target_dir,
+       lane_key, argv_json, intent_key, intent_json, status, background, hold_stop, estimate_ms)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  );
+  const updateQueued = db.prepare(
+    'UPDATE requests SET status = ?, queued_at_ms = ? WHERE id = ?',
+  );
+  const updateRunning = db.prepare(
+    `UPDATE requests
+     SET status = ?,
+         started_at_ms = ?,
+         wait_ms = CASE
+           WHEN attached_to IS NOT NULL THEN MAX(0, ? - created_at_ms)
+           WHEN queued_at_ms IS NULL THEN NULL
+           ELSE MAX(0, ? - queued_at_ms)
+         END,
+         exec_argv_json = ?
+     WHERE id = ?`,
+  );
+  const updateAttached = db.prepare(
+    `UPDATE requests
+     SET status = 'queued',
+         queued_at_ms = COALESCE(queued_at_ms, created_at_ms),
+         started_at_ms = NULL,
+         wait_ms = NULL,
+         attached_to = ?,
+         attach_mode = ?
+     WHERE id = ?`,
+  );
+  const updateRequeued = db.prepare(
+    `UPDATE requests
+     SET status = 'queued',
+         queued_at_ms = ?,
+         started_at_ms = NULL,
+         wait_ms = NULL,
+         attached_to = NULL,
+         attach_mode = NULL
+     WHERE id = ?`,
+  );
+  const updateFinished = db.prepare(
+    `UPDATE requests
+     SET status = ?,
+         finished_at_ms = ?,
+         run_ms = CASE
+           WHEN started_at_ms IS NULL THEN NULL
+           ELSE MAX(0, ? - started_at_ms)
+         END,
+         exit_code = ?,
+         signal = ?,
+         output_tail = ?,
+         error = ?,
+         error_count = ?,
+         warning_count = ?,
+         diagnostics_json = ?
+     WHERE id = ?`,
+  );
+  const selectRecentDurations = db.prepare(
+    `SELECT run_ms FROM requests
+     WHERE intent_key = ? AND status = 'done' AND run_ms IS NOT NULL
+       AND attached_to IS NULL
+     ORDER BY id DESC LIMIT ?`,
+  );
+  const selectSessionPending = db.prepare(
+    `SELECT id, created_at_ms, estimate_ms, hold_stop, started_at_ms, status
+     FROM requests
+     WHERE session = ? AND hold_stop = 1 AND ${activeStatusFilter}
+     ORDER BY created_at_ms ASC, id ASC`,
+  );
+  const selectSessionCompleted = db.prepare(
+    `SELECT id, status, exit_code, error, error_count, warning_count
+     FROM requests
+     WHERE session = ? AND finished_at_ms >= ?
+       AND status IN ('done', 'failed', 'killed')
+     ORDER BY created_at_ms DESC, id DESC`,
+  );
+  const selectRecentRequests = db.prepare(
+    `SELECT ${requestColumns} FROM requests ORDER BY created_at_ms DESC, id DESC LIMIT ?`,
+  );
+  const selectActiveRequests = db.prepare(
+    `SELECT ${requestColumns} FROM requests
+     WHERE ${activeStatusFilter}
+     ORDER BY created_at_ms ASC, id ASC`,
+  );
+  const selectTransitions = db.prepare(
+    `SELECT request_id, at_ms, from_status, to_status FROM transitions
+     WHERE request_id = ?
+     ORDER BY id ASC`,
+  );
+  const selectOrphans = db.prepare(
+    `SELECT id, status FROM requests WHERE ${activeStatusFilter}`,
+  );
+  const updateOrphan = db.prepare(
+    'UPDATE requests SET status = ?, finished_at_ms = ?, error = ? WHERE id = ?',
+  );
+
+  const insertAttempt = (
+    input: RecordAttemptInput,
+  ): { readonly id: number; readonly ticket: string } => {
+    const result = insertAttemptStatement.run(
       input.atMs,
       input.session,
       input.host,
@@ -342,85 +471,73 @@ const insertAttempt = (
       input.error ?? null,
       input.sourceAttemptId ?? null,
     );
-  if (result.changes === 0 && input.sourceAttemptId !== undefined) {
-    const existing = db
-      .prepare('SELECT id FROM requests WHERE source_attempt_id = ?')
-      .get(input.sourceAttemptId);
-    if (existing !== undefined) {
-      const id = toNumber(existing.id);
-      return { id, ticket: formatTicket(id) };
+    if (result.changes === 0 && input.sourceAttemptId !== undefined) {
+      const existing = selectAttemptBySource.get(input.sourceAttemptId);
+      if (existing !== undefined) {
+        const id = toNumber(existing.id);
+        return { id, ticket: formatTicket(id) };
+      }
     }
-  }
-  const id = Number(result.lastInsertRowid);
-  recordTransition(db, id, input.atMs, null, input.status);
-  return { id, ticket: formatTicket(id) };
-};
+    const id = Number(result.lastInsertRowid);
+    recordTransition(insertTransition, id, input.atMs, null, input.status);
+    return { id, ticket: formatTicket(id) };
+  };
 
-const ingestPassthroughSpool = (db: DatabaseSync, stateDir: string): number => {
-  mkdirSync(stateDir, { recursive: true });
-  const spoolPath = join(stateDir, passthroughSpoolFileName);
-  const drainPath = `${spoolPath}.drain`;
-  if (!existsSync(drainPath)) {
-    if (!existsSync(spoolPath)) {
-      return 0;
-    }
-    try {
-      renameSync(spoolPath, drainPath);
-    } catch {
-      return 0;
-    }
-  }
-  const records = readFileSync(drainPath, 'utf8')
-    .split('\n')
-    .flatMap((line) => {
-      if (line.trim().length === 0) {
-        return [];
+  const ingestPassthroughSpool = (stateDir: string): number => {
+    mkdirSync(stateDir, { recursive: true });
+    const spoolPath = join(stateDir, passthroughSpoolFileName);
+    const drainPath = `${spoolPath}.drain`;
+    if (!existsSync(drainPath)) {
+      if (!existsSync(spoolPath)) {
+        return 0;
       }
-      const parsed = parsePassthroughSpoolRecord(line);
-      return parsed === null ? [] : [parsed];
-    });
-  let inserted = 0;
-  db.exec('BEGIN IMMEDIATE');
-  try {
-    for (const record of records) {
-      const before = db
-        .prepare('SELECT id FROM requests WHERE source_attempt_id = ?')
-        .get(record.id);
-      if (before !== undefined) {
-        continue;
+      try {
+        renameSync(spoolPath, drainPath);
+      } catch {
+        return 0;
       }
-      insertAttempt(db, {
-        argv: record.argv,
-        atMs: record.atMs,
-        cwd: record.cwd,
-        exitCode: record.exitCode,
-        host: record.host,
-        session: record.session,
-        sourceAttemptId: record.id,
-        status: 'passthrough',
+    }
+    const records = readFileSync(drainPath, 'utf8')
+      .split('\n')
+      .flatMap((line) => {
+        if (line.trim().length === 0) {
+          return [];
+        }
+        const parsed = parsePassthroughSpoolRecord(line);
+        return parsed === null ? [] : [parsed];
       });
-      inserted += 1;
+    let inserted = 0;
+    db.exec('BEGIN IMMEDIATE');
+    try {
+      for (const record of records) {
+        if (selectAttemptBySource.get(record.id) !== undefined) {
+          continue;
+        }
+        insertAttempt({
+          argv: record.argv,
+          atMs: record.atMs,
+          cwd: record.cwd,
+          exitCode: record.exitCode,
+          host: record.host,
+          session: record.session,
+          sourceAttemptId: record.id,
+          status: 'passthrough',
+        });
+        inserted += 1;
+      }
+      db.exec('COMMIT');
+    } catch (cause) {
+      db.exec('ROLLBACK');
+      throw cause;
     }
-    db.exec('COMMIT');
-  } catch (cause) {
-    db.exec('ROLLBACK');
-    throw cause;
-  }
-  rmSync(drainPath, { force: true });
-  return inserted;
-};
+    rmSync(drainPath, { force: true });
+    return inserted;
+  };
 
-/** A failing ledger is a defect, not a recoverable condition, so nothing here has a typed error. */
-export const createLedgerApi = (db: DatabaseSync): LedgerApi => ({
-  createRequest: (input) =>
-    Effect.sync(() => {
-      const result = db
-        .prepare(
-          `INSERT INTO requests (created_at_ms, session, host, cwd, workspace_root, target_dir,
-             lane_key, argv_json, intent_key, intent_json, status, background, hold_stop, estimate_ms)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        )
-        .run(
+  return {
+    createRequest: (input) =>
+      Effect.sync(() => {
+        const result = insertRequest.run(
           input.createdAtMs,
           input.session,
           input.host,
@@ -436,190 +553,139 @@ export const createLedgerApi = (db: DatabaseSync): LedgerApi => ({
           input.holdStop === true ? 1 : 0,
           input.estimateMs ?? null,
         );
-      const id = Number(result.lastInsertRowid);
-      recordTransition(db, id, input.createdAtMs, null, 'requested');
-      return { id, ticket: formatTicket(id) };
-    }),
+        const id = Number(result.lastInsertRowid);
+        recordTransition(insertTransition, id, input.createdAtMs, null, 'requested');
+        return { id, ticket: formatTicket(id) };
+      }),
 
-  markQueued: (id, atMs) =>
-    Effect.sync(() => {
-      db.prepare('UPDATE requests SET status = ?, queued_at_ms = ? WHERE id = ?').run(
-        'queued',
-        atMs,
-        id,
-      );
-      recordTransition(db, id, atMs, 'requested', 'queued');
-    }),
+    markQueued: (id, atMs) =>
+      Effect.sync(() => {
+        updateQueued.run('queued', atMs, id);
+        recordTransition(insertTransition, id, atMs, 'requested', 'queued');
+      }),
 
-  markRunning: (id, atMs, execArgv) =>
-    Effect.sync(() => {
-      db.prepare(
-        `UPDATE requests
-         SET status = ?,
-             started_at_ms = ?,
-             wait_ms = CASE
-               WHEN attached_to IS NOT NULL THEN MAX(0, ? - created_at_ms)
-               WHEN queued_at_ms IS NULL THEN NULL
-               ELSE MAX(0, ? - queued_at_ms)
-             END,
-             exec_argv_json = ?
-         WHERE id = ?`,
-      ).run(
-        'running',
-        atMs,
-        atMs,
-        atMs,
-        execArgv === undefined ? null : JSON.stringify(execArgv),
-        id,
-      );
-      recordTransition(db, id, atMs, 'queued', 'running');
-    }),
+    markRunning: (id, atMs, execArgv) =>
+      Effect.sync(() => {
+        updateRunning.run(
+          'running',
+          atMs,
+          atMs,
+          atMs,
+          execArgv === undefined ? null : JSON.stringify(execArgv),
+          id,
+        );
+        recordTransition(insertTransition, id, atMs, 'queued', 'running');
+      }),
 
-  markAttached: (id, input) =>
-    Effect.sync(() => {
-      const fromStatus = readStatus(db, id);
-      db.prepare(
-        `UPDATE requests
-         SET status = 'queued',
-             queued_at_ms = COALESCE(queued_at_ms, created_at_ms),
-             started_at_ms = NULL,
-             wait_ms = NULL,
-             attached_to = ?,
-             attach_mode = ?
-         WHERE id = ?`,
-      ).run(input.leaderTicket, input.mode, id);
-      if (fromStatus !== 'queued') {
-        recordTransition(db, id, input.atMs, fromStatus, 'queued');
-      }
-    }),
+    markAttached: (id, input) =>
+      Effect.sync(() => {
+        const fromStatus = readStatus(selectStatus, id);
+        updateAttached.run(input.leaderTicket, input.mode, id);
+        if (fromStatus !== 'queued') {
+          recordTransition(insertTransition, id, input.atMs, fromStatus, 'queued');
+        }
+      }),
 
-  markRequeued: (id, atMs) =>
-    Effect.sync(() => {
-      const fromStatus = readStatus(db, id);
-      db.prepare(
-        `UPDATE requests
-         SET status = 'queued',
-             queued_at_ms = ?,
-             started_at_ms = NULL,
-             wait_ms = NULL,
-             attached_to = NULL,
-             attach_mode = NULL
-         WHERE id = ?`,
-      ).run(atMs, id);
-      recordTransition(db, id, atMs, fromStatus, 'queued');
-    }),
+    markRequeued: (id, atMs) =>
+      Effect.sync(() => {
+        const fromStatus = readStatus(selectStatus, id);
+        updateRequeued.run(atMs, id);
+        recordTransition(insertTransition, id, atMs, fromStatus, 'queued');
+      }),
 
-  markFinished: (id, input) =>
-    Effect.sync(() => {
-      const fromStatus = readStatus(db, id);
-      db.prepare(
-        `UPDATE requests
-         SET status = ?,
-             finished_at_ms = ?,
-             run_ms = CASE
-               WHEN started_at_ms IS NULL THEN NULL
-               ELSE MAX(0, ? - started_at_ms)
-             END,
-             exit_code = ?,
-             signal = ?,
-             output_tail = ?,
-             error = ?,
-             error_count = ?,
-             warning_count = ?,
-             diagnostics_json = ?
-         WHERE id = ?`,
-      ).run(
-        input.status,
-        input.atMs,
-        input.atMs,
-        input.exitCode ?? null,
-        input.signal ?? null,
-        input.outputTail ?? null,
-        input.error ?? null,
-        input.errorCount ?? null,
-        input.warningCount ?? null,
-        input.diagnostics == null ? null : JSON.stringify(input.diagnostics),
-        id,
-      );
-      recordTransition(db, id, input.atMs, fromStatus, input.status);
-    }),
+    markFinished: (id, input) =>
+      Effect.sync(() => {
+        const fromStatus = readStatus(selectStatus, id);
+        updateFinished.run(
+          input.status,
+          input.atMs,
+          input.atMs,
+          input.exitCode ?? null,
+          input.signal ?? null,
+          input.outputTail ?? null,
+          input.error ?? null,
+          input.errorCount ?? null,
+          input.warningCount ?? null,
+          input.diagnostics == null ? null : JSON.stringify(input.diagnostics),
+          id,
+        );
+        recordTransition(insertTransition, id, input.atMs, fromStatus, input.status);
+      }),
 
-  recordAttempt: (input) => Effect.sync(() => insertAttempt(db, input)),
+    recordAttempt: (input) => Effect.sync(() => insertAttempt(input)),
 
-  ingestPassthroughSpool: (stateDir) =>
-    Effect.sync(() => ingestPassthroughSpool(db, stateDir)),
+    ingestPassthroughSpool: (stateDir) => Effect.sync(() => ingestPassthroughSpool(stateDir)),
 
-  getRequest: (id) => Effect.sync(() => selectRequestById(db, id)),
+    getRequest: (id) => Effect.sync(() => selectRequestById(selectRequest, id)),
 
-  getRequestByTicket: (ticket) =>
-    Effect.sync(() => {
-      const id = parseTicket(ticket);
-      return id === null ? null : selectRequestById(db, id);
-    }),
+    getRequestByTicket: (ticket) =>
+      Effect.sync(() => {
+        const id = parseTicket(ticket);
+        return id === null ? null : selectRequestById(selectRequest, id);
+      }),
 
-  recentDurations: (intentKey, limit) =>
-    Effect.sync(() =>
-      db
-        .prepare(
-          `SELECT run_ms FROM requests
-           WHERE intent_key = ? AND status = 'done' AND run_ms IS NOT NULL
-             AND attached_to IS NULL
-           ORDER BY id DESC LIMIT ?`,
-        )
-        .all(intentKey, limit)
-        .map((row) => toNumber(row.run_ms)),
-    ),
+    recentDurations: (intentKey, limit) =>
+      Effect.sync(() =>
+        selectRecentDurations.all(intentKey, limit).map((row) => toNumber(row.run_ms)),
+      ),
 
-  recentRequests: (limit) =>
-    Effect.sync(() =>
-      db
-        .prepare(
-          `SELECT ${requestColumns} FROM requests ORDER BY created_at_ms DESC, id DESC LIMIT ?`,
-        )
-        .all(limit)
-        .map(toRequestRecord),
-    ),
+    sessionPending: (session) =>
+      Effect.sync(() =>
+        selectSessionPending.all(session).map((row) => {
+          const id = toNumber(row.id);
+          return {
+            createdAtMs: toNumber(row.created_at_ms),
+            estimateMs: toNullableNumber(row.estimate_ms),
+            holdStop: toNumber(row.hold_stop) !== 0,
+            startedAtMs: toNullableNumber(row.started_at_ms),
+            status: toText(row.status) as RequestStatus,
+            ticket: formatTicket(id),
+          };
+        }),
+      ),
 
-  activeRequests: () =>
-    Effect.sync(() =>
-      db
-        .prepare(
-          `SELECT ${requestColumns} FROM requests
-           WHERE ${activeStatusFilter}
-           ORDER BY created_at_ms ASC, id ASC`,
-        )
-        .all()
-        .map(toRequestRecord),
-    ),
+    sessionCompleted: (session, sinceMs) =>
+      Effect.sync(() =>
+        selectSessionCompleted.all(session, sinceMs).map((row) => {
+          const id = toNumber(row.id);
+          return {
+            error: toNullableText(row.error),
+            errorCount: toNullableNumber(row.error_count),
+            exitCode: toNullableNumber(row.exit_code),
+            status: toText(row.status) as FinishedStatus,
+            ticket: formatTicket(id),
+            warningCount: toNullableNumber(row.warning_count),
+          };
+        }),
+      ),
 
-  transitionsFor: (id) =>
-    Effect.sync(() =>
-      db
-        .prepare(
-          `SELECT request_id, at_ms, from_status, to_status FROM transitions
-           WHERE request_id = ?
-           ORDER BY id ASC`,
-        )
-        .all(id)
-        .map(toTransitionRecord),
-    ),
+    recentRequests: (limit) =>
+      Effect.sync(() => selectRecentRequests.all(limit).map(toRequestRecord)),
 
-  reapOrphans: (atMs, error) =>
-    Effect.sync(() => {
-      const orphans = db
-        .prepare(`SELECT id, status FROM requests WHERE ${activeStatusFilter}`)
-        .all();
-      const update = db.prepare(
-        'UPDATE requests SET status = ?, finished_at_ms = ?, error = ? WHERE id = ?',
-      );
-      for (const row of orphans) {
-        const id = toNumber(row.id);
-        update.run('killed', atMs, error, id);
-        recordTransition(db, id, atMs, toText(row.status) as RequestStatus, 'killed');
-      }
-      return orphans.length;
-    }),
-});
+    activeRequests: () =>
+      Effect.sync(() => selectActiveRequests.all().map(toRequestRecord)),
+
+    transitionsFor: (id) =>
+      Effect.sync(() => selectTransitions.all(id).map(toTransitionRecord)),
+
+    reapOrphans: (atMs, error) =>
+      Effect.sync(() => {
+        const orphans = selectOrphans.all();
+        for (const row of orphans) {
+          const id = toNumber(row.id);
+          updateOrphan.run('killed', atMs, error, id);
+          recordTransition(
+            insertTransition,
+            id,
+            atMs,
+            toText(row.status) as RequestStatus,
+            'killed',
+          );
+        }
+        return orphans.length;
+      }),
+  };
+};
 
 export const LedgerLive: Layer.Layer<Ledger, never, DaemonConfig> = Layer.scoped(
   Ledger,

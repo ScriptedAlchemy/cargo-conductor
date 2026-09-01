@@ -2,6 +2,9 @@ import { createHash } from 'node:crypto';
 import { realpathSync } from 'node:fs';
 import { isAbsolute, resolve } from 'node:path';
 
+import { optionParts } from '../lib/argv.js';
+import { isRelevantCargoEnvironmentVariable } from '../lib/cargo-env.js';
+
 export interface ParsedCargoArgv {
   readonly allFeatures: boolean;
   readonly excludes: readonly string[];
@@ -55,26 +58,6 @@ export const cargoExecutablePattern = /(?:^|[/\\])cargo(?:\.exe)?$/u;
 
 /** Subcommands whose bare positional arguments are test-name filters. */
 const testFilterSubcommands = new Set(['bench', 'nextest', 'test']);
-const compilationEnvironmentNames = new Set([
-  'AR',
-  'CC',
-  'CFLAGS',
-  'CXX',
-  'CXXFLAGS',
-  'LDFLAGS',
-  'RUSTC',
-  'RUSTC_BOOTSTRAP',
-  'RUSTC_WRAPPER',
-  'RUSTC_WORKSPACE_WRAPPER',
-  'RUSTDOC',
-  'RUSTDOCFLAGS',
-  'RUSTFLAGS',
-  'CARGO_BUILD_DEP_INFO_BASEDIR',
-  'CARGO_BUILD_RUSTFLAGS',
-  'CARGO_CACHE_RUSTC_INFO',
-  'CARGO_ENCODED_RUSTFLAGS',
-  'CARGO_INCREMENTAL',
-]);
 const globalOptionsWithValues = new Set([
   '--color',
   '--config',
@@ -97,18 +80,7 @@ const defaultProfile = (subcommand: string): string => {
   return 'dev';
 };
 
-const optionParts = (argument: string): readonly [string, string | undefined] => {
-  const equalsIndex = argument.indexOf('=');
-  return equalsIndex === -1
-    ? [argument, undefined]
-    : [argument.slice(0, equalsIndex), argument.slice(equalsIndex + 1)];
-};
-
-const affectsCompilation = (name: string): boolean =>
-  compilationEnvironmentNames.has(name) ||
-  name.startsWith('CARGO_PROFILE_') ||
-  /^CARGO_TARGET_[A-Z0-9_]+_(?:LINKER|RUNNER|RUSTFLAGS)$/u.test(name) ||
-  /^(?:AR|CC|CFLAGS|CXX|CXXFLAGS|LDFLAGS)_[A-Za-z0-9_-]+$/u.test(name);
+const affectsCompilation = isRelevantCargoEnvironmentVariable;
 
 const sha256 = (value: string): string => createHash('sha256').update(value).digest('hex');
 

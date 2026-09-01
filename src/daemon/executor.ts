@@ -37,7 +37,9 @@ export interface ExecutionResult {
 
 export class TailBuffer {
   readonly #capacity: number;
-  #bytes: Buffer = Buffer.alloc(0);
+  #chunks: Buffer[] = [];
+  #head = 0;
+  #bytes = 0;
 
   constructor(capacity: number) {
     this.#capacity = Math.max(0, capacity);
@@ -47,14 +49,40 @@ export class TailBuffer {
     if (this.#capacity === 0 || data.byteLength === 0) {
       return;
     }
-    const next = Buffer.concat([this.#bytes, Buffer.from(data)]);
-    this.#bytes =
-      next.byteLength > this.#capacity ? next.subarray(next.byteLength - this.#capacity) : next;
+    const chunk = Buffer.from(data);
+    if (chunk.byteLength >= this.#capacity) {
+      this.#chunks = [chunk.subarray(chunk.byteLength - this.#capacity)];
+      this.#head = 0;
+      this.#bytes = this.#capacity;
+      return;
+    }
+    this.#chunks.push(chunk);
+    this.#bytes += chunk.byteLength;
+    let overflow = this.#bytes - this.#capacity;
+    while (overflow > 0) {
+      const oldest = this.#chunks[this.#head];
+      if (oldest === undefined) {
+        break;
+      }
+      if (oldest.byteLength <= overflow) {
+        this.#head += 1;
+        this.#bytes -= oldest.byteLength;
+        overflow -= oldest.byteLength;
+        continue;
+      }
+      this.#chunks[this.#head] = oldest.subarray(overflow);
+      this.#bytes -= overflow;
+      overflow = 0;
+    }
+    if (this.#head > 1_024 || this.#head * 2 >= this.#chunks.length) {
+      this.#chunks = this.#chunks.slice(this.#head);
+      this.#head = 0;
+    }
   }
 
   toString(): string {
     // A trimmed leading partial multi-byte UTF-8 character is acceptable (lossy head).
-    return this.#bytes.toString('utf8');
+    return Buffer.concat(this.#chunks.slice(this.#head), this.#bytes).toString('utf8');
   }
 }
 

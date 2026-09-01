@@ -15,6 +15,7 @@ import {
   openKacheReader,
   readKacheEventPriors,
 } from '../src/daemon/cost.js';
+import type { KacheIndexPriors } from '../src/daemon/cost.js';
 import { normalizeCargoIntent } from '../src/daemon/intent-normalizer.js';
 
 const intent = (argv: readonly string[], cwd = '/tmp/ws') =>
@@ -24,6 +25,10 @@ const intent = (argv: readonly string[], cwd = '/tmp/ws') =>
     env: {},
     workspaceRoot: cwd,
   });
+
+const indexPriors = (
+  compileTimeMs: KacheIndexPriors['compileTimeMs'],
+): KacheIndexPriors => ({ compileTimeMs });
 
 describe('defaultEstimateFor', () => {
   it('uses mined p50 priors and doubles workspace-wide work', () => {
@@ -49,9 +54,10 @@ describe('openKacheReader', () => {
       database.close();
 
       const reader = openKacheReader(indexPath);
-      expect(reader?.maxCompileTimeMs('alpha', ['debug'])).toBe(1234);
+      const priors = reader?.load();
+      expect(priors?.compileTimeMs('alpha', ['debug'])).toBe(1234);
       reader?.close();
-      expect(reader?.maxCompileTimeMs('uncached', ['debug'])).toBeNull();
+      expect(priors?.compileTimeMs('uncached', ['debug'])).toBeNull();
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -94,12 +100,37 @@ describe('readKacheEventPriors', () => {
 });
 
 describe('createCostModel', () => {
-  it('prefers EWMA of recorded outcomes over kache and defaults', async () => {
+  it('loads index priors in the background without blocking a cold estimate', async () => {
+    let loads = 0;
     const model = createCostModel({
       kacheReader: {
         close: () => {},
-        maxCompileTimeMs: () => 50_000,
+        load: () => {
+          loads += 1;
+          return indexPriors(() => 7_000);
+        },
       },
+      seedDurations: () => Effect.succeed([]),
+    });
+    const scoped = intent(['cargo', 'check', '-p', 'alpha']);
+
+    const cold = await Effect.runPromise(model.estimate(scoped));
+    expect(cold).toEqual({ estimateMs: 120_000, source: 'default' });
+    await new Promise<void>((resolve) => {
+      setImmediate(resolve);
+    });
+    const warm = await Effect.runPromise(model.estimate(scoped));
+
+    expect(loads).toBe(1);
+    expect(warm).toEqual({ estimateMs: 7_000, source: 'kache' });
+  });
+
+  it('prefers EWMA of recorded outcomes over kache and defaults', async () => {
+    const model = createCostModel({
+      kachePriors: {
+        initial: indexPriors(() => 50_000),
+      },
+      kacheReader: null,
       seedDurations: () => Effect.succeed([]),
     });
     const scoped = intent(['cargo', 'check', '-p', 'alpha']);
@@ -111,10 +142,10 @@ describe('createCostModel', () => {
 
   it('uses parallelism-discounted kache crate priors when no EWMA exists', async () => {
     const model = createCostModel({
-      kacheReader: {
-        close: () => {},
-        maxCompileTimeMs: (crateName) => (crateName === 'alpha' ? 12_000 : 8_000),
+      kachePriors: {
+        initial: indexPriors((crateName) => (crateName === 'alpha' ? 12_000 : 8_000)),
       },
+      kacheReader: null,
       effectiveParallelism: 4,
       seedDurations: () => Effect.succeed([]),
     });
@@ -152,10 +183,10 @@ describe('createCostModel', () => {
       ['delta', 4_000],
     ]);
     const model = createCostModel({
-      kacheReader: {
-        close: () => {},
-        maxCompileTimeMs: (crateName) => costs.get(crateName) ?? null,
+      kachePriors: {
+        initial: indexPriors((crateName) => costs.get(crateName) ?? null),
       },
+      kacheReader: null,
       effectiveParallelism: 2,
       seedDurations: () => Effect.succeed([]),
     });
@@ -247,10 +278,10 @@ describe('createCostModel', () => {
       );
       const model = createCostModel({
         eventPriors: { initial: readKacheEventPriors(eventsPath), load: () => Effect.never },
-        kacheReader: {
-          close: () => {},
-          maxCompileTimeMs: () => 1_000,
+        kachePriors: {
+          initial: indexPriors(() => 1_000),
         },
+        kacheReader: null,
         seedDurations: () => Effect.succeed([]),
       });
 
@@ -290,10 +321,10 @@ describe('createCostModel', () => {
 
   it('sanitizes invalid history and prior values into a positive finite estimate', async () => {
     const model = createCostModel({
-      kacheReader: {
-        close: () => {},
-        maxCompileTimeMs: () => Number.NaN,
+      kachePriors: {
+        initial: indexPriors(() => Number.NaN),
       },
+      kacheReader: null,
       seedDurations: () => Effect.die(new Error('bad history')),
     });
     const scoped = intent(['cargo', 'check', '-p', 'alpha']);
@@ -331,6 +362,25 @@ describe('createCostModel', () => {
     expect(estimate.estimateMs).toBe(100);
     expect(updated).toEqual({ estimateMs: 140, source: 'ewma' });
   });
+
+  it('evicts the least-recently-used whole-intent estimate after the cache cap', async () => {
+    const seedCalls = new Map<string, number>();
+    const model = createCostModel({
+      kacheReader: null,
+      seedDurations: (intentKey) => {
+        seedCalls.set(intentKey, (seedCalls.get(intentKey) ?? 0) + 1);
+        return Effect.succeed([]);
+      },
+    });
+    const first = intent(['cargo', 'check', '-p', 'crate-0']);
+    await Effect.runPromise(model.estimate(first));
+    for (let index = 1; index <= 4_096; index += 1) {
+      await Effect.runPromise(model.estimate(intent(['cargo', 'check', '-p', `crate-${index}`])));
+    }
+    await Effect.runPromise(model.estimate(first));
+
+    expect(seedCalls.get(first.key)).toBe(2);
+  });
 });
 
 const realKacheIndexPath = '/fast/cache/kache/index.db';
@@ -344,8 +394,10 @@ describe('real kache calibration', () => {
       const reader = openKacheReader(realKacheIndexPath);
       expect(reader).not.toBeNull();
       try {
+        const index = reader?.load();
         const model = createCostModel({
           eventPriors: { initial: events, load: () => Effect.never },
+          kachePriors: index === undefined ? undefined : { initial: index },
           kacheReader: reader,
           effectiveParallelism: 4,
           seedDurations: () => Effect.succeed([]),
@@ -357,7 +409,7 @@ describe('real kache calibration', () => {
           '-p',
           'tracedecay',
         ]);
-        const indexMs = reader?.maxCompileTimeMs('tracedecay', ['release']) ?? null;
+        const indexMs = index?.compileTimeMs('tracedecay', ['release']) ?? null;
         const eventMs = events.compileTimeMs('tracedecay', ['release']);
         const estimate = await Effect.runPromise(model.estimate(scoped));
 

@@ -1,10 +1,8 @@
-import { randomBytes } from 'node:crypto';
-
 import * as Effect from 'effect/Effect';
 
 import { resolveDaemonConfig } from '../daemon/config.js';
 import type { DaemonConfigShape } from '../daemon/config.js';
-import { requestOverSocket } from '../daemon/control.js';
+import { requestExpecting } from '../daemon/control.js';
 import type {
   ConnectionClosedError,
   ControlTimeoutError,
@@ -13,9 +11,11 @@ import type {
 import type {
   AckMessage,
   AwaitResultMessage,
+  ErrorMessage,
   RequestRecord,
   ResultResultMessage,
 } from '../daemon/protocol.js';
+import { shortId } from '../lib/id.js';
 
 import { ensureDaemonRunning } from './ensure-daemon.js';
 
@@ -26,25 +26,18 @@ import { ensureDaemonRunning } from './ensure-daemon.js';
  */
 export type TicketSocketError = ConnectionClosedError | ControlTimeoutError | DaemonUnreachableError;
 
-const shortId = (): string => randomBytes(6).toString('hex');
-
 export const fetchTicket = (
   ticket: string,
   config: DaemonConfigShape = resolveDaemonConfig(),
 ): Effect.Effect<RequestRecord | null, TicketSocketError> =>
-  requestOverSocket({
-    isTerminal: (message) => message.type === 'result-result',
-    message: { id: shortId(), ticket, type: 'result' },
-    socketPath: config.socketPath,
-    timeoutMs: 2_000,
-  }).pipe(
-    Effect.map((messages) => {
-      const result = messages.find(
-        (message): message is ResultResultMessage => message.type === 'result-result',
-      );
-      return result?.request ?? null;
-    }),
-  );
+  requestExpecting(
+    {
+      message: { id: shortId(), ticket, type: 'result' },
+      socketPath: config.socketPath,
+      timeoutMs: 2_000,
+    },
+    (message): message is ResultResultMessage => message.type === 'result-result',
+  ).pipe(Effect.map((result) => result?.request ?? null));
 
 export const awaitTicket = (
   ticket: string,
@@ -54,21 +47,18 @@ export const awaitTicket = (
   { readonly request: RequestRecord | null; readonly timedOut: boolean },
   TicketSocketError
 > =>
-  requestOverSocket({
-    isTerminal: (message) => message.type === 'await-result',
-    message: { id: shortId(), maxWaitMs, ticket, type: 'await' },
-    socketPath: config.socketPath,
-    timeoutMs: maxWaitMs + 2_000,
-  }).pipe(
-    Effect.map((messages) => {
-      const result = messages.find(
-        (message): message is AwaitResultMessage => message.type === 'await-result',
-      );
-      return {
-        request: result?.request ?? null,
-        timedOut: result?.timedOut ?? true,
-      };
-    }),
+  requestExpecting(
+    {
+      message: { id: shortId(), maxWaitMs, ticket, type: 'await' },
+      socketPath: config.socketPath,
+      timeoutMs: maxWaitMs + 2_000,
+    },
+    (message): message is AwaitResultMessage => message.type === 'await-result',
+  ).pipe(
+    Effect.map((result) => ({
+      request: result?.request ?? null,
+      timedOut: result?.timedOut ?? true,
+    })),
   );
 
 export const submitBackground = (
@@ -84,24 +74,24 @@ export const submitBackground = (
   ensureDaemonRunning(config).pipe(
     Effect.ignore,
     Effect.andThen(
-      requestOverSocket({
-        isTerminal: (message) => message.type === 'ack' || message.type === 'error',
-        message: {
-          argv: [...input.argv],
-          background: true,
-          cwd: input.cwd,
-          holdStop: input.session !== undefined,
-          id: shortId(),
-          type: 'exec',
-          ...(input.host === undefined ? {} : { host: input.host }),
-          ...(input.session === undefined ? {} : { session: input.session }),
+      requestExpecting(
+        {
+          message: {
+            argv: [...input.argv],
+            background: true,
+            cwd: input.cwd,
+            holdStop: input.session !== undefined,
+            id: shortId(),
+            type: 'exec',
+            ...(input.host === undefined ? {} : { host: input.host }),
+            ...(input.session === undefined ? {} : { session: input.session }),
+          },
+          socketPath: config.socketPath,
+          timeoutMs: 5_000,
         },
-        socketPath: config.socketPath,
-        timeoutMs: 5_000,
-      }),
+        (message): message is AckMessage | ErrorMessage =>
+          message.type === 'ack' || message.type === 'error',
+      ),
     ),
-    Effect.map((messages) => {
-      const ack = messages.find((message): message is AckMessage => message.type === 'ack');
-      return ack?.ticket ?? null;
-    }),
+    Effect.map((message) => (message?.type === 'ack' ? message.ticket : null)),
   );

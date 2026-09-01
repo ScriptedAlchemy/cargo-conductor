@@ -1,5 +1,6 @@
 import { z } from 'zod';
 
+import { awaitCeilingMs } from '../daemon/protocol.js';
 import type {
   LaneStatus,
   RequestRecord,
@@ -193,7 +194,7 @@ export const daemonResultSchema = z
   .strict() satisfies z.ZodType<DaemonResult>;
 
 /** Await ceiling (2h): agent build queues here routinely exceed 15 minutes. */
-export const awaitMaxWaitMs = 7_200_000;
+export const awaitMaxWaitMs = awaitCeilingMs;
 
 export const ticketInputSchema = z
   .object({

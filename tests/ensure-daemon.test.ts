@@ -20,6 +20,8 @@ const configAt = (stateDir: string): DaemonConfigShape => ({
   kacheIndexPath: '',
   jobsGrant: 1,
   batchEnabled: false,
+  loadThresholdPerCore: null,
+  loadMinConcurrent: 2,
 });
 
 describe('spawnDetachedDaemon', () => {

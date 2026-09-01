@@ -1,5 +1,10 @@
+import { isRecord } from '../lib/guards.js';
+import { countWord } from '../lib/text.js';
+
 import type { HookRecord } from './record.js';
 import type { DeniedAttempt, FinishedTicket } from './rpc.js';
+
+export { isRecord, countWord };
 
 export interface HookContext {
   readonly nativeEvent?: string;
@@ -17,12 +22,6 @@ export interface HookServices {
   readonly recordAttempt?: (attempt: DeniedAttempt) => void | Promise<void>;
   readonly writeCursor?: (session: string, atMs: number) => void;
 }
-
-export const isRecord = (value: unknown): value is Record<string, unknown> =>
-  typeof value === 'object' && value !== null && !Array.isArray(value);
-
-const countWord = (count: number, singular: string): string =>
-  `${count} ${count === 1 ? singular : `${singular}s`}`;
 
 const diagnosticCounts = (ticket: FinishedTicket): string | null =>
   ticket.errorCount === null || ticket.warningCount === null

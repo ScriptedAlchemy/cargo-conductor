@@ -38,6 +38,23 @@ export const scheduleScore = (candidate: ScheduleCandidate): number => {
   return (Math.max(1, candidate.estimateMs) * editFactor) / (releaseFactor * ageFactor);
 };
 
+export interface AdmissionLoadInput {
+  /** 1-minute loadavg divided by available cores. */
+  readonly loadPerCore: number;
+  /** Builds currently holding admission permits. */
+  readonly running: number;
+  readonly thresholdPerCore: number;
+  readonly minConcurrent: number;
+}
+
+/**
+ * True when admission should wait for machine load to subside. The clamp
+ * never throttles below minConcurrent running builds, so a loaded machine
+ * still makes progress and the gate cannot deadlock the queue.
+ */
+export const shouldDeferAdmission = (input: AdmissionLoadInput): boolean =>
+  input.running >= Math.max(1, input.minConcurrent) && input.loadPerCore > input.thresholdPerCore;
+
 /** Index of the candidate to run next, or -1 when empty. Ties go to the older (lower) id. */
 export const selectNextIndex = (candidates: readonly ScheduleCandidate[]): number => {
   let bestIndex = -1;

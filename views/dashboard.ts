@@ -1,6 +1,7 @@
 import {
   argvText,
   argvTitle,
+  dashboardVersion,
   escapeHtml,
   formatMs,
   ranAsFor,
@@ -348,7 +349,7 @@ const load = async (): Promise<void> => {
 
 void rpcRequest('ui/initialize', {
   appCapabilities: { availableDisplayModes: ['inline'] },
-  appInfo: { name: 'cargo-conductor', version: '0.1.0' },
+  appInfo: { name: 'cargo-conductor', version: dashboardVersion },
   protocolVersion: '2026-01-26',
 })
   .then(() => {

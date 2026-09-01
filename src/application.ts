@@ -1,5 +1,6 @@
 import { defineRscApplication } from '@agent-bundle/rsc-runtime/plugin';
 
+import { packageVersion } from './lib/version.js';
 import { daemonOperations, defaultDaemonOperations, type DaemonOperations } from './operations/daemon.js';
 import {
   defaultInspectOperations,
@@ -34,7 +35,7 @@ export const createConductorApplication = (
       ...defaultTicketOperations,
       ...options.operations,
     }),
-    version: '0.1.0',
+    version: packageVersion,
   });
 
 export const conductorApplication = createConductorApplication();

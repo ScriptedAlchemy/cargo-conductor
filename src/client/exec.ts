@@ -2,7 +2,6 @@ import { randomBytes } from 'node:crypto';
 import { appendFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 
-import * as Socket from '@effect/platform/Socket';
 import * as NodeContext from '@effect/platform-node/NodeContext';
 import * as NodeSocket from '@effect/platform-node/NodeSocket';
 import * as Cause from 'effect/Cause';
@@ -19,6 +18,7 @@ import type { DaemonConfigShape } from '../daemon/config.js';
 import {
   ConnectionClosedError,
   DaemonUnreachableError,
+  mapSocketFailure as mapOpenError,
 } from '../daemon/control.js';
 import {
   encodeClientMessage,
@@ -72,22 +72,6 @@ const writeChannel = (io: ExecIo, channel: 'stdout' | 'stderr', data: Uint8Array
     return;
   }
   io.writeStderr(data);
-};
-
-const mapOpenError = (error: Socket.SocketError, socketPath: string): DaemonUnreachableError | ConnectionClosedError => {
-  switch (error.reason) {
-    case 'Open':
-    case 'OpenTimeout':
-      return new DaemonUnreachableError({ cause: error, socketPath });
-    case 'Write':
-    case 'Read':
-    case 'Close':
-      return new ConnectionClosedError({ received: [], socketPath });
-    default: {
-      const exhaustive: never = error;
-      return exhaustive;
-    }
-  }
 };
 
 const passthrough = (
@@ -277,7 +261,13 @@ const streamBrokered = (
           Effect.gen(function* () {
             for (const line of lines.push(data)) {
               const message = parseServerMessageLine(line);
-              received.push(message);
+              // Output chunks are piped through, not retained: a long build
+              // would otherwise accumulate its whole log (base64-inflated)
+              // in this client. Disconnect recovery only needs control
+              // messages (exit, ack, errors), which are small and bounded.
+              if (message.type !== 'output') {
+                received.push(message);
+              }
               yield* handleServerMessage(options, message, ticket, phase, finished, (target) =>
                 write(encodeClientMessage({ type: 'detach', id: `${id}-detach`, ticket: target })).pipe(
                   Effect.ignore,

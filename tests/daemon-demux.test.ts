@@ -5,6 +5,7 @@ import { describe, expect, it } from '@rstest/core';
 import * as Effect from 'effect/Effect';
 import * as Fiber from 'effect/Fiber';
 
+import { createLedgerApi, openLedgerDatabase } from '../src/daemon/ledger.js';
 import { decodeOutput, execRequest, findExit, pollReport, withDaemon } from './harness.js';
 import type { Fixture } from './harness.js';
 
@@ -296,7 +297,13 @@ describe('json demux early release', () => {
         const followerRecord = report.recent.find(
           (record) => record.ticket === followerExit.ticket,
         );
-        expect(followerRecord?.outputTail).not.toContain('replay must hide bb');
+        expect(followerRecord?.outputTail).toBeNull();
+        const db = openLedgerDatabase(fixture.config.databasePath);
+        const durableFollower = yield* createLedgerApi(db).getRequestByTicket(
+          followerExit.ticket,
+        );
+        db.close();
+        expect(durableFollower?.outputTail).not.toContain('replay must hide bb');
 
         const leaderMessages = yield* Fiber.join(leaderFiber);
         expect(findExit(leaderMessages).status).toBe('failed');

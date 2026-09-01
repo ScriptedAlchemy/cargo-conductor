@@ -276,6 +276,100 @@ describe('exec argv provenance', () => {
 });
 
 describe('ledger queries', () => {
+  it('returns only compact completed rows for one session since the cutoff', () => {
+    withLedger((ledger) => {
+      const early = Effect.runSync(
+        ledger.createRequest(
+          makeInput({ createdAtMs: 1_000, session: 'session-a', intentJson: '{"large":"value"}' }),
+        ),
+      );
+      const matching = Effect.runSync(
+        ledger.createRequest(
+          makeInput({ createdAtMs: 2_000, session: 'session-a', intentJson: '{"large":"value"}' }),
+        ),
+      );
+      const otherSession = Effect.runSync(
+        ledger.createRequest(makeInput({ createdAtMs: 3_000, session: 'session-b' })),
+      );
+      Effect.runSync(
+        ledger.markFinished(early.id, {
+          atMs: 2_050,
+          outputTail: 'large early tail',
+          status: 'done',
+        }),
+      );
+      Effect.runSync(
+        ledger.markFinished(matching.id, {
+          atMs: 2_500,
+          error: 'compile failed',
+          errorCount: 2,
+          exitCode: 101,
+          outputTail: 'large matching tail',
+          status: 'failed',
+          warningCount: 3,
+        }),
+      );
+      Effect.runSync(
+        ledger.markFinished(otherSession.id, {
+          atMs: 3_500,
+          outputTail: 'other session tail',
+          status: 'done',
+        }),
+      );
+
+      const completed = Effect.runSync(ledger.sessionCompleted('session-a', 2_100));
+      expect(completed).toEqual([
+        {
+          error: 'compile failed',
+          errorCount: 2,
+          exitCode: 101,
+          status: 'failed',
+          ticket: matching.ticket,
+          warningCount: 3,
+        },
+      ]);
+      expect('outputTail' in (completed[0] ?? {})).toBe(false);
+      expect('intentJson' in (completed[0] ?? {})).toBe(false);
+    });
+  });
+
+  it('returns only compact hold-stop pending rows for one session', () => {
+    withLedger((ledger) => {
+      const matching = Effect.runSync(
+        ledger.createRequest(
+          makeInput({
+            createdAtMs: 1_000,
+            estimateMs: 4_000,
+            holdStop: true,
+            session: 'session-a',
+          }),
+        ),
+      );
+      Effect.runSync(ledger.markQueued(matching.id, 1_100));
+      Effect.runSync(
+        ledger.createRequest(
+          makeInput({ createdAtMs: 2_000, holdStop: false, session: 'session-a' }),
+        ),
+      );
+      Effect.runSync(
+        ledger.createRequest(
+          makeInput({ createdAtMs: 3_000, holdStop: true, session: 'session-b' }),
+        ),
+      );
+
+      expect(Effect.runSync(ledger.sessionPending('session-a'))).toEqual([
+        {
+          createdAtMs: 1_000,
+          estimateMs: 4_000,
+          holdStop: true,
+          startedAtMs: null,
+          status: 'queued',
+          ticket: matching.ticket,
+        },
+      ]);
+    });
+  });
+
   it('returns recent requests newest first and honors the limit', () => {
     withLedger((ledger) => {
       Effect.runSync(ledger.createRequest(makeInput({ createdAtMs: 1_000, laneKey: 'a' })));

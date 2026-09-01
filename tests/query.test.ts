@@ -12,6 +12,8 @@ import { createLedgerApi, openLedgerDatabase } from '../src/daemon/ledger.js';
 import { runDaemon } from '../src/daemon/main.js';
 import { describeRequestRecord, loadConductorSnapshot } from '../src/query.js';
 
+import { withTempDir } from './harness.js';
+
 describe('ticket summaries', () => {
   it('includes durable diagnostic counts when present', () => {
     expect(
@@ -42,9 +44,9 @@ const isolatedConfig = () => {
 };
 
 describe('loadConductorSnapshot', () => {
-  it('reports a stopped daemon and empty history when nothing has run', async () => {
-    const { config, root } = isolatedConfig();
-    try {
+  it('reports a stopped daemon and empty history when nothing has run', () =>
+    withTempDir('cc-query-', async (root) => {
+      const config = resolveDaemonConfig({ CARGO_CONDUCTOR_STATE_DIR: join(root, 'state') });
       const snapshot = await Effect.runPromise(loadConductorSnapshot({ config }));
       expect(snapshot.daemon).toBe('stopped');
       expect(snapshot.active).toEqual([]);
@@ -53,10 +55,8 @@ describe('loadConductorSnapshot', () => {
       expect(snapshot.summary).toContain('daemon is not running');
       expect(snapshot.stateRoot).toBe(config.stateDir);
       expect(snapshot.socketPath).toBe(config.socketPath);
-    } finally {
-      rmSync(root, { recursive: true, force: true });
-    }
-  });
+      expect(snapshot.report).toBeNull();
+    }));
 
   it('reads the ledger when the daemon is down', async () => {
     const { config, root } = isolatedConfig();
@@ -111,6 +111,7 @@ describe('loadConductorSnapshot', () => {
           const snapshot = yield* loadConductorSnapshot({ config });
           expect(snapshot.daemon).toBe('running');
           expect(snapshot.pid).toBe(process.pid);
+          expect(snapshot.report?.pid).toBe(process.pid);
           expect(snapshot.summary).toContain('daemon is running');
         }),
       ),
