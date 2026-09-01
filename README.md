@@ -67,7 +67,17 @@ dir), ledgered, and then served one of three ways:
   results back to each requester. Riders with `--lib`-scoped demands are
   released early, as soon as the stream proves their packages compiled cleanly
   (or shows them failing); broader demands settle with correct per-scope
-  results when the composite run completes.
+  results when the composite run completes. Test runs fold too: when a slot
+  opens, queued compatible `cargo test` requests in the same lane become one
+  composite run — the union of their `-p` packages and `--test` targets, the
+  union of their trailing libtest filters (dropped entirely if any participant
+  had none, so the composite always runs a superset), with `--no-fail-fast`
+  added so one crate's failure still surfaces the others' results.
+  `cargo nextest run` requests fold through `-E '(expr1) or (expr2)'` filter
+  expressions; a participant without `-E` contributes `package(...)`
+  expressions built from its `-p` flags. Unlike compile demux, folded test
+  participants share the composite's full output and exit code: a failure
+  anywhere fails everyone.
 - **Queue and run.** One lane per (workspace root, target dir) — the daemon is
   the only cargo runner on managed paths, which alone ends the lock storms. A
   cost scheduler picks the next job by score: shortest-job-first, divided by
@@ -134,8 +144,13 @@ the installable multi-host bundle. Per host:
   scripts; the shim catches those:
 
   ```sh
-  conductor install-shim --dir ~/.local/bin --real-cargo "$(command -v cargo)"
+  conductor install-shim --dir ~/.local/bin
   ```
+
+  The generated shim embeds absolute paths for both the conductor CLI and the
+  real cargo (resolved at install time, never through PATH again), tags its
+  submissions with `--host shim`, and passes daemon-spawned cargo straight
+  through to the real binary so the broker never re-enters itself.
 
 See [docs/install.md](docs/install.md) for per-host hook details and Codex
 timeout fallbacks.
@@ -169,11 +184,18 @@ The same operations project to MCP tools on the `conductor` server:
 | `conductor_request` | Submit a background cargo request |
 
 The MCP App dashboard (`ui://cargo-conductor/dashboard.html`, bound to
-`conductor_status`, refreshed every 5s) shows contention stats with an
-admission meter, per-lane queues, in-flight work, the queue with attach chips,
-and a history timeline — including what each request actually ran as when the
-batch composer expanded it. Status and log surfaces keep working from the
-ledger when the daemon is down.
+`conductor_status`, loaded immediately and then refreshed every 5s) stacks
+full-width sections in the order contention → in flight → queue → lanes →
+history. Contention shows daemon state, queue depth, and an admission meter.
+In-flight and queued rows show the workspace, who submitted (host · session),
+and elapsed or waiting time against the cost-model estimate
+("2m 18s / ~13m 11s"). Lanes lists only lanes with work — queued or running —
+counted as "3 active · 7 seen"; idle lanes clear on daemon restart. History
+lists only finished (done, failed, or killed) runs, including what each
+request actually ran as when the batch composer expanded it. Commands render
+the bare program name (`cargo test …`) with the full binary path in the hover
+tooltip. Status and log surfaces keep working from the ledger when the daemon
+is down.
 
 ## Configuration
 
@@ -182,6 +204,7 @@ All settings are environment variables read by the daemon (and hooks):
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `CARGO_CONDUCTOR_STATE_DIR` | `/fast/cache/cargo-conductor` | Home of the unix socket, SQLite ledger, daemon log, pid lock, and `hook-events.jsonl` |
+| `CARGO_CONDUCTOR_CARGO_BIN` | `$CARGO_HOME/bin/cargo` | Real cargo binary for daemon-spawned work (bare `cargo` as last resort); the daemon never resolves `cargo` through PATH, where the shim may sit |
 | `CARGO_CONDUCTOR_MAX_CONCURRENT` | `5` | Machine-wide cap on concurrently running cargo processes (admission permits) |
 | `CARGO_CONDUCTOR_REPLAY_BUFFER_BYTES` | `4194304` | Leader output retained in memory for late-attacher replay |
 | `CARGO_CONDUCTOR_KACHE_INDEX` | `/fast/cache/kache/index.db` | kache index for per-crate compile-time priors (empty string disables) |
@@ -195,14 +218,20 @@ All settings are environment variables read by the daemon (and hooks):
   the daemon is unreachable the client tries to auto-spawn it once, then runs
   cargo directly (passthrough). Missing kache data or topology failures
   degrade to defaults, never to errors.
-- **Test execution is never shared** except between byte-identical runs:
-  `test`/`nextest`/`bench` coalesce only at identity; coverage riding is
-  limited to `check` under an in-flight `build`/`check`.
-- **Failed-stronger rule.** A failed or killed stronger run never satisfies a
-  coverage or batch follower — the follower is requeued to run on its own.
-  The one exception is proven per-unit success: if the JSON stream shows the
-  follower's packages compiled cleanly before an unrelated unit failed, the
-  follower is released as done.
+- **Test sharing is identity or fold, never coverage.** `test`/`nextest`/
+  `bench` coalesce between byte-identical runs, and queued compatible `test`/
+  `nextest` requests can fold into one composite run whose full output and
+  exit code every participant shares — a failed ticket can mean a co-batched
+  crate's tests failed, not yours, so read the composite output before
+  re-running. Coverage riding stays limited to `check` under an in-flight
+  `build`/`check`.
+- **Failed-stronger rule (compile work).** A failed or killed stronger run
+  never satisfies a coverage or compile-batch follower — the follower is
+  requeued to run on its own. The one exception is proven per-unit success:
+  if the JSON stream shows the follower's packages compiled cleanly before an
+  unrelated unit failed, the follower is released as done. Folded test
+  participants sit outside this rule by design: they share the composite's
+  exit code.
 - **Denied and attempted runs are recorded.** Hook rewrites and policy denials
   (`cargo clean` while builds are in flight) append to `hook-events.jsonl`
   under the state dir; malformed cargo commands get a failed ledger row.
@@ -218,6 +247,18 @@ All settings are environment variables read by the daemon (and hooks):
 npm run dev     # agent-bundle workbench with live rebuilds (portable target)
 npm run check   # validate + build + typecheck + rstest — the merge gate
 ```
+
+### Preview the dashboard in a browser
+
+```sh
+node scripts/preview-dashboard.mjs --port 4941
+```
+
+Serves the built dashboard (`artifact/plugin/mcp-apps/dashboard.html`) at
+`http://127.0.0.1:4941` outside any MCP host: a small harness answers the
+widget's MCP App messages with live `conductor status` output, so the page
+shows real daemon data with the same 5s polling. Run `npm run build` first —
+the harness reads the artifact, not the sources.
 
 agent-bundle has no npm release yet; this repo pins the
 [pkg.pr.new](https://pkg.pr.new) preview of main SHA

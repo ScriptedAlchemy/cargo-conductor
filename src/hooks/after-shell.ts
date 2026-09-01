@@ -67,26 +67,29 @@ const decideAfterShell = async (
   if (command === undefined) {
     return { outcome: 'continue' };
   }
-  const record = services.record ?? appendHookRecord;
-  const exitCode = extractExitCode(event.toolResponse);
-  await record({
-    atMs: (services.nowMs ?? Date.now)(),
-    command,
-    host: resolveHookHost(context),
-    outcome: 'continue',
-    phase: 'afterTool',
-    ...(event.cwd === undefined ? {} : { cwd: event.cwd }),
-    ...(exitCode === undefined ? {} : { exitCode }),
-    ...(event.sessionId === undefined ? {} : { session: event.sessionId }),
-    ...(event.toolName === undefined ? {} : { toolName: event.toolName }),
-  });
+  // Only cargo/conductor activity belongs in the telemetry log; every other
+  // shell command still flows through so completion notifications inject.
+  if (command.includes('cargo') || command.includes('conductor')) {
+    const record = services.record ?? appendHookRecord;
+    const exitCode = extractExitCode(event.toolResponse);
+    await record({
+      atMs: (services.nowMs ?? Date.now)(),
+      command,
+      host: resolveHookHost(context),
+      outcome: 'continue',
+      phase: 'afterTool',
+      ...(event.cwd === undefined ? {} : { cwd: event.cwd }),
+      ...(exitCode === undefined ? {} : { exitCode }),
+      ...(event.sessionId === undefined ? {} : { session: event.sessionId }),
+      ...(event.toolName === undefined ? {} : { toolName: event.toolName }),
+    });
+  }
   const additionalContext = await notifyContext(event.sessionId, services);
   return additionalContext === undefined
     ? { outcome: 'continue' }
     : { additionalContext, outcome: 'continue' };
 };
 
-/** Ledger the completed shell tool. afterTool cannot deny or replace input. */
 export const handleAfterShell = async (
   event: AfterShellEvent,
   context: HookContext = {},

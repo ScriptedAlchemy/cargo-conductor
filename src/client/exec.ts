@@ -58,23 +58,12 @@ const defaultHeartbeatMs = 15_000;
 
 const shortId = (): string => randomBytes(6).toString('hex');
 
-const writeProgress = (io: ExecIo, line: string): void => {
-  io.writeStderr(line);
-};
-
 const writeChannel = (io: ExecIo, channel: 'stdout' | 'stderr', data: Uint8Array): void => {
   if (channel === 'stdout') {
     io.writeStdout(data);
     return;
   }
   io.writeStderr(data);
-};
-
-const exitCodeFrom = (exit: ExitMessage): number => {
-  if (exit.exitCode !== null) {
-    return exit.exitCode;
-  }
-  return 1;
 };
 
 const mapOpenError = (error: Socket.SocketError, socketPath: string): DaemonUnreachableError | ConnectionClosedError => {
@@ -95,7 +84,7 @@ const mapOpenError = (error: Socket.SocketError, socketPath: string): DaemonUnre
 
 const passthrough = (options: RunExecOptions): Effect.Effect<RunExecResult> =>
   Effect.gen(function* () {
-    writeProgress(options.io, formatProgressLine({ kind: 'passthrough', reason: 'daemon unreachable' }));
+    options.io.writeStderr(formatProgressLine({ kind: 'passthrough', reason: 'daemon unreachable' }));
     const killSignal = yield* Deferred.make<void>();
     const result = yield* executeCargo({
       argv: options.argv,
@@ -123,8 +112,7 @@ const handleServerMessage = (
     switch (message.type) {
       case 'ack':
         yield* Ref.set(ticket, message.ticket);
-        writeProgress(
-          options.io,
+        options.io.writeStderr(
           message.attachedTo !== undefined
             ? formatProgressLine({
                 kind: 'attached',
@@ -140,33 +128,21 @@ const handleServerMessage = (
                 ...(message.etaMs === undefined ? {} : { etaMs: message.etaMs }),
               }),
         );
-        if (options.background === true) {
-          writeProgress(
-            options.io,
+        const autoBackground =
+          options.background !== true &&
+          message.etaMs !== undefined &&
+          shouldAutoBackground(message.etaMs, options.host);
+        if (options.background === true || autoBackground) {
+          options.io.writeStderr(
             formatProgressLine({
               estimateMs: message.etaMs ?? null,
               kind: 'background',
               ticket: message.ticket,
             }),
           );
-          yield* Deferred.succeed(finished, {
-            exitCode: 0,
-            mode: 'brokered' as const,
-            ticket: message.ticket,
-          });
-        } else if (
-          message.etaMs !== undefined &&
-          shouldAutoBackground(message.etaMs, options.host)
-        ) {
-          writeProgress(
-            options.io,
-            formatProgressLine({
-              estimateMs: message.etaMs,
-              kind: 'background',
-              ticket: message.ticket,
-            }),
-          );
-          yield* detach(message.ticket);
+          if (autoBackground) {
+            yield* detach(message.ticket);
+          }
           yield* Deferred.succeed(finished, {
             exitCode: 0,
             mode: 'brokered' as const,
@@ -176,16 +152,14 @@ const handleServerMessage = (
         return;
       case 'requeued':
         yield* Ref.set(phase, 'queued');
-        writeProgress(
-          options.io,
+        options.io.writeStderr(
           formatProgressLine({ kind: 'requeued', reason: message.reason, ticket: message.ticket }),
         );
         return;
       case 'started':
         yield* Ref.set(ticket, message.ticket);
         yield* Ref.set(phase, 'running');
-        writeProgress(
-          options.io,
+        options.io.writeStderr(
           formatProgressLine({ kind: 'started', ticket: message.ticket, waitMs: message.waitMs }),
         );
         return;
@@ -195,13 +169,13 @@ const handleServerMessage = (
       case 'exit':
         yield* Ref.set(ticket, message.ticket);
         yield* Deferred.succeed(finished, {
-          exitCode: exitCodeFrom(message),
+          exitCode: message.exitCode === null ? 1 : message.exitCode,
           mode: 'brokered' as const,
           ticket: message.ticket,
         });
         return;
       case 'error':
-        writeProgress(options.io, `[cargo-conductor] ${message.message}\n`);
+        options.io.writeStderr(`[cargo-conductor] ${message.message}\n`);
         yield* Deferred.succeed(finished, {
           exitCode: message.code === 'bad-intent' ? 2 : 1,
           mode: 'brokered' as const,
@@ -325,8 +299,7 @@ const streamBrokered = (
             return;
           }
           const currentPhase = yield* Ref.get(phase);
-          writeProgress(
-            options.io,
+          options.io.writeStderr(
             formatProgressLine({
               elapsedMs: Date.now() - submittedAtMs,
               kind: 'heartbeat',
@@ -351,7 +324,7 @@ const brokeredOrUnreachable = (
       const exit = closed.received.find((message): message is ExitMessage => message.type === 'exit');
       if (exit !== undefined) {
         return Effect.succeed({
-          exitCode: exitCodeFrom(exit),
+          exitCode: exit.exitCode === null ? 1 : exit.exitCode,
           mode: 'brokered' as const,
           ticket: exit.ticket,
         });
@@ -367,8 +340,7 @@ export const runExecClient = (
   options: RunExecOptions,
 ): Effect.Effect<RunExecResult> => {
   const config = options.config ?? resolveDaemonConfig();
-  const attempt = brokeredOrUnreachable(options, config);
-  return attempt.pipe(
+  return brokeredOrUnreachable(options, config).pipe(
     Effect.catchTag('DaemonUnreachable', () =>
       Effect.gen(function* () {
         if (options.autoSpawn === false) {

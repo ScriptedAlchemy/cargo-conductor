@@ -1,4 +1,4 @@
-import { statSync } from 'node:fs';
+import { readdirSync, statSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 
 import * as Command from '@effect/platform/Command';
@@ -6,6 +6,8 @@ import * as CommandExecutor from '@effect/platform/CommandExecutor';
 import * as Context from 'effect/Context';
 import * as Effect from 'effect/Effect';
 import * as Layer from 'effect/Layer';
+
+import { realCargoBin } from './real-cargo.js';
 
 export interface TopologyApi {
   /**
@@ -128,14 +130,52 @@ export const workspaceClosure = (
   return closure;
 };
 
-const newestMtimeMs = (packageDir: string): number | null => {
+const editScanMaxEntries = 600;
+const editScanSkipDirs = new Set(['target', 'node_modules']);
+
+/**
+ * Newest mtime under the package. Editing an existing file does not change
+ * its directory's mtime, so this walks files (bounded, cached by the caller's
+ * TTL) instead of stat-ing the src directory. Exported for unit tests.
+ */
+export const newestMtimeMs = (packageDir: string): number | null => {
   let newest: number | null = null;
-  for (const candidate of [join(packageDir, 'src'), join(packageDir, 'Cargo.toml')]) {
+  let budget = editScanMaxEntries;
+  const consider = (path: string): void => {
     try {
-      const mtime = statSync(candidate).mtimeMs;
+      const mtime = statSync(path).mtimeMs;
       newest = newest === null ? mtime : Math.max(newest, mtime);
     } catch {
       // Missing entries are fine; a package may have no src directory.
+    }
+  };
+  consider(join(packageDir, 'Cargo.toml'));
+  consider(join(packageDir, 'build.rs'));
+  const stack = [join(packageDir, 'src'), join(packageDir, 'tests')];
+  while (stack.length > 0 && budget > 0) {
+    const dir = stack.pop();
+    if (dir === undefined) {
+      break;
+    }
+    let entries;
+    try {
+      entries = readdirSync(dir, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      if (budget <= 0) {
+        break;
+      }
+      budget -= 1;
+      const path = join(dir, entry.name);
+      if (entry.isDirectory()) {
+        if (!editScanSkipDirs.has(entry.name) && !entry.name.startsWith('.')) {
+          stack.push(path);
+        }
+        continue;
+      }
+      consider(path);
     }
   }
   return newest;
@@ -158,7 +198,7 @@ export const TopologyLive: Layer.Layer<Topology, never, CommandExecutor.CommandE
           const stdout = yield* Command.string(
             Command.workingDirectory(
               Command.make(
-                'cargo',
+                realCargoBin(),
                 'metadata',
                 '--format-version',
                 '1',

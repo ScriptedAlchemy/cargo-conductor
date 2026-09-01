@@ -96,6 +96,9 @@ export interface ExecOptions {
 export const execRequest = (fixture: Fixture, options: ExecOptions) => {
   const env: Record<string, string> = {
     PATH: `${fixture.binDir}:${process.env.PATH ?? ''}`,
+    // The executor refuses to resolve bare `cargo` through PATH (shim
+    // recursion guard); pin jobs at the fixture's fake cargo explicitly.
+    CARGO_CONDUCTOR_CARGO_BIN: join(fixture.binDir, 'cargo'),
     ...options.extraEnv,
   };
   if (options.sleep !== undefined) {

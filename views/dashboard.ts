@@ -23,7 +23,6 @@ interface ToolCallResult {
 }
 
 interface StructuredContent {
-  readonly [key: string]: unknown;
   readonly summary?: unknown;
   readonly daemon?: unknown;
   readonly pid?: unknown;
@@ -31,6 +30,8 @@ interface StructuredContent {
   readonly lanes?: unknown;
   readonly active?: unknown;
   readonly recent?: unknown;
+  readonly operation?: unknown;
+  readonly structuredContent?: unknown;
 }
 
 interface RequestRow {
@@ -52,7 +53,6 @@ interface RequestRow {
 
 interface LaneRow {
   readonly workspaceRoot?: unknown;
-  readonly targetDir?: unknown;
   readonly queued?: unknown;
   readonly runningTicket?: unknown;
 }
@@ -96,15 +96,16 @@ const rpcRequest = (method: string, params: Record<string, unknown>): Promise<To
     postMessage({ id, jsonrpc: '2.0', method, params });
   });
 
-const asRows = (value: unknown): readonly RequestRow[] => (Array.isArray(value) ? value : []);
+const arrayOrEmpty = <T>(value: unknown): readonly T[] => (Array.isArray(value) ? value : []);
 
-const asLanes = (value: unknown): readonly LaneRow[] => (Array.isArray(value) ? value : []);
+const terminalStatuses = new Set(['done', 'failed', 'killed']);
 
-const knownStatuses = new Set(['requested', 'queued', 'running', 'done', 'failed', 'killed']);
+const span = (className: string, value: string, title?: string): string =>
+  `<span class="${className}"${title === undefined ? '' : ` title="${escapeHtml(title)}"`}>${escapeHtml(value)}</span>`;
 
 const pill = (status: unknown): string => {
-  const value = typeof status === 'string' && knownStatuses.has(status) ? status : 'unknown';
-  return `<span class="pill ${value}">${value}</span>`;
+  const value = typeof status === 'string' && terminalStatuses.has(status) ? status : 'unknown';
+  return span(`pill ${value}`, value);
 };
 
 const table = (headers: readonly string[], rows: readonly (readonly string[])[]): string => {
@@ -137,13 +138,11 @@ const setCount = (id: string, count: number | string): void => {
   }
 };
 
-const text = (value: unknown): string => (value == null ? '—' : escapeHtml(String(value)));
-
 const pathCell = (value: unknown): string => {
   if (typeof value !== 'string' || value.length === 0) {
     return '—';
   }
-  return `<span class="path" title="${escapeHtml(value)}">${escapeHtml(shortenPath(value))}</span>`;
+  return span('path', shortenPath(value), value);
 };
 
 const attachChip = (row: RequestRow): string => {
@@ -156,7 +155,7 @@ const attachChip = (row: RequestRow): string => {
 
 const commandCell = (row: RequestRow): string => {
   const requested = argvText(row.argv);
-  const main = `<span class="cmd" title="${escapeHtml(argvTitle(row.argv))}">${escapeHtml(requested)}</span>`;
+  const main = span('cmd', requested, argvTitle(row.argv));
   const ranAs = ranAsFor(row.argv, row.execArgv);
   if (ranAs === null) {
     return main;
@@ -167,7 +166,7 @@ const commandCell = (row: RequestRow): string => {
       : '';
   return (
     `${main}<div class="ranas">ran as: ` +
-    `<span class="cmd" title="${escapeHtml(ranAs.command)}">${escapeHtml(ranAs.command)}</span>${packages}</div>`
+    `${span('cmd', ranAs.command, ranAs.command)}${packages}</div>`
   );
 };
 
@@ -175,7 +174,7 @@ const durationCell = (value: unknown): string =>
   typeof value === 'number' ? formatMs(value) : '—';
 
 const ticketCell = (value: unknown): string =>
-  value == null ? '—' : `<span class="ticket">${escapeHtml(String(value))}</span>`;
+  value == null ? '—' : span('ticket', String(value));
 
 const whoCell = (row: RequestRow): string => {
   const host = typeof row.host === 'string' ? row.host : null;
@@ -184,27 +183,31 @@ const whoCell = (row: RequestRow): string => {
     return '—';
   }
   const label = session === null || session === host ? (host ?? '') : `${host ?? '?'} · ${session}`;
-  return `<span class="who" title="${escapeHtml(label)}">${escapeHtml(label)}</span>`;
+  return span('who', label, label);
 };
 
-/** Elapsed (or waited) time so far, with the cost-model estimate alongside. */
 const progressCell = (sinceMs: unknown, estimateMs: unknown, nowMs: number): string => {
   if (typeof sinceMs !== 'number') {
     return '—';
   }
-  const elapsed = `<span class="dur">${escapeHtml(formatMs(Math.max(0, nowMs - sinceMs)))}</span>`;
+  const elapsed = span('dur', formatMs(Math.max(0, nowMs - sinceMs)));
   return typeof estimateMs === 'number' && estimateMs > 0
     ? `${elapsed} <span class="est">/ ~${escapeHtml(formatMs(estimateMs))}</span>`
     : elapsed;
 };
 
-const terminalStatuses = new Set(['done', 'failed', 'killed']);
+const requestCells = (row: RequestRow): readonly string[] => [
+  ticketCell(row.ticket),
+  commandCell(row),
+  pathCell(row.workspaceRoot),
+  whoCell(row),
+];
 
 const render = (structured: StructuredContent | null): void => {
   const nowMs = Date.now();
-  const active = asRows(structured?.active);
-  const recent = asRows(structured?.recent);
-  const lanes = asLanes(structured?.lanes);
+  const active = arrayOrEmpty<RequestRow>(structured?.active);
+  const recent = arrayOrEmpty<RequestRow>(structured?.recent);
+  const lanes = arrayOrEmpty<LaneRow>(structured?.lanes);
   const running = active.filter((row) => row.status === 'running');
   const queued = active.filter((row) => row.status === 'queued' || row.status === 'requested');
   const attached = active.filter((row) => typeof row.attachedTo === 'string');
@@ -220,10 +223,7 @@ const render = (structured: StructuredContent | null): void => {
   inflightEl.innerHTML = table(
     ['ticket', 'command', 'workspace', 'who', 'elapsed'],
     running.map((row) => [
-      ticketCell(row.ticket),
-      commandCell(row),
-      pathCell(row.workspaceRoot),
-      whoCell(row),
+      ...requestCells(row),
       progressCell(row.startedAtMs ?? row.createdAtMs, row.estimateMs, nowMs),
     ]),
   );
@@ -232,16 +232,12 @@ const render = (structured: StructuredContent | null): void => {
   queueEl.innerHTML = table(
     ['ticket', 'command', 'workspace', 'who', 'waiting', 'attached'],
     queueRows.map((row) => [
-      ticketCell(row.ticket),
-      commandCell(row),
-      pathCell(row.workspaceRoot),
-      whoCell(row),
+      ...requestCells(row),
       progressCell(row.createdAtMs, row.estimateMs, nowMs),
       attachChip(row) || '—',
     ]),
   );
 
-  // A lane with nothing queued or running is history, not signal.
   const activeLanes = lanes.filter(
     (lane) =>
       (typeof lane.queued === 'number' && lane.queued > 0) ||
@@ -251,10 +247,8 @@ const render = (structured: StructuredContent | null): void => {
     ['workspace', 'running', 'queued'],
     activeLanes.map((lane) => [
       pathCell(lane.workspaceRoot),
-      typeof lane.runningTicket === 'string'
-        ? `<span class="ticket">${escapeHtml(lane.runningTicket)}</span>`
-        : '—',
-      text(typeof lane.queued === 'number' ? lane.queued : null),
+      ticketCell(typeof lane.runningTicket === 'string' ? lane.runningTicket : null),
+      typeof lane.queued === 'number' ? escapeHtml(String(lane.queued)) : '—',
     ]),
   );
 
@@ -274,7 +268,12 @@ const render = (structured: StructuredContent | null): void => {
     ]),
   );
 
-  setCount('count-lanes', activeLanes.length === lanes.length ? lanes.length : `${activeLanes.length} active · ${lanes.length} seen`);
+  setCount(
+    'count-lanes',
+    activeLanes.length === lanes.length
+      ? lanes.length
+      : `${activeLanes.length} active · ${lanes.length} seen`,
+  );
   setCount('count-inflight', running.length);
   setCount('count-queue', queueRows.length);
   setCount('count-history', finished.length);
@@ -354,13 +353,7 @@ void rpcRequest('ui/initialize', {
 })
   .then(() => {
     postMessage({ jsonrpc: '2.0', method: 'ui/notifications/initialized', params: {} });
-    startPolling(
-      load,
-      (callback, intervalMs) => {
-        setInterval(callback, intervalMs);
-      },
-      5_000,
-    );
+    startPolling(load, setInterval, 5_000);
   })
   .catch((error: unknown) => {
     statusEl.textContent = `Error: ${error instanceof Error ? error.message : String(error)}`;

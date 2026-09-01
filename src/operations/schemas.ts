@@ -12,6 +12,7 @@ const requestStatusSchema = z.enum([
 ]);
 
 const attachModeSchema = z.enum(['identity', 'coverage', 'batch']);
+const daemonStatusSchema = z.enum(['running', 'stopped']);
 
 const requestRecordSchema = z
   .object({
@@ -44,7 +45,7 @@ const requestRecordSchema = z
     estimateMs: z.number().nullable(),
     execArgv: z.array(z.string()).nullable(),
   })
-  .strict() as z.ZodType<RequestRecord>;
+  .strict() satisfies z.ZodType<RequestRecord>;
 
 const laneStatusSchema = z
   .object({
@@ -54,7 +55,7 @@ const laneStatusSchema = z
     targetDir: z.string(),
     workspaceRoot: z.string(),
   })
-  .strict() as z.ZodType<LaneStatus>;
+  .strict() satisfies z.ZodType<LaneStatus>;
 
 const statusReportSchema = z
   .object({
@@ -66,7 +67,7 @@ const statusReportSchema = z
     socketPath: z.string(),
     startedAtMs: z.number(),
   })
-  .strict() as z.ZodType<StatusReport>;
+  .strict() satisfies z.ZodType<StatusReport>;
 
 export const limitInputSchema = z
   .object({
@@ -115,7 +116,7 @@ export interface DaemonResult {
 export const statusResultSchema = z
   .object({
     active: z.array(requestRecordSchema),
-    daemon: z.enum(['running', 'stopped']),
+    daemon: daemonStatusSchema,
     lanes: z.array(laneStatusSchema),
     maxConcurrent: z.number().int().nullable(),
     operation: z.literal('status'),
@@ -126,25 +127,25 @@ export const statusResultSchema = z
     stateRoot: z.string(),
     summary: z.string(),
   })
-  .strict() as z.ZodType<StatusResult>;
+  .strict() satisfies z.ZodType<StatusResult>;
 
 export const logResultSchema = z
   .object({
-    daemon: z.enum(['running', 'stopped']),
+    daemon: daemonStatusSchema,
     operation: z.literal('log'),
     requests: z.array(requestRecordSchema),
     summary: z.string(),
   })
-  .strict() as z.ZodType<LogResult>;
+  .strict() satisfies z.ZodType<LogResult>;
 
 export const lastResultSchema = z
   .object({
-    daemon: z.enum(['running', 'stopped']),
+    daemon: daemonStatusSchema,
     operation: z.literal('last'),
     request: requestRecordSchema.nullable(),
     summary: z.string(),
   })
-  .strict() as z.ZodType<LastResult>;
+  .strict() satisfies z.ZodType<LastResult>;
 
 const daemonSubcommandSchema = z.enum(['run', 'start', 'stop', 'status']);
 
@@ -164,7 +165,7 @@ export const daemonResultSchema = z
     socketPath: z.string(),
     subcommand: daemonSubcommandSchema,
   })
-  .strict() as z.ZodType<DaemonResult>;
+  .strict() satisfies z.ZodType<DaemonResult>;
 
 export const ticketInputSchema = z
   .object({

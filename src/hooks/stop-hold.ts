@@ -110,11 +110,6 @@ const decideStopHold = async (
   };
 };
 
-/**
- * Bounded stop-hold: wait up to min(ETA, maxWaitMs), deny with the result if
- * anything finished, otherwise deny with status + ETA so the host re-enters.
- * `stopHookActive` plus a per-ticket deny cap is the livelock guard.
- */
 export const handleStopHold = async (
   event: StopHoldEvent,
   services: StopHoldServices = {},

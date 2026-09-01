@@ -21,7 +21,7 @@ type ValuedFlag = (typeof valuedFlags)[number];
 const isValuedFlag = (argument: string): argument is ValuedFlag =>
   (valuedFlags as readonly string[]).includes(argument);
 
-const takeValue = (argv: readonly string[], index: number, option: string): string => {
+const takeValue = (argv: readonly string[], index: number, option: ValuedFlag): string => {
   const value = argv[index + 1];
   if (value === undefined || value.startsWith('-')) {
     throw new ExecUsageError(`${option} requires a value`);

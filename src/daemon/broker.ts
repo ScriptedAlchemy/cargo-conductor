@@ -9,8 +9,11 @@ import * as Queue from 'effect/Queue';
 import * as Ref from 'effect/Ref';
 
 import {
-  batchCompatible,
-  batchLeaderEligible,
+  batchCompatibleFor,
+  batchExitShared,
+  batchKindFor,
+  composeNextestBatchArgv,
+  composeTestBatchArgv,
   extraPackagesFor,
   maxBatchPackages,
   withExtraPackages,
@@ -617,12 +620,15 @@ export const BrokerLive: Layer.Layer<
       });
 
     /**
-     * Absorbs other queued compatible check/build/clippy jobs onto `leader`
-     * as coverage attachments and expands the leader argv with their `-p`s.
+     * Absorbs other queued compatible jobs onto `leader` as batch
+     * attachments. check/build/clippy composites gain the followers' `-p`
+     * flags; test/nextest composites rewrite the selection so one run serves
+     * every participant (union of packages, `--test` targets, and filters).
      */
     const foldBatch = (lane: Lane, leader: Job): Effect.Effect<void> =>
       Effect.gen(function* () {
-        if (!config.batchEnabled || !batchLeaderEligible(leader.intent)) {
+        const kind = config.batchEnabled ? batchKindFor(leader.intent) : null;
+        if (kind === null) {
           return;
         }
         const extras: string[] = [];
@@ -631,7 +637,10 @@ export const BrokerLive: Layer.Layer<
           const named = new Set(leader.intent.packages);
           for (let index = lane.pending.length - 1; index >= 0; index -= 1) {
             const candidate = lane.pending[index];
-            if (candidate === undefined || !batchCompatible(leader.intent, candidate.intent)) {
+            if (
+              candidate === undefined ||
+              !batchCompatibleFor(kind, leader.intent, candidate.intent)
+            ) {
               continue;
             }
             const extra = extraPackagesFor(leader.intent, candidate.intent);
@@ -647,6 +656,9 @@ export const BrokerLive: Layer.Layer<
             inFlight.delete(candidate.ticket);
           }
         });
+        if (absorbed.length === 0) {
+          return;
+        }
         const atMs = Date.now();
         yield* Effect.forEach(
           absorbed,
@@ -674,11 +686,33 @@ export const BrokerLive: Layer.Layer<
             }),
           { discard: true },
         );
-        if (extras.length > 0) {
-          yield* Effect.sync(() => {
-            leader.execArgv = withExtraPackages(leader.execArgv, extras);
-          });
-        }
+        yield* Effect.sync(() => {
+          switch (kind) {
+            case 'compile':
+              if (extras.length > 0) {
+                leader.execArgv = withExtraPackages(leader.execArgv, extras);
+              }
+              break;
+            case 'test':
+              leader.execArgv = composeTestBatchArgv(
+                leader.execArgv,
+                leader.intent,
+                absorbed.map((job) => job.intent),
+              );
+              break;
+            case 'nextest':
+              leader.execArgv = composeNextestBatchArgv(
+                leader.execArgv,
+                leader.intent,
+                absorbed.map((job) => job.intent),
+              );
+              break;
+            default: {
+              const exhaustive: never = kind;
+              return exhaustive;
+            }
+          }
+        });
       });
 
     /** Sync-removes one attachment from its leader; returns false if already gone. */
@@ -912,8 +946,14 @@ export const BrokerLive: Layer.Layer<
             attachment.mode !== 'identity' &&
             job.demux !== null &&
             demandSatisfied(attachment.intent, job.demux);
+          // Folded test composites run with --no-fail-fast and share their
+          // exit: a failed composite IS the participant's failure. Compile
+          // batches requeue instead (the failure may be a foreign package).
           const mirrors =
-            status === 'done' || (status === 'failed' && attachment.mode === 'identity');
+            status === 'done' ||
+            (status === 'failed' &&
+              (attachment.mode === 'identity' ||
+                (attachment.mode === 'batch' && batchExitShared(job.intent))));
           if (provenDespiteFailure) {
             yield* finishAttachmentWithNote(
               attachment,

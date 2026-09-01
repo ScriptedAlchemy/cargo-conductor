@@ -1,8 +1,4 @@
 #!/usr/bin/env node
-// Serve the built dashboard MCP App against the live daemon, outside any MCP
-// host. The page iframes the real artifact HTML and answers its JSON-RPC
-// postMessage traffic; tools/call is backed by `conductor.mjs status`.
-// Usage: node scripts/preview-dashboard.mjs [--port 4941]
 import { execFile } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { createServer } from 'node:http';

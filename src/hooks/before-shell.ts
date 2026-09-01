@@ -1,7 +1,7 @@
 import { inspectShellCommand, rewriteShellCommand } from './inspect.js';
 import { resolveConductorArgv } from './paths.js';
 import { probeActiveBuilds } from './probe.js';
-import { appendHookRecord, type HookRecord } from './record.js';
+import { appendHookRecord } from './record.js';
 import {
   extractShellCommand,
   isRecord,
@@ -62,7 +62,7 @@ const decideBeforeShell = async (
       active = null;
     }
     if (active === true) {
-      const denied: HookRecord = {
+      await record({
         atMs: nowMs(),
         command,
         host,
@@ -72,8 +72,7 @@ const decideBeforeShell = async (
         session,
         ...(cwd === undefined ? {} : { cwd }),
         ...(event.toolName === undefined ? {} : { toolName: event.toolName }),
-      };
-      await record(denied);
+      });
       return { outcome: 'deny', reason: denyCleanReason };
     }
     if (active === null) {
@@ -106,11 +105,6 @@ const decideBeforeShell = async (
   return { outcome: 'continue', updatedInput: toolInput };
 };
 
-/**
- * Rewrite cargo shell calls to `conductor exec`. Fail-open on parse errors,
- * missing conductor identity, or a down daemon (deny policy only). A deny
- * never includes updatedInput.
- */
 export const handleBeforeShell = async (
   event: BeforeShellEvent,
   context: HookContext = {},

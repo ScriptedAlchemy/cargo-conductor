@@ -1,7 +1,11 @@
+import { realpathSync } from 'node:fs';
+import { resolve } from 'node:path';
+
 import { runRscCli } from '@agent-bundle/rsc-runtime/plugin';
 import * as Effect from 'effect/Effect';
 
 import { createConductorApplication, type ConductorOperations } from './application.js';
+import { buildRelevantEnv } from './client/env.js';
 import { runExecClient, type RunExecOptions, type RunExecResult } from './client/exec.js';
 import { ExecUsageError, parseExecArgv } from './client/parse.js';
 import { resolveConductorArgv } from './hooks/paths.js';
@@ -38,6 +42,24 @@ const defaultWrite = (value: string): void => {
   process.stdout.write(value);
 };
 
+/**
+ * The shim must never depend on a PATH `conductor` that nothing installs
+ * (issue #2): embed the absolute node + script that is running right now.
+ */
+const selfConductorArgv = (): readonly string[] => {
+  const script = process.argv[1];
+  if (script === undefined || script.length === 0) {
+    return resolveConductorArgv();
+  }
+  let absolute = resolve(script);
+  try {
+    absolute = realpathSync(absolute);
+  } catch {
+    // Keep the resolved path when realpath cannot refine it.
+  }
+  return [process.execPath, absolute];
+};
+
 const defaultWriteStdout = (data: Uint8Array): void => {
   process.stdout.write(data);
 };
@@ -59,6 +81,7 @@ const runExecCommand = async (argv: readonly string[], options: CliOptions): Pro
       exec({
         argv: parsed.cargoArgv,
         cwd: parsed.cwd ?? process.cwd(),
+        env: buildRelevantEnv(process.env),
         io,
         ...(parsed.background ? { background: true } : {}),
         ...(parsed.host === undefined ? {} : { host: parsed.host }),
@@ -75,11 +98,6 @@ const runExecCommand = async (argv: readonly string[], options: CliOptions): Pro
   }
 };
 
-/**
- * Hybrid CLI: `exec` streams cargo through the Effect client (progress lines,
- * fail-open passthrough). Everything else is the RSC catalog projection
- * (`status`, `log`, `last`, `daemon`).
- */
 export const runCli = async (
   argv: readonly string[],
   options: CliOptions = {},
@@ -109,7 +127,7 @@ export const runCli = async (
     }
     try {
       const installed = installCargoShim({
-        conductorArgv: resolveConductorArgv(),
+        conductorArgv: selfConductorArgv(),
         destDir,
         force,
         realCargo,

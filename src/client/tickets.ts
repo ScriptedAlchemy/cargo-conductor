@@ -12,6 +12,8 @@ import type {
   ResultResultMessage,
 } from '../daemon/protocol.js';
 
+import { ensureDaemonRunning } from './ensure-daemon.js';
+
 const shortId = (): string => randomBytes(6).toString('hex');
 
 export const fetchTicket = (
@@ -65,21 +67,26 @@ export const submitBackground = (
   },
   config: DaemonConfigShape = resolveDaemonConfig(),
 ): Effect.Effect<string | null> =>
-  requestOverSocket({
-    isTerminal: (message) => message.type === 'ack' || message.type === 'error',
-    message: {
-      argv: [...input.argv],
-      background: true,
-      cwd: input.cwd,
-      holdStop: input.session !== undefined,
-      id: shortId(),
-      type: 'exec',
-      ...(input.host === undefined ? {} : { host: input.host }),
-      ...(input.session === undefined ? {} : { session: input.session }),
-    },
-    socketPath: config.socketPath,
-    timeoutMs: 5_000,
-  }).pipe(
+  // Cold daemon must not mean "failed to submit": start it like exec does.
+  ensureDaemonRunning(config).pipe(
+    Effect.ignore,
+    Effect.andThen(
+      requestOverSocket({
+        isTerminal: (message) => message.type === 'ack' || message.type === 'error',
+        message: {
+          argv: [...input.argv],
+          background: true,
+          cwd: input.cwd,
+          holdStop: input.session !== undefined,
+          id: shortId(),
+          type: 'exec',
+          ...(input.host === undefined ? {} : { host: input.host }),
+          ...(input.session === undefined ? {} : { session: input.session }),
+        },
+        socketPath: config.socketPath,
+        timeoutMs: 5_000,
+      }),
+    ),
     Effect.map((messages) => {
       const ack = messages.find((message): message is AckMessage => message.type === 'ack');
       return ack?.ticket ?? null;

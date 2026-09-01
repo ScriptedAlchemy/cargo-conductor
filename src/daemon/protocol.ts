@@ -15,9 +15,9 @@ export type FinishedStatus = 'done' | 'failed' | 'killed';
 /**
  * How an attached request rides its leader (see daemon/coverage.ts):
  * 'identity' mirrors everything, 'coverage' rides a stronger in-flight run,
- * 'batch' was composed into a merged multi-package invocation. Coverage and
- * batch share failure semantics (a failed leader never fails them; they
- * requeue unless their scope was proven).
+ * 'batch' was composed into a merged invocation. Coverage and compile-batch
+ * attachments requeue when the leader fails (unless their scope was proven);
+ * folded test/nextest batches mirror the composite's shared exit.
  */
 export type AttachMode = 'identity' | 'coverage' | 'batch';
 

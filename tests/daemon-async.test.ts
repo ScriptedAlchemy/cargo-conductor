@@ -1,3 +1,5 @@
+import { join } from 'node:path';
+
 import { describe, expect, it } from '@rstest/core';
 import * as Effect from 'effect/Effect';
 
@@ -16,6 +18,9 @@ describe('async tickets', () => {
             background: true,
             cwd: fixture.ws1,
             env: {
+              // Bare `cargo` no longer resolves through PATH (shim recursion
+              // guard); pin the job at the fixture's fake cargo explicitly.
+              CARGO_CONDUCTOR_CARGO_BIN: join(fixture.binDir, 'cargo'),
               FAKE_SLEEP: '0.2',
               PATH: `${fixture.binDir}:${process.env.PATH ?? ''}`,
             },

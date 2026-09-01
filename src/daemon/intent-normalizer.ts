@@ -6,16 +6,23 @@ export interface ParsedCargoArgv {
   readonly allFeatures: boolean;
   readonly excludes: readonly string[];
   readonly features: readonly string[];
+  /** nextest filterset expressions (`-E`/`--filterset`/`--filter-expr`). */
+  readonly filterExpressions: readonly string[];
   readonly manifestPath: string | null;
+  /** First positional after `nextest` (e.g. `run`, `list`); null elsewhere. */
+  readonly nextestCommand: string | null;
   readonly noDefaultFeatures: boolean;
   readonly opaqueArguments: readonly string[];
   readonly packages: readonly string[];
+  /** Arguments after `--`, forwarded to rustc/libtest/the spawned program. */
   readonly passthrough: readonly string[];
   readonly profile: string;
   readonly subcommand: string;
   readonly targetDir: string | null;
   readonly targetTriple: string | null;
   readonly targets: readonly string[];
+  /** Positional test-name filters (`cargo test <NAME>`, nextest run filters). */
+  readonly testFilters: readonly string[];
   readonly toolchain: string | null;
   readonly workspace: boolean;
 }
@@ -44,7 +51,10 @@ const sortedUnique = (values: readonly string[]): string[] =>
 const splitFeatures = (value: string): string[] =>
   value.split(/[,\s]+/u).filter((feature) => feature.length > 0);
 
-const cargoExecutable = /(?:^|[/\\])cargo(?:\.exe)?$/u;
+export const cargoExecutablePattern = /(?:^|[/\\])cargo(?:\.exe)?$/u;
+
+/** Subcommands whose bare positional arguments are test-name filters. */
+const testFilterSubcommands = new Set(['bench', 'nextest', 'test']);
 const compilationEnvironmentNames = new Set([
   'AR',
   'CC',
@@ -133,7 +143,7 @@ export const digestCargoEnvironment = (
 
 export const parseCargoArgv = (input: readonly string[]): ParsedCargoArgv => {
   const argv = [...input];
-  if (argv[0] !== undefined && cargoExecutable.test(argv[0])) {
+  if (argv[0] !== undefined && cargoExecutablePattern.test(argv[0])) {
     argv.shift();
   }
 
@@ -182,8 +192,11 @@ export const parseCargoArgv = (input: readonly string[]): ParsedCargoArgv => {
   const packages: string[] = [];
   const excludes: string[] = [];
   const features: string[] = [];
+  const filterExpressions: string[] = [];
   const targets: string[] = [];
+  const testFilters: string[] = [];
   let allFeatures = false;
+  let nextestCommand: string | null = null;
   let noDefaultFeatures = false;
   let profile = defaultProfile(subcommand);
   let passthrough: string[] = [];
@@ -193,9 +206,10 @@ export const parseCargoArgv = (input: readonly string[]): ParsedCargoArgv => {
   for (let index = 0; index < argv.length; index += 1) {
     const argument = argv[index];
     if (argument === '--') {
-      if (subcommand === 'rustc') {
-        passthrough = argv.slice(index + 1);
-      }
+      // Trailing arguments feed the intent key for every subcommand: rustc
+      // compiler flags, libtest filters, and program arguments all change
+      // what the invocation does.
+      passthrough = argv.slice(index + 1);
       break;
     }
 
@@ -259,6 +273,18 @@ export const parseCargoArgv = (input: readonly string[]): ParsedCargoArgv => {
       case '--all-targets':
         targets.push(option.slice(2));
         break;
+      case '-E':
+      case '--filterset':
+      case '--filter-expr': {
+        // A filterset only means selection under nextest; elsewhere the
+        // token is unmodeled and stays opaque (without consuming a value).
+        if (subcommand === 'nextest') {
+          filterExpressions.push(takeValue());
+        } else {
+          opaqueArguments.push(argument);
+        }
+        break;
+      }
       case '--all':
       case '--workspace':
         workspace = true;
@@ -276,7 +302,13 @@ export const parseCargoArgv = (input: readonly string[]): ParsedCargoArgv => {
         profile = 'dev';
         break;
       default:
-        opaqueArguments.push(argument);
+        if (argument.startsWith('-') || !testFilterSubcommands.has(subcommand)) {
+          opaqueArguments.push(argument);
+        } else if (subcommand === 'nextest' && nextestCommand === null) {
+          nextestCommand = argument;
+        } else {
+          testFilters.push(argument);
+        }
         break;
     }
   }
@@ -285,7 +317,9 @@ export const parseCargoArgv = (input: readonly string[]): ParsedCargoArgv => {
     allFeatures,
     excludes: sortedUnique(excludes),
     features: sortedUnique(features),
+    filterExpressions: sortedUnique(filterExpressions),
     manifestPath,
+    nextestCommand,
     noDefaultFeatures,
     opaqueArguments,
     packages: sortedUnique(packages),
@@ -295,6 +329,7 @@ export const parseCargoArgv = (input: readonly string[]): ParsedCargoArgv => {
     targetDir,
     targetTriple,
     targets: sortedUnique(targets),
+    testFilters: sortedUnique(testFilters),
     toolchain,
     workspace,
   };
@@ -331,7 +366,9 @@ export const normalizeCargoIntent = (
     envDigest,
     excludes: parsed.excludes,
     features: parsed.features,
+    filterExpressions: parsed.filterExpressions,
     manifestPath,
+    nextestCommand: parsed.nextestCommand,
     noDefaultFeatures: parsed.noDefaultFeatures,
     opaqueArguments: parsed.opaqueArguments,
     packages: parsed.packages,
@@ -341,6 +378,7 @@ export const normalizeCargoIntent = (
     targetDir,
     targetTriple,
     targets: parsed.targets,
+    testFilters: parsed.testFilters,
     toolchain,
     workspace: parsed.workspace,
     workspaceRoot,
@@ -350,7 +388,7 @@ export const normalizeCargoIntent = (
     ...parsed,
     cwd,
     envDigest,
-    key: sha256(`cargo-conductor-intent-v1\0${JSON.stringify(surface)}`),
+    key: sha256(`cargo-conductor-intent-v2\0${JSON.stringify(surface)}`),
     manifestPath,
     targetDir,
     targetTriple,

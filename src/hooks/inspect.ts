@@ -59,16 +59,11 @@ export interface InspectedCommand {
 }
 
 const asWord = (text: string): BashWord => ({
-  text: needsShellQuote(text) ? shellQuote(text) : text,
+  text: text.length === 0 || /[\s'"$`\\|&;()<>]/.test(text) ? shellQuote(text) : text,
   type: 'Word',
 });
 
-const needsShellQuote = (text: string): boolean =>
-  text.length === 0 || /[\s'"$`\\|&;()<>]/.test(text);
-
 const shellQuote = (text: string): string => `'${text.replaceAll("'", `'\\''`)}'`;
-
-const wordText = (word: BashWord | undefined): string => word?.text ?? '';
 
 const commandWords = (command: BashSimpleCommand): BashWord[] => {
   const words: BashWord[] = [];
@@ -99,7 +94,7 @@ const findCargoIndex = (argv: readonly string[]): number => {
         index += 1;
       }
     }
-    const valueFlags = prefixValueFlags[base] ?? new Set<string>();
+    const valueFlags = prefixValueFlags[base];
     while (index < argv.length && argv[index]?.startsWith('-') === true) {
       const flag = argv[index];
       index += 1;
@@ -107,7 +102,7 @@ const findCargoIndex = (argv: readonly string[]): number => {
         continue;
       }
       const next = argv[index];
-      if (valueFlags.has(flag) && next !== undefined && !next.startsWith('-')) {
+      if (valueFlags?.has(flag) === true && next !== undefined && !next.startsWith('-')) {
         index += 1;
       }
     }
@@ -201,7 +196,7 @@ const wrapWords = (words: readonly BashWord[], cargoIndex: number, options: Rewr
 
 const rewriteSimpleCommand = (command: BashSimpleCommand, options: RewriteOptions): boolean => {
   const words = commandWords(command);
-  const argv = words.map(wordText);
+  const argv = words.map((word) => word.text);
   if (argv.length === 0 || isAlreadyWrapped(argv)) {
     return false;
   }
@@ -225,7 +220,7 @@ export const inspectShellCommand = (command: string): InspectedCommand => {
   let destructive = false;
   let hasCargo = false;
   walkSimpleCommands(ast, (simple) => {
-    const argv = commandWords(simple).map(wordText);
+    const argv = commandWords(simple).map((word) => word.text);
     if (isAlreadyWrapped(argv)) {
       alreadyWrapped = true;
       return;

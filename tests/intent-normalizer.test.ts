@@ -35,8 +35,6 @@ describe('parseCargoArgv', () => {
       'build',
       '--manifest-path',
       'nested/Cargo.toml',
-      '--',
-      '--ignored-program-argument',
     ]);
     const right = parseCargoArgv([
       '+nightly',
@@ -61,7 +59,9 @@ describe('parseCargoArgv', () => {
       allFeatures: false,
       excludes: ['skip-me'],
       features: ['alpha', 'beta', 'zeta'],
+      filterExpressions: [],
       manifestPath: 'nested/Cargo.toml',
+      nextestCommand: null,
       noDefaultFeatures: false,
       opaqueArguments: [],
       packages: ['alpha', 'beta'],
@@ -71,6 +71,7 @@ describe('parseCargoArgv', () => {
       targetDir: 'build',
       targetTriple: 'x86_64-unknown-linux-gnu',
       targets: ['bin:tool', 'lib'],
+      testFilters: [],
       toolchain: 'nightly',
       workspace: true,
     });
@@ -115,12 +116,61 @@ describe('parseCargoArgv', () => {
     expect(parseCargoArgv(['cargo', 'test', '--doc']).targets).toEqual(['doc']);
   });
 
-  it('retains compiler passthrough only for cargo rustc', () => {
+  it('captures trailing arguments after -- for every subcommand', () => {
     expect(parseCargoArgv(['cargo', 'rustc', '--', '-C', 'opt-level=3']).passthrough).toEqual([
       '-C',
       'opt-level=3',
     ]);
-    expect(parseCargoArgv(['cargo', 'test', '--', '--ignored']).passthrough).toEqual([]);
+    expect(parseCargoArgv(['cargo', 'test', '--', '--ignored']).passthrough).toEqual([
+      '--ignored',
+    ]);
+    expect(parseCargoArgv(['cargo', 'test', '--', 'torn_durable', 'verify_once']).passthrough).toEqual([
+      'torn_durable',
+      'verify_once',
+    ]);
+  });
+
+  it('models positional test filters and --test targets structurally', () => {
+    const parsed = parseCargoArgv([
+      'cargo',
+      'test',
+      '-p',
+      'tracedecay-graph-db',
+      '--all-features',
+      '--test',
+      'durability_crash_contract',
+      'torn_durable_store_is_quarantined',
+    ]);
+    expect(parsed.targets).toEqual(['test:durability_crash_contract']);
+    expect(parsed.testFilters).toEqual(['torn_durable_store_is_quarantined']);
+    expect(parsed.passthrough).toEqual([]);
+    expect(parsed.opaqueArguments).toEqual([]);
+  });
+
+  it('models the nextest run command, filtersets, and positional filters', () => {
+    const parsed = parseCargoArgv([
+      'cargo',
+      'nextest',
+      'run',
+      '-p',
+      'graph',
+      '-E',
+      'test(verify_once)',
+      'name_filter',
+    ]);
+    expect(parsed.subcommand).toBe('nextest');
+    expect(parsed.nextestCommand).toBe('run');
+    expect(parsed.filterExpressions).toEqual(['test(verify_once)']);
+    expect(parsed.testFilters).toEqual(['name_filter']);
+    expect(parsed.opaqueArguments).toEqual([]);
+    expect(parseCargoArgv(['cargo', 'nextest', 'list']).nextestCommand).toBe('list');
+  });
+
+  it('keeps -E opaque outside nextest without consuming a value', () => {
+    const parsed = parseCargoArgv(['cargo', 'test', '-E', 'expr']);
+    expect(parsed.opaqueArguments).toEqual(['-E']);
+    expect(parsed.testFilters).toEqual(['expr']);
+    expect(parsed.filterExpressions).toEqual([]);
   });
 
   it('retains unmodeled arguments as an opaque ordered surface', () => {
@@ -309,6 +359,30 @@ describe('normalizeCargoIntent', () => {
     });
 
     expect(ripgrep.key).not.toBe(nextest.key);
+  });
+
+  it('separates test invocations by their harness filters in the normalized key', () => {
+    const options = {
+      cwd: '/work/repo',
+      env: {},
+      workspaceRoot: '/work/repo',
+    } as const;
+
+    const alpha = normalizeCargoIntent({
+      ...options,
+      argv: ['cargo', 'test', '-p', 'x', '--', 'alpha_only'],
+    });
+    const beta = normalizeCargoIntent({
+      ...options,
+      argv: ['cargo', 'test', '-p', 'x', '--', 'beta_only'],
+    });
+    const unfiltered = normalizeCargoIntent({
+      ...options,
+      argv: ['cargo', 'test', '-p', 'x'],
+    });
+
+    expect(alpha.key).not.toBe(beta.key);
+    expect(alpha.key).not.toBe(unfiltered.key);
   });
 
   it('uses RUSTUP_TOOLCHAIN only when argv has no explicit toolchain', () => {

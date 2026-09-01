@@ -24,20 +24,18 @@ export interface InspectOperations {
 }
 
 const parseLimit = (args: readonly string[]): LimitInput => {
-  const unknown = args.filter((argument, index) => {
-    if (argument === '--limit' || args[index - 1] === '--limit') {
-      return false;
-    }
-    return argument.startsWith('-');
-  });
-  if (unknown[0] !== undefined) {
-    throw new Error(`Unknown option: ${unknown[0]}`);
+  const unknownOption = args.find(
+    (argument, index) =>
+      argument.startsWith('-') && argument !== '--limit' && args[index - 1] !== '--limit',
+  );
+  if (unknownOption !== undefined) {
+    throw new Error(`Unknown option: ${unknownOption}`);
   }
-  const index = args.indexOf('--limit');
-  if (index === -1) {
+  const limitIndex = args.indexOf('--limit');
+  if (limitIndex === -1) {
     return {};
   }
-  const raw = args[index + 1];
+  const raw = args[limitIndex + 1];
   const limit = Number(raw);
   if (raw === undefined || !Number.isInteger(limit) || limit < 1) {
     throw new Error('--limit requires a positive integer');
@@ -46,7 +44,7 @@ const parseLimit = (args: readonly string[]): LimitInput => {
 };
 
 const loadSnapshot = (limit: number | undefined) =>
-  loadConductorSnapshot({ ...(limit === undefined ? {} : { recentLimit: limit }) });
+  loadConductorSnapshot(limit === undefined ? {} : { recentLimit: limit });
 
 export const defaultInspectOperations: InspectOperations = {
   last: async () => {

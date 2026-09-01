@@ -214,6 +214,18 @@ const selectRequestById = (db: DatabaseSync, id: number): RequestRecord | null =
   return row === undefined ? null : toRequestRecord(row);
 };
 
+/**
+ * Read-only connection for inspecting the ledger without the daemon. Never
+ * creates directories, switches journal modes, or runs migrations. WAL
+ * recovery after an unclean daemon stop (and pending column migrations)
+ * need a writable connection, so callers fall back to openLedgerDatabase.
+ */
+export const openLedgerDatabaseReadOnly = (databasePath: string): DatabaseSync => {
+  const db = new DatabaseSync(databasePath, { readOnly: true });
+  db.exec('PRAGMA busy_timeout = 5000;');
+  return db;
+};
+
 export const openLedgerDatabase = (databasePath: string): DatabaseSync => {
   mkdirSync(dirname(databasePath), { recursive: true });
   const db = new DatabaseSync(databasePath);

@@ -18,6 +18,15 @@ describe('PATH cargo shim', () => {
     );
   });
 
+  it('passes daemon-spawned cargo straight through instead of re-brokering it', () => {
+    const script = renderCargoShim({
+      conductorArgv: ['conductor'],
+      realCargo: '/usr/bin/cargo',
+    });
+    expect(script).toContain('if [ -n "${CARGO_CONDUCTOR_INSIDE:-}" ]; then');
+    expect(script).toContain('  exec /usr/bin/cargo "$@"');
+  });
+
   it('installs an executable shim and refuses to clobber a foreign cargo by default', () => {
     const root = mkdtempSync(join(tmpdir(), 'cc-shim-'));
     try {

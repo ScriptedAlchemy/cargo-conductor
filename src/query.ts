@@ -1,12 +1,13 @@
 import { randomBytes } from 'node:crypto';
 import { existsSync } from 'node:fs';
+import type { DatabaseSync } from 'node:sqlite';
 
 import * as Effect from 'effect/Effect';
 
 import { resolveDaemonConfig } from './daemon/config.js';
 import type { DaemonConfigShape } from './daemon/config.js';
 import { requestOverSocket } from './daemon/control.js';
-import { createLedgerApi, openLedgerDatabase } from './daemon/ledger.js';
+import { createLedgerApi, openLedgerDatabase, openLedgerDatabaseReadOnly } from './daemon/ledger.js';
 import type { LaneStatus, RequestRecord, StatusReport, StatusResultMessage } from './daemon/protocol.js';
 
 export interface ConductorSnapshot {
@@ -72,11 +73,7 @@ const emptyStopped = (config: DaemonConfigShape): ConductorSnapshot => ({
   summary: stoppedSummary(0),
 });
 
-const fromLedger = (config: DaemonConfigShape, recentLimit: number): ConductorSnapshot => {
-  if (!existsSync(config.databasePath)) {
-    return emptyStopped(config);
-  }
-  const db = openLedgerDatabase(config.databasePath);
+const snapshotFrom = (db: DatabaseSync, config: DaemonConfigShape, recentLimit: number): ConductorSnapshot => {
   try {
     const ledger = createLedgerApi(db);
     const recent = Effect.runSync(ledger.recentRequests(recentLimit));
@@ -95,6 +92,19 @@ const fromLedger = (config: DaemonConfigShape, recentLimit: number): ConductorSn
     };
   } finally {
     db.close();
+  }
+};
+
+const fromLedger = (config: DaemonConfigShape, recentLimit: number): ConductorSnapshot => {
+  if (!existsSync(config.databasePath)) {
+    return emptyStopped(config);
+  }
+  try {
+    return snapshotFrom(openLedgerDatabaseReadOnly(config.databasePath), config, recentLimit);
+  } catch {
+    // WAL recovery after an unclean stop, or a ledger predating a column
+    // migration, needs the writable opener.
+    return snapshotFrom(openLedgerDatabase(config.databasePath), config, recentLimit);
   }
 };
 

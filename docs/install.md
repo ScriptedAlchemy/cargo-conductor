@@ -70,10 +70,35 @@ open the portable target in the workbench playground).
 Hooks cannot see `cargo` spawned from scripts. Install a shim:
 
 ```sh
-conductor install-shim --dir ~/.local/bin --real-cargo "$(command -v cargo)"
+conductor install-shim --dir ~/.local/bin
 ```
 
 Prepend that directory to `PATH` so scripted cargo goes through the broker.
+
+The generated shim is self-contained
+([issue #2](https://github.com/ScriptedAlchemy/cargo-conductor/issues/2): it
+used to call a bare `conductor` that nothing puts on PATH):
+
+- It embeds the absolute `node <script>` invocation of the CLI that ran
+  `install-shim`, so it needs no `conductor` on PATH.
+- It embeds an absolute real-cargo path. `--real-cargo` accepts a name or a
+  path; names resolve through PATH at install time, skipping the shim
+  directory itself, so re-installing with the shim already on PATH cannot
+  embed a self-call. An existing `cargo` at the destination is only replaced
+  with `--force`.
+- It submits with `--host shim`, so ledger rows and the dashboard's who
+  column show which requests entered through the shim rather than a hook
+  rewrite (`claude`/`codex`/`cursor`).
+- It passes daemon-spawned cargo straight through: the daemon sets
+  `CARGO_CONDUCTOR_INSIDE=1` on every process it spawns, and the shim execs
+  the real cargo directly when that variable is present, so the broker's own
+  work never re-enters the broker.
+
+On the daemon side, bare `cargo` argv (hook rewrites) and the internal
+`cargo metadata` topology refresh never resolve through PATH, where the shim
+sits. The daemon uses `CARGO_CONDUCTOR_CARGO_BIN` when set, otherwise
+`$CARGO_HOME/bin/cargo` (default `~/.cargo/bin/cargo`), otherwise a bare
+`cargo` as the last resort.
 
 ## State
 

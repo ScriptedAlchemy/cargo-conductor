@@ -6,6 +6,7 @@ import * as Fiber from 'effect/Fiber';
 import * as Stream from 'effect/Stream';
 
 import { LineBuffer } from './protocol.js';
+import { realCargoBin } from './real-cargo.js';
 
 export interface ExecuteCargoOptions {
   readonly argv: readonly string[];
@@ -80,14 +81,16 @@ const buildCommand = (options: ExecuteCargoOptions): Command.Command | undefined
   if (executable === undefined) {
     return undefined;
   }
-  let command = Command.stdin(
-    Command.workingDirectory(Command.make(executable, ...options.argv.slice(1)), options.cwd),
+  // Bare `cargo` must not resolve through PATH: with the conductor shim
+  // installed, the daemon would spawn the shim and submit its own work back
+  // to itself. CARGO_CONDUCTOR_INSIDE lets the shim pass nested invocations
+  // straight through to the real binary.
+  const resolved = executable === 'cargo' ? realCargoBin(options.env ?? process.env) : executable;
+  const command = Command.stdin(
+    Command.workingDirectory(Command.make(resolved, ...options.argv.slice(1)), options.cwd),
     'pipe',
   );
-  if (options.env !== undefined) {
-    command = Command.env(command, { ...options.env });
-  }
-  return command;
+  return Command.env(command, { ...options.env, CARGO_CONDUCTOR_INSIDE: '1' });
 };
 
 const toResult = (waited: WaitOutcome, outputTail: string): ExecutionResult => {

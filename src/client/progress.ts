@@ -42,8 +42,6 @@ export type ProgressEvent =
 
 const prefix = '[cargo-conductor]';
 
-const formatElapsed = (elapsedMs: number): string => `${Math.floor(elapsedMs / 1000)}s`;
-
 export const formatProgressLine = (event: ProgressEvent): string => {
   switch (event.kind) {
     case 'queued': {
@@ -70,7 +68,7 @@ export const formatProgressLine = (event: ProgressEvent): string => {
     case 'started':
       return `${prefix} ticket ${event.ticket} started (waited ${event.waitMs}ms)\n`;
     case 'heartbeat':
-      return `${prefix} ticket ${event.ticket} still ${event.phase} (${formatElapsed(event.elapsedMs)})\n`;
+      return `${prefix} ticket ${event.ticket} still ${event.phase} (${Math.floor(event.elapsedMs / 1000)}s)\n`;
     case 'passthrough':
       return `${prefix} ${event.reason}; running cargo directly\n`;
     case 'background': {

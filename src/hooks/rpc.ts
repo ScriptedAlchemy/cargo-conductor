@@ -149,25 +149,20 @@ export const waitForTickets = async (
   maxWaitMs: number,
   socketPath: string = resolveHookSocketPath(),
 ): Promise<readonly FinishedTicket[]> => {
-  const finished: FinishedTicket[] = [];
-  const deadline = Date.now() + maxWaitMs;
-  for (const ticket of tickets) {
-    const remaining = deadline - Date.now();
-    if (remaining <= 0) {
-      break;
-    }
-    const message = await requestJson(
-      { id: `hook-await-${ticket}`, maxWaitMs: remaining, ticket, type: 'await' },
-      socketPath,
-      remaining + 250,
-    );
-    if (message === null || message.type !== 'await-result' || message.timedOut === true) {
-      continue;
-    }
-    const parsed = asFinished(message.request);
-    if (parsed !== null) {
-      finished.push(parsed);
-    }
-  }
-  return finished;
+  // Await concurrently: with serial waits, one slow ticket could burn the
+  // whole budget and hide another ticket that finished long ago.
+  const awaited = await Promise.all(
+    tickets.map(async (ticket) => {
+      const message = await requestJson(
+        { id: `hook-await-${ticket}`, maxWaitMs, ticket, type: 'await' },
+        socketPath,
+        maxWaitMs + 250,
+      );
+      if (message === null || message.type !== 'await-result' || message.timedOut === true) {
+        return null;
+      }
+      return asFinished(message.request);
+    }),
+  );
+  return awaited.filter((entry): entry is FinishedTicket => entry !== null);
 };

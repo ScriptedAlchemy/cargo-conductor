@@ -10,21 +10,21 @@ const asStrings = (value: unknown): readonly string[] | null =>
     ? (value as readonly string[])
     : null;
 
-/** `/home/…/bin/cargo` reads as noise in a table; show just the program name. */
 const displayProgram = (part: string): string => {
   const slash = part.lastIndexOf('/');
   return slash === -1 ? part : part.slice(slash + 1);
 };
 
-const displayJoin = (parts: readonly string[]): string =>
-  parts.length === 0 ? '' : [displayProgram(parts[0]!), ...parts.slice(1)].join(' ');
+const displayJoin = (parts: readonly string[]): string => {
+  const [program, ...args] = parts;
+  return program === undefined ? '' : [displayProgram(program), ...args].join(' ');
+};
 
 export const argvText = (argv: unknown): string => {
   const parts = asStrings(argv);
   return parts === null ? '' : displayJoin(parts);
 };
 
-/** Untrimmed join for tooltips, so the real binary path stays discoverable. */
 export const argvTitle = (argv: unknown): string => asStrings(argv)?.join(' ') ?? '';
 
 export const escapeHtml = (value: string): string =>
@@ -52,7 +52,7 @@ const namedPackages = (argv: readonly string[]): Set<string> => {
   return named;
 };
 
-export interface RanAs {
+interface RanAs {
   readonly command: string;
   readonly extraPackages: number;
 }
@@ -112,7 +112,6 @@ export const formatMs = (ms: number): string => {
   return rest === 0 ? `${minutes}m` : `${minutes}m ${rest}s`;
 };
 
-/** `$HOME`-style prefixes become `~`; still-long paths keep the last two segments. */
 export const shortenPath = (path: string, maxLength = 38): string => {
   const homed = path.replace(/^\/(?:home|Users)\/[^/]+/u, '~');
   if (homed.length <= maxLength) {
@@ -125,7 +124,6 @@ export const shortenPath = (path: string, maxLength = 38): string => {
   return `…/${segments.slice(-2).join('/')}`;
 };
 
-/** Kick one immediate load, then poll on the given interval. */
 export const startPolling = (
   load: () => Promise<void>,
   schedule: (callback: () => void, intervalMs: number) => void,

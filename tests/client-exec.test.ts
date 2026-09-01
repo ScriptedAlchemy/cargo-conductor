@@ -72,6 +72,7 @@ const collectIo = (): {
 };
 
 const cargoEnv = (fixture: Fixture, extra: Record<string, string> = {}): Record<string, string> => ({
+  CARGO_CONDUCTOR_CARGO_BIN: join(fixture.binDir, 'cargo'),
   PATH: `${fixture.binDir}:${process.env.PATH ?? ''}`,
   ...extra,
 });
