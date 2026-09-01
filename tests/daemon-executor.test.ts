@@ -19,6 +19,10 @@ if [ "$1" = unterminated ]; then
   printf "last-fragment"
   exit 0
 fi
+if [ "$1" = color ]; then
+  echo "color:\${CARGO_TERM_COLOR:-unset}"
+  exit 0
+fi
 echo "out:$1"
 echo "err:$1" >&2
 if [ "$1" = trap-term ]; then
@@ -79,6 +83,16 @@ describe('TailBuffer', () => {
     tail.push(Buffer.from('0123456789'));
     expect(tail.toString()).toBe('56789');
   });
+
+  it('strips ANSI color from the rendered tail (JSON surfaces never see ESC)', () => {
+    const tail = new TailBuffer(4096);
+    tail.push(Buffer.from('error[E0432]: unresolved im'));
+    tail.push(Buffer.from('port: `rusqlite::Connection`\u001b[0m\n \u001b[1m\u001b[94m--> \u001b[0msrc/lib.rs:3:5\n'));
+    expect(tail.toString()).toBe(
+      'error[E0432]: unresolved import: `rusqlite::Connection`\n --> src/lib.rs:3:5\n',
+    );
+    expect(tail.toString()).not.toContain('\u001b');
+  });
 });
 
 describe('executeCargo', () => {
@@ -137,6 +151,37 @@ describe('executeCargo', () => {
     expect(result.exitCode).toBe(3);
     expect(result.signal).toBeNull();
     expect(result.error).toBeNull();
+  });
+
+  it('defaults cargo color to never for the captured pipe', async () => {
+    const { dir, script } = makeWorkspace();
+
+    const result = await runExecute({
+      argv: [script, 'color'],
+      cwd: dir,
+      killSignal: unusedKill(),
+      tailBytes: 4096,
+      onOutput: () => Effect.void,
+    });
+
+    expect(result.outcome).toBe('done');
+    expect(result.outputTail).toContain('color:never');
+  });
+
+  it('respects an explicit caller CARGO_TERM_COLOR over the never default', async () => {
+    const { dir, script } = makeWorkspace();
+
+    const result = await runExecute({
+      argv: [script, 'color'],
+      cwd: dir,
+      env: { CARGO_TERM_COLOR: 'always' },
+      killSignal: unusedKill(),
+      tailBytes: 4096,
+      onOutput: () => Effect.void,
+    });
+
+    expect(result.outcome).toBe('done');
+    expect(result.outputTail).toContain('color:always');
   });
 
   it('runs the child with the requested cwd', async () => {

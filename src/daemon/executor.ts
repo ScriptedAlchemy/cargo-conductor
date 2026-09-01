@@ -7,6 +7,8 @@ import * as Stream from 'effect/Stream';
 import * as ChildProcess from 'effect/unstable/process/ChildProcess';
 import type * as ChildProcessSpawner from 'effect/unstable/process/ChildProcessSpawner';
 
+import { stripAnsi } from '../lib/ansi.js';
+
 import { cargoExecutablePattern } from './intent-normalizer.js';
 import { sharedJobserverDelta } from './jobserver.js';
 import { realCargoBin } from './real-cargo.js';
@@ -82,8 +84,14 @@ export class TailBuffer {
   }
 
   toString(): string {
-    // A trimmed leading partial multi-byte UTF-8 character is acceptable (lossy head).
-    return Buffer.concat(this.#chunks.slice(this.#head), this.#bytes).toString('utf8');
+    // The tail only feeds text surfaces (ledger rows, await/status JSON,
+    // MCP structured content) that would JSON-escape a raw ESC into a
+    // literal `\u001b[…`, so color is stripped here rather than at every
+    // consumer. A trimmed leading partial multi-byte UTF-8 character is
+    // acceptable (lossy head).
+    return stripAnsi(
+      Buffer.concat(this.#chunks.slice(this.#head), this.#bytes).toString('utf8'),
+    );
   }
 }
 
@@ -164,11 +172,18 @@ const buildCommand = (options: ExecuteCargoOptions): ChildProcess.StandardComman
   const jobserver = cargoExecutablePattern.test(executable)
     ? (sharedJobserverDelta({ ...process.env, ...options.env }) ?? {})
     : {};
+  // The child's stdout/stderr are captured pipes headed for ledgers and
+  // JSON surfaces, never a TTY, so cargo/rustc color defaults to off (a
+  // stray `always` in the daemon's own environment must not paint into the
+  // capture). A caller's explicit CARGO_TERM_COLOR (`always` for a consumer
+  // that renders color, or their own `never`) stays authoritative.
+  const color =
+    options.env?.CARGO_TERM_COLOR === undefined ? { CARGO_TERM_COLOR: 'never' } : {};
   // `env` is a delta on top of the caller environment; extendEnv keeps the
   // inherited PATH/HOME etc. (v4 replaces the environment by default).
   return ChildProcess.make(resolved, options.argv.slice(1), {
     cwd: options.cwd,
-    env: { ...jobserver, ...options.env, CARGO_CONDUCTOR_INSIDE: '1' },
+    env: { ...color, ...jobserver, ...options.env, CARGO_CONDUCTOR_INSIDE: '1' },
     extendEnv: true,
     stdin: 'pipe',
   });

@@ -3,6 +3,8 @@ import type * as Deferred from 'effect/Deferred';
 import * as Effect from 'effect/Effect';
 import type * as Ref from 'effect/Ref';
 
+import { stripAnsi } from '../lib/ansi.js';
+
 import { hasLibKind } from './cargo-json.js';
 import type { TailBuffer } from './executor.js';
 import type { NormalizedCargoIntent } from './intent-normalizer.js';
@@ -205,10 +207,14 @@ export const addDiagnostic = (
   } else {
     return;
   }
-  if (rendered !== null && rendered.length > 0 && accumulator.diagnostics.length < maxDiagnostics) {
+  // Diagnostics surface only as JSON text (ledger, status, await/MCP), where
+  // the demux stream's ANSI-rendered color would arrive as escaped `\u001b[…`
+  // noise; the live stream keeps the colored bytes.
+  const text = rendered === null ? null : stripAnsi(rendered);
+  if (text !== null && text.length > 0 && accumulator.diagnostics.length < maxDiagnostics) {
     accumulator.diagnostics.push({
       order,
-      rendered: rendered.slice(0, maxDiagnosticLength),
+      rendered: text.slice(0, maxDiagnosticLength),
     });
   }
 };
