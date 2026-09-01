@@ -19,12 +19,21 @@
     "validate": "agent-bundle validate"
   },
   "dependencies": {
+    "@agent-bundle/rsc-runtime": "https://pkg.pr.new/ScriptedAlchemy/agent-bundle/@agent-bundle/rsc-runtime@560124af",
+    "@effect/platform": "^0.97.1",
+    "@effect/platform-node": "^0.108.1",
     "@modelcontextprotocol/server": "2.0.0",
+    "bashjsast": "github:woolkingx/bashjsast#131f4b677d1906774fc49cfceab0ccb7b370b2e6",
+    "effect": "^3.22.1",
+    "proper-lockfile": "^4.1.2",
+    "react": "^19.2.8",
     "zod": "4.4.3"
   },
   "devDependencies": {
     "@rstest/core": "0.11.10",
     "@types/node": "^22.18.0",
+    "@types/proper-lockfile": "^4.1.4",
+    "@types/react": "^19.2.18",
     "agent-bundle": "https://pkg.pr.new/ScriptedAlchemy/agent-bundle/agent-bundle@560124af",
     "typescript": "^5.9.0"
   }

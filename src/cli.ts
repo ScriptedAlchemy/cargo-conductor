@@ -1,55 +1,117 @@
-import { reportConductorStatus } from './status.js';
+import { runRscCli } from '@agent-bundle/rsc-runtime/plugin';
+import * as Effect from 'effect/Effect';
+
+import { createConductorApplication, type ConductorOperations } from './application.js';
+import { runExecClient, type RunExecOptions, type RunExecResult } from './client/exec.js';
+import { ExecUsageError, parseExecArgv } from './client/parse.js';
+
+export type { ConductorOperations };
 
 const usage = `Usage: conductor <command>
 
 Commands:
-  exec -- <cargo command>   Run cargo through the conductor daemon
-  status                    Show queue and in-flight cargo work
-  log                       Show recent conductor requests
-  last                      Show the most recent request
-  daemon start|stop         Control the conductor daemon
-  install-shim              Install an optional PATH cargo shim
+  exec [--session ID] [--host HOST] [--cwd DIR] [--bg] -- <cargo command>
+      Run cargo through the conductor daemon
+  status [--limit N]            Show queue and in-flight cargo work
+  log [--limit N]               Show recent conductor requests
+  last                          Show the most recent request
+  daemon <run|start|stop|status>
+      Control the conductor daemon
+  install-shim                  Install an optional PATH cargo shim
 `;
 
-const commands = ['daemon', 'exec', 'install-shim', 'last', 'log', 'status'] as const;
-type Command = (typeof commands)[number];
+export interface CliOptions {
+  readonly operations?: ConductorOperations;
+  readonly runExec?: (options: RunExecOptions) => Effect.Effect<RunExecResult>;
+  readonly signal?: AbortSignal;
+  readonly write?: (value: string) => void;
+  readonly writeStderr?: (data: string | Uint8Array) => void;
+  readonly writeStdout?: (data: Uint8Array) => void;
+}
 
-const isCommand = (value: string): value is Command =>
-  (commands as readonly string[]).includes(value);
+const defaultWrite = (value: string): void => {
+  process.stdout.write(value);
+};
 
-/** Injectable writer so tests can capture output without a child process. */
-export const runCli = (
-  argv: readonly string[],
-  write: (line: string) => void = (line) => {
-    process.stdout.write(line);
-  },
-): 0 | 1 | 2 => {
-  const [rawCommand] = argv;
-  if (rawCommand === undefined || rawCommand === '--help' || rawCommand === '-h') {
-    write(usage);
-    return rawCommand === undefined ? 2 : 0;
+const defaultWriteStdout = (data: Uint8Array): void => {
+  process.stdout.write(data);
+};
+
+const defaultWriteStderr = (data: string | Uint8Array): void => {
+  process.stderr.write(data);
+};
+
+const runExecCommand = async (argv: readonly string[], options: CliOptions): Promise<number> => {
+  const write = options.write ?? defaultWrite;
+  try {
+    const parsed = parseExecArgv(argv);
+    const io = {
+      writeStderr: options.writeStderr ?? defaultWriteStderr,
+      writeStdout: options.writeStdout ?? defaultWriteStdout,
+    };
+    const exec = options.runExec ?? runExecClient;
+    const result = await Effect.runPromise(
+      exec({
+        argv: parsed.cargoArgv,
+        cwd: parsed.cwd ?? process.cwd(),
+        io,
+        ...(parsed.host === undefined ? {} : { host: parsed.host }),
+        ...(parsed.session === undefined ? {} : { session: parsed.session }),
+      }),
+    );
+    return result.exitCode;
+  } catch (error) {
+    if (error instanceof ExecUsageError) {
+      write(usage);
+      return 2;
+    }
+    throw error;
   }
-  if (!isCommand(rawCommand)) {
+};
+
+/**
+ * Hybrid CLI: `exec` streams cargo through the Effect client (progress lines,
+ * fail-open passthrough). Everything else is the RSC catalog projection
+ * (`status`, `log`, `last`, `daemon`).
+ */
+export const runCli = async (
+  argv: readonly string[],
+  options: CliOptions = {},
+): Promise<number> => {
+  const write = options.write ?? defaultWrite;
+  const [command, ...rest] = argv;
+  if (command === undefined) {
     write(usage);
     return 2;
   }
-  switch (rawCommand) {
-    case 'last':
-    case 'log':
-    case 'status': {
-      const status = reportConductorStatus();
-      write(`${status.summary}\n`);
-      return 0;
+  if (command === '--help' || command === '-h') {
+    write(usage);
+    return 0;
+  }
+  if (command === 'exec') {
+    return runExecCommand(rest, options);
+  }
+  if (command === 'install-shim') {
+    write('cargo-conductor: install-shim is not implemented yet.\n');
+    return 1;
+  }
+  try {
+    return await runRscCli(
+      createConductorApplication({
+        ...(options.operations === undefined ? {} : { operations: options.operations }),
+      }),
+      argv,
+      {
+        ...(options.signal === undefined ? {} : { signal: options.signal }),
+        write,
+      },
+    );
+  } catch (error) {
+    if (error instanceof Error && error.message.startsWith('Unknown command:')) {
+      write(usage);
+      return 2;
     }
-    case 'daemon':
-    case 'exec':
-    case 'install-shim':
-      write('cargo-conductor: not implemented in the scaffold.\n');
-      return 1;
-    default: {
-      const exhaustive: never = rawCommand;
-      throw new Error(`Unhandled command: ${String(exhaustive)}`);
-    }
+    throw error;
   }
 };
 

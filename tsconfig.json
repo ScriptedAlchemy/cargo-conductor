@@ -1,6 +1,7 @@
 {
   "compilerOptions": {
     "isolatedModules": true,
+    "jsx": "react-jsx",
     "lib": ["ES2024"],
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
@@ -9,12 +10,14 @@
     "skipLibCheck": true,
     "strict": true,
     "target": "ES2024",
-    "types": ["node"],
+    "types": ["node", "react"],
     "verbatimModuleSyntax": true
   },
   "include": [
     "agent-bundle.config.ts",
     "src/**/*.ts",
-    "tests/**/*.ts"
+    "src/**/*.tsx",
+    "tests/**/*.ts",
+    "tests/**/*.tsx"
   ]
 }
