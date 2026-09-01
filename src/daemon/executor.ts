@@ -1,5 +1,6 @@
 import * as Command from '@effect/platform/Command';
 import type * as CommandExecutor from '@effect/platform/CommandExecutor';
+import * as Data from 'effect/Data';
 import * as Cause from 'effect/Cause';
 import * as Deferred from 'effect/Deferred';
 import * as Effect from 'effect/Effect';
@@ -85,6 +86,11 @@ export class TailBuffer {
     return Buffer.concat(this.#chunks.slice(this.#head), this.#bytes).toString('utf8');
   }
 }
+
+class SignalSendError extends Data.TaggedError('SignalSendError')<{
+  readonly cause: unknown;
+  readonly signal: NodeJS.Signals;
+}> {}
 
 const signalPattern = /signal:\s*(\w+)/;
 
@@ -281,7 +287,7 @@ export const executeCargo = (
                       const pid = Number(child.pid);
                       process.kill(process.platform === 'win32' ? pid : -pid, signal);
                     },
-                    catch: (cause) => cause,
+                    catch: (cause) => new SignalSendError({ cause, signal }),
                   });
                 const term = yield* Effect.exit(sendSignal('SIGTERM'));
                 if (Exit.isFailure(term)) {

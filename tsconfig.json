@@ -1,4 +1,5 @@
 {
+  "$schema": "./node_modules/@effect/tsgo/schema.json",
   "compilerOptions": {
     "isolatedModules": true,
     "jsx": "react-jsx",
@@ -11,7 +12,12 @@
     "strict": true,
     "target": "ES2024",
     "types": ["node", "react"],
-    "verbatimModuleSyntax": true
+    "verbatimModuleSyntax": true,
+    "plugins": [
+      {
+        "name": "@effect/language-service"
+      }
+    ]
   },
   "include": [
     "agent-bundle.config.ts",
