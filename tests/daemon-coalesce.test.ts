@@ -31,7 +31,7 @@ describe('identity coalescing', () => {
       Effect.gen(function* () {
         // Leader prints its output immediately, then sleeps: the follower
         // attaches mid-run and must receive the earlier output via replay.
-        const leaderFiber = yield* Effect.fork(
+        const leaderFiber = yield* Effect.forkChild(
           execRequest(fixture, { cwd: fixture.ws1, sleep: '1', timeoutMs: 12_000 }),
         );
         yield* pollReport(fixture, (report) =>
@@ -97,7 +97,7 @@ describe('identity coalescing', () => {
   it('mirrors an identical leader failure to the follower', () =>
     withDaemon(5, (fixture) =>
       Effect.gen(function* () {
-        const leaderFiber = yield* Effect.fork(
+        const leaderFiber = yield* Effect.forkChild(
           execRequest(fixture, {
             cwd: fixture.ws1,
             sleep: '0.8',
@@ -131,7 +131,7 @@ describe('coverage subsumption', () => {
   it('lets a narrow check ride a wider build and releases it on success', () =>
     withDaemon(5, (fixture) =>
       Effect.gen(function* () {
-        const leaderFiber = yield* Effect.fork(
+        const leaderFiber = yield* Effect.forkChild(
           execRequest(fixture, {
             cwd: fixture.ws1,
             argv: ['cargo', 'build', '-p', 'aa', '-p', 'bb'],
@@ -163,7 +163,7 @@ describe('coverage subsumption', () => {
   it('requeues a covered check when the stronger build fails (failed-stronger rule)', () =>
     withDaemon(5, (fixture) =>
       Effect.gen(function* () {
-        const leaderFiber = yield* Effect.fork(
+        const leaderFiber = yield* Effect.forkChild(
           execRequest(fixture, {
             cwd: fixture.ws1,
             argv: ['cargo', 'build', '-p', 'aa'],
@@ -224,7 +224,7 @@ describe('coverage subsumption', () => {
   it('does not attach across lanes or mismatched surfaces', () =>
     withDaemon(5, (fixture) =>
       Effect.gen(function* () {
-        const leaderFiber = yield* Effect.fork(
+        const leaderFiber = yield* Effect.forkChild(
           execRequest(fixture, {
             cwd: fixture.ws1,
             argv: ['cargo', 'build', '-p', 'aa'],

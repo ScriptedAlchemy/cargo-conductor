@@ -1,7 +1,7 @@
 import { rmSync } from 'node:fs';
 import { join } from 'node:path';
 
-import { NodeContext } from '@effect/platform-node';
+import { NodeServices } from '@effect/platform-node';
 import { describe, expect, it } from '@rstest/core';
 import * as Deferred from 'effect/Deferred';
 import * as Effect from 'effect/Effect';
@@ -56,7 +56,7 @@ describe('async tickets', () => {
       ),
       Layer.provideMerge(Layer.succeed(Ledger, ledger)),
       Layer.provideMerge(Layer.succeed(DaemonConfig, fixture.config)),
-      Layer.provideMerge(NodeContext.layer),
+      Layer.provideMerge(NodeServices.layer),
     );
 
     try {
@@ -81,7 +81,7 @@ describe('async tickets', () => {
             );
             yield* Deferred.await(runStarted);
             delayNextRead = true;
-            const awaiting = yield* Effect.fork(broker.awaitTicket(submitted.ticket, 5_000));
+            const awaiting = yield* Effect.forkChild(broker.awaitTicket(submitted.ticket, 5_000));
             yield* Deferred.await(readStarted);
             yield* Deferred.await(runFinished);
             yield* Deferred.succeed(releaseRead, undefined);

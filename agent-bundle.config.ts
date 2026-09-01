@@ -25,7 +25,7 @@ export default defineConfig({
       conductor: {
         apps: {
           dashboard: {
-            entry: './views/dashboard.ts',
+            entry: './views/dashboard.tsx',
             resourceUri: 'ui://cargo-conductor/dashboard.html',
             template: './views/dashboard.html',
           },

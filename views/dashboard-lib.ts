@@ -27,13 +27,6 @@ export const argvText = (argv: unknown): string => {
 
 export const argvTitle = (argv: unknown): string => asStrings(argv)?.join(' ') ?? '';
 
-export const escapeHtml = (value: string): string =>
-  value
-    .replaceAll('&', '&amp;')
-    .replaceAll('<', '&lt;')
-    .replaceAll('>', '&gt;')
-    .replaceAll('"', '&quot;');
-
 const namedPackages = (argv: readonly string[]): Set<string> => {
   const named = new Set<string>();
   for (let index = 0; index < argv.length; index += 1) {
@@ -122,15 +115,4 @@ export const shortenPath = (path: string, maxLength = 38): string => {
     return homed;
   }
   return `…/${segments.slice(-2).join('/')}`;
-};
-
-export const startPolling = (
-  load: () => Promise<void>,
-  schedule: (callback: () => void, intervalMs: number) => void,
-  intervalMs: number,
-): void => {
-  void load();
-  schedule(() => {
-    void load();
-  }, intervalMs);
 };

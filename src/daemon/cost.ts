@@ -18,10 +18,9 @@ export interface CostModelApi {
   readonly recordOutcome: (intentKey: string, runMs: number) => Effect.Effect<void>;
 }
 
-export class CostModel extends Context.Tag('cargo-conductor/CostModel')<
-  CostModel,
-  CostModelApi
->() {}
+export class CostModel extends Context.Service<CostModel, CostModelApi>()(
+  'cargo-conductor/CostModel',
+) {}
 
 /** Cold-start priors per subcommand, from the mined tracedecay p50s. */
 const defaultEstimates: Readonly<Record<string, number>> = {

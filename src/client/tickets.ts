@@ -32,7 +32,7 @@ export const fetchTicket = (
       );
       return result?.request ?? null;
     }),
-    Effect.catchAll(() => Effect.succeed(null)),
+    Effect.catch(() => Effect.succeed(null)),
   );
 
 export const awaitTicket = (
@@ -55,7 +55,7 @@ export const awaitTicket = (
         timedOut: result?.timedOut ?? true,
       };
     }),
-    Effect.catchAll(() => Effect.succeed({ request: null, timedOut: true })),
+    Effect.catch(() => Effect.succeed({ request: null, timedOut: true })),
   );
 
 export const submitBackground = (
@@ -91,5 +91,5 @@ export const submitBackground = (
       const ack = messages.find((message): message is AckMessage => message.type === 'ack');
       return ack?.ticket ?? null;
     }),
-    Effect.catchAll(() => Effect.succeed(null)),
+    Effect.catch(() => Effect.succeed(null)),
   );

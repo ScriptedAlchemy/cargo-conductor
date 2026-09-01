@@ -13,7 +13,7 @@ export const waitForDaemon = (
   socketPath: string,
 ): Effect.Effect<PongMessage, unknown> =>
   pingDaemon(socketPath, 1_000).pipe(
-    Effect.retry(Schedule.spaced('150 millis').pipe(Schedule.intersect(Schedule.recurs(40)))),
+    Effect.retry(Schedule.spaced('150 millis').pipe(Schedule.upTo({ times: 40 }))),
   );
 
 export const spawnDetachedDaemon = (
@@ -37,7 +37,7 @@ export const ensureDaemonRunning = (
 ): Effect.Effect<PongMessage, unknown> =>
   Effect.gen(function* () {
     const already = yield* pingDaemon(config.socketPath, 500).pipe(
-      Effect.catchAll(() => Effect.succeed(null)),
+      Effect.catch(() => Effect.succeed(null)),
     );
     if (already !== null) {
       return already;

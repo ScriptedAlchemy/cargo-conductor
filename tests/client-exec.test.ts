@@ -87,7 +87,7 @@ const withDaemon = <A>(use: (fixture: Fixture) => Effect.Effect<A, unknown>): Pr
         );
         yield* Effect.forkScoped(runDaemon(fixture.config));
         yield* pingDaemon(fixture.config.socketPath, 500).pipe(
-          Effect.retry(Schedule.spaced('50 millis').pipe(Schedule.intersect(Schedule.recurs(100)))),
+          Effect.retry(Schedule.spaced('50 millis').pipe(Schedule.upTo({ times: 100 }))),
         );
         return yield* use(fixture);
       }),

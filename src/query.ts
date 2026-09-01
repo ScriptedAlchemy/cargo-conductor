@@ -125,6 +125,6 @@ export const loadConductorSnapshot = (
       );
       return result === undefined ? fromLedger(config, recentLimit) : fromReport(result.report, config);
     }),
-    Effect.catchAll(() => Effect.sync(() => fromLedger(config, recentLimit))),
+    Effect.catch(() => Effect.sync(() => fromLedger(config, recentLimit))),
   );
 };

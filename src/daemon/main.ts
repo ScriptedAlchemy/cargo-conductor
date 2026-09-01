@@ -1,10 +1,10 @@
 import { rmSync } from 'node:fs';
 
-import { NodeContext, NodeSocketServer } from '@effect/platform-node';
-import type * as SocketServer from '@effect/platform/SocketServer';
+import { NodeServices, NodeSocketServer } from '@effect/platform-node';
 import * as Deferred from 'effect/Deferred';
 import * as Effect from 'effect/Effect';
 import * as Layer from 'effect/Layer';
+import type * as SocketServer from 'effect/unstable/socket/SocketServer';
 
 import { Broker, BrokerLive } from './broker.js';
 import { DaemonConfig, resolveDaemonConfig } from './config.js';
@@ -24,7 +24,7 @@ const appLayer = (config: DaemonConfigShape) =>
     Layer.provideMerge(TopologyLive),
     Layer.provideMerge(LedgerLive),
     Layer.provideMerge(Layer.succeed(DaemonConfig, config)),
-    Layer.provideMerge(NodeContext.layer),
+    Layer.provideMerge(NodeServices.layer),
   );
 
 const daemonProgram = Effect.gen(function* () {

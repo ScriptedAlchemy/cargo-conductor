@@ -1,9 +1,9 @@
-import type * as Socket from '@effect/platform/Socket';
 import * as Deferred from 'effect/Deferred';
 import * as Effect from 'effect/Effect';
 import * as Queue from 'effect/Queue';
 import * as Ref from 'effect/Ref';
 import type * as Scope from 'effect/Scope';
+import type * as Socket from 'effect/unstable/socket/Socket';
 
 import type { BrokerApi } from './broker.js';
 import type { ClientMessage, ExecRequest, ServerMessage } from './protocol.js';
@@ -53,18 +53,18 @@ export const makeConnectionHandler =
             }
           });
 
-        yield* Effect.fork(
+        yield* Effect.forkChild(
           Effect.forever(
             Effect.gen(function* () {
               const message = yield* Queue.take(outbound);
               yield* write(encodeServerMessage(message));
             }),
-          ).pipe(Effect.catchAllCause(() => Ref.set(closed, true))),
+          ).pipe(Effect.catchCause(() => Ref.set(closed, true))),
         );
 
         const handleExec = (message: ExecRequest): Effect.Effect<void> =>
           Effect.gen(function* () {
-            const submitted = yield* Effect.either(
+            const submitted = yield* Effect.result(
               options.broker.submit(
                 {
                   argv: message.argv,
@@ -112,31 +112,31 @@ export const makeConnectionHandler =
                 },
               ),
             );
-            if (submitted._tag === 'Left') {
+            if (submitted._tag === 'Failure') {
               yield* send({
                 type: 'error',
                 id: message.id,
                 code: 'bad-intent',
-                message: submitted.left.message,
+                message: submitted.failure.message,
               });
               return;
             }
             if (message.background !== true) {
-              yield* Effect.sync(() => ownTickets.add(submitted.right.ticket));
+              yield* Effect.sync(() => ownTickets.add(submitted.success.ticket));
             }
             yield* send({
               type: 'ack',
               id: message.id,
-              ticket: submitted.right.ticket,
-              laneKey: submitted.right.laneKey,
-              position: submitted.right.position,
-              ...(submitted.right.attachedTo === undefined
+              ticket: submitted.success.ticket,
+              laneKey: submitted.success.laneKey,
+              position: submitted.success.position,
+              ...(submitted.success.attachedTo === undefined
                 ? {}
-                : { attachedTo: submitted.right.attachedTo }),
-              ...(submitted.right.attachMode === undefined
+                : { attachedTo: submitted.success.attachedTo }),
+              ...(submitted.success.attachMode === undefined
                 ? {}
-                : { attachMode: submitted.right.attachMode }),
-              ...(submitted.right.etaMs === undefined ? {} : { etaMs: submitted.right.etaMs }),
+                : { attachMode: submitted.success.attachMode }),
+              ...(submitted.success.etaMs === undefined ? {} : { etaMs: submitted.success.etaMs }),
             });
           });
 
@@ -208,12 +208,12 @@ export const makeConnectionHandler =
               // before the latch tears the server down.
               return write(encodeServerMessage({ type: 'shutting-down', id: message.id })).pipe(
                 Effect.ignore,
-                Effect.zipRight(Deferred.succeed(options.shutdownLatch, undefined)),
+                Effect.andThen(Deferred.succeed(options.shutdownLatch, undefined)),
                 Effect.asVoid,
               );
             default: {
               const exhaustive: never = message;
-              return Effect.dieMessage(`Unhandled client message: ${String(exhaustive)}`);
+              return Effect.die(new Error(`Unhandled client message: ${String(exhaustive)}`));
             }
           }
         };
@@ -250,7 +250,7 @@ export const makeConnectionHandler =
           .run((chunk) => Effect.forEach(lineBuffer.push(chunk), handleLine, { discard: true }))
           .pipe(
             // Abrupt disconnects are routine (agent shells die mid-build).
-            Effect.catchAll(() => Effect.void),
+            Effect.catch(() => Effect.void),
             Effect.ensuring(
               Effect.gen(function* () {
                 yield* Ref.set(closed, true);

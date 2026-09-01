@@ -1,4 +1,3 @@
-import * as CommandExecutor from '@effect/platform/CommandExecutor';
 import * as Cause from 'effect/Cause';
 import * as Context from 'effect/Context';
 import * as Data from 'effect/Data';
@@ -7,6 +6,8 @@ import * as Effect from 'effect/Effect';
 import * as Layer from 'effect/Layer';
 import * as Queue from 'effect/Queue';
 import * as Ref from 'effect/Ref';
+import * as Semaphore from 'effect/Semaphore';
+import * as ChildProcessSpawner from 'effect/unstable/process/ChildProcessSpawner';
 
 import {
   batchCompatibleFor,
@@ -128,7 +129,7 @@ export interface BrokerApi {
   ) => Effect.Effect<readonly RequestRecord[]>;
 }
 
-export class Broker extends Context.Tag('cargo-conductor/Broker')<Broker, BrokerApi>() {}
+export class Broker extends Context.Service<Broker, BrokerApi>()('cargo-conductor/Broker') {}
 
 type JobState = 'queued' | 'running' | 'finished';
 
@@ -282,7 +283,7 @@ const isTerminalStatus = (status: string): boolean =>
   status === 'done' || status === 'failed' || status === 'killed';
 
 const guarded = (effect: Effect.Effect<void>): Effect.Effect<void> =>
-  Effect.catchAllCause(effect, () => Effect.void);
+  Effect.catchCause(effect, () => Effect.void);
 
 const attachmentReceives = (attachment: Attachment, audience: ReplayAudience): boolean => {
   if (attachment.mode === 'identity') {
@@ -315,20 +316,20 @@ const requeueReasonFor = (mode: AttachMode, status: FinishedStatus): string =>
 export const BrokerLive: Layer.Layer<
   Broker,
   never,
-  DaemonConfig | Ledger | CostModel | Topology | CommandExecutor.CommandExecutor
-> = Layer.scoped(
+  DaemonConfig | Ledger | CostModel | Topology | ChildProcessSpawner.ChildProcessSpawner
+> = Layer.effect(
   Broker,
   Effect.gen(function* () {
     const config = yield* DaemonConfig;
     const ledger = yield* Ledger;
     const costModel = yield* CostModel;
     const topology = yield* Topology;
-    const commandExecutor = yield* CommandExecutor.CommandExecutor;
+    const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
     const daemonScope = yield* Effect.scope;
     const startedAtMs = Date.now();
 
-    const admission = yield* Effect.makeSemaphore(config.maxConcurrent);
-    const laneCreation = yield* Effect.makeSemaphore(1);
+    const admission = yield* Semaphore.make(config.maxConcurrent);
+    const laneCreation = yield* Semaphore.make(1);
     const lanes = new Map<string, Lane>();
     const inFlight = new Map<string, InFlightEntry>();
     const ticketWaiters = new Map<string, Deferred.Deferred<RequestRecord>[]>();
@@ -395,7 +396,7 @@ export const BrokerLive: Layer.Layer<
           liveAttachments,
           (attachment) =>
             Effect.sync(() => attachment.tail.push(data)).pipe(
-              Effect.zipRight(
+              Effect.andThen(
                 guarded(
                   attachment.callbacks.onOutput({ ticket: attachment.ticket, channel, data }),
                 ),
@@ -413,7 +414,7 @@ export const BrokerLive: Layer.Layer<
         chunks,
         (chunk) =>
           Effect.sync(() => attachment.tail.push(chunk.data)).pipe(
-            Effect.zipRight(
+            Effect.andThen(
               guarded(
                 attachment.callbacks.onOutput({
                   ticket: attachment.ticket,
@@ -609,10 +610,10 @@ export const BrokerLive: Layer.Layer<
         const plan = planDemux(intent, input.argv);
         const editedRecently = yield* topology
           .editedRecently(intent.workspaceRoot, intent.packages)
-          .pipe(Effect.catchAllCause(() => Effect.succeed(false)));
+          .pipe(Effect.catchCause(() => Effect.succeed(false)));
         const depClosure = yield* topology
           .dependencyClosure(intent.workspaceRoot, intent.packages)
-          .pipe(Effect.catchAllCause(() => Effect.succeed<ReadonlySet<string>>(new Set())));
+          .pipe(Effect.catchCause(() => Effect.succeed<ReadonlySet<string>>(new Set())));
         return {
           id,
           ticket,
@@ -913,7 +914,7 @@ export const BrokerLive: Layer.Layer<
               kinds.add(kind);
             }
             demux.unitKinds.set(packageName, kinds);
-          }).pipe(Effect.zipRight(releaseSatisfiedAttachments(job)));
+          }).pipe(Effect.andThen(releaseSatisfiedAttachments(job)));
         }
         case 'message': {
           const packageName = event.packageName;
@@ -936,8 +937,8 @@ export const BrokerLive: Layer.Layer<
                     : { kind: 'package', packageName },
                 );
           return record.pipe(
-            Effect.zipRight(forward),
-            Effect.zipRight(releaseSatisfiedAttachments(job)),
+            Effect.andThen(forward),
+            Effect.andThen(releaseSatisfiedAttachments(job)),
           );
         }
         case 'build-finished':
@@ -1161,7 +1162,7 @@ export const BrokerLive: Layer.Layer<
             ? {}
             : { onStdoutLine: (line: string) => handleStdoutLine(job, line) }),
         }).pipe(
-          Effect.provideService(CommandExecutor.CommandExecutor, commandExecutor),
+          Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
           Effect.onInterrupt(() =>
             Effect.gen(function* () {
               const interruptedAtMs = Date.now();
@@ -1241,7 +1242,7 @@ export const BrokerLive: Layer.Layer<
           }
           yield* foldBatch(lane, job);
           yield* processJob(lane, job).pipe(
-            Effect.catchAllCause((cause) =>
+            Effect.catchCause((cause) =>
               Effect.gen(function* () {
                 const message = Cause.pretty(cause);
                 yield* Effect.logError(`lane ${lane.key} job ${job.ticket} crashed: ${message}`);
@@ -1446,7 +1447,7 @@ export const BrokerLive: Layer.Layer<
         return yield* Deferred.await(waiter).pipe(
           Effect.timeout(`${Math.max(0, maxWaitMs)} millis`),
           Effect.map((record) => ({ record, timedOut: false })),
-          Effect.catchTag('TimeoutException', () =>
+          Effect.catchTag('TimeoutError', () =>
             Effect.gen(function* () {
               yield* Effect.sync(() => removeTicketWaiter(ticket, waiter));
               const record = yield* ledger.getRequestByTicket(ticket);

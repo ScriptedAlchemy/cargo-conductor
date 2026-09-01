@@ -112,36 +112,36 @@
         overflow: hidden;
       }
       .meter-fill { height: 100%; background: var(--accent); }
+      .refreshing {
+        display: inline-block;
+        margin-left: 7px;
+        color: var(--accent);
+        font-size: 0.58rem;
+        vertical-align: 0.12em;
+        animation: pulse 1.4s ease-in-out infinite;
+      }
+      .error-line {
+        margin-top: 12px;
+        color: var(--bad);
+        font-size: 0.84rem;
+      }
+      button {
+        border: 1px solid var(--line);
+        border-radius: 3px;
+        background: transparent;
+        color: var(--accent);
+        cursor: pointer;
+        font: inherit;
+        padding: 2px 7px;
+      }
+      button:hover { border-color: var(--accent); }
+      @keyframes pulse {
+        0%, 100% { opacity: 0.3; }
+        50% { opacity: 1; }
+      }
     </style>
   </head>
   <body>
-    <main>
-      <header>
-        <h1>cargo-conductor</h1>
-        <div id="status">Connecting…</div>
-      </header>
-      <div class="grid">
-        <section>
-          <h2>Contention</h2>
-          <div id="contention" class="stats"></div>
-        </section>
-        <section>
-          <h2>In flight <span class="count" id="count-inflight"></span></h2>
-          <div id="inflight"></div>
-        </section>
-        <section>
-          <h2>Queue <span class="count" id="count-queue"></span></h2>
-          <div id="queue"></div>
-        </section>
-        <section>
-          <h2>Lanes <span class="count" id="count-lanes"></span></h2>
-          <div id="lanes"></div>
-        </section>
-        <section>
-          <h2>History <span class="count" id="count-history"></span></h2>
-          <div id="history"></div>
-        </section>
-      </div>
-    </main>
+    <div id="root"></div>
   </body>
 </html>

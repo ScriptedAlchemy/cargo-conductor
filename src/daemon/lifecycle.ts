@@ -66,7 +66,7 @@ export const startDaemon = (
         running: true,
       }),
     ),
-    Effect.catchAll(() =>
+    Effect.catch(() =>
       Effect.succeed(
         result(config, 'start', {
           message: `cargo-conductor daemon did not come up; check ${config.logPath}`,
@@ -157,7 +157,7 @@ export const runForegroundDaemon = (
   const program = runDaemon(config);
   const fiber = Effect.runFork(program);
   const interrupt = (): void => {
-    Effect.runFork(Fiber.interruptFork(fiber));
+    fiber.interruptUnsafe();
   };
   process.once('SIGINT', interrupt);
   process.once('SIGTERM', interrupt);
@@ -173,7 +173,7 @@ export const runForegroundDaemon = (
         running: outcome === 'already-running',
       });
     }
-    if (Cause.isInterruptedOnly(exit.cause)) {
+    if (Cause.hasInterruptsOnly(exit.cause)) {
       return result(config, 'run', {
         message: 'completed',
         pid: process.pid,

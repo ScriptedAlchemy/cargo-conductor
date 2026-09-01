@@ -1,11 +1,11 @@
 import { readdirSync, statSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 
-import * as Command from '@effect/platform/Command';
-import * as CommandExecutor from '@effect/platform/CommandExecutor';
 import * as Context from 'effect/Context';
 import * as Effect from 'effect/Effect';
 import * as Layer from 'effect/Layer';
+import * as ChildProcess from 'effect/unstable/process/ChildProcess';
+import * as ChildProcessSpawner from 'effect/unstable/process/ChildProcessSpawner';
 
 import { realCargoBin } from './real-cargo.js';
 
@@ -30,7 +30,9 @@ export interface TopologyApi {
   ) => Effect.Effect<ReadonlySet<string>>;
 }
 
-export class Topology extends Context.Tag('cargo-conductor/Topology')<Topology, TopologyApi>() {}
+export class Topology extends Context.Service<Topology, TopologyApi>()(
+  'cargo-conductor/Topology',
+) {}
 
 const metadataTtlMs = 60_000;
 const editStatTtlMs = 10_000;
@@ -181,11 +183,11 @@ export const newestMtimeMs = (packageDir: string): number | null => {
   return newest;
 };
 
-export const TopologyLive: Layer.Layer<Topology, never, CommandExecutor.CommandExecutor> =
-  Layer.scoped(
+export const TopologyLive: Layer.Layer<Topology, never, ChildProcessSpawner.ChildProcessSpawner> =
+  Layer.effect(
     Topology,
     Effect.gen(function* () {
-      const executor = yield* CommandExecutor.CommandExecutor;
+      const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
       const scope = yield* Effect.scope;
       const metadataCache = new Map<string, MetadataCacheEntry>();
       const editCache = new Map<string, EditCacheEntry>();
@@ -195,23 +197,18 @@ export const TopologyLive: Layer.Layer<Topology, never, CommandExecutor.CommandE
       // locks, no registry access. Failures cache an empty map for the TTL.
       const refreshMetadata = (workspaceRoot: string): Effect.Effect<void> =>
         Effect.gen(function* () {
-          const stdout = yield* Command.string(
-            Command.workingDirectory(
-              Command.make(
+          const stdout = yield* spawner
+            .string(
+              ChildProcess.make(
                 realCargoBin(),
-                'metadata',
-                '--format-version',
-                '1',
-                '--no-deps',
-                '--offline',
+                ['metadata', '--format-version', '1', '--no-deps', '--offline'],
+                { cwd: workspaceRoot },
               ),
-              workspaceRoot,
-            ),
-          ).pipe(
-            Effect.provideService(CommandExecutor.CommandExecutor, executor),
-            Effect.timeout(metadataTimeoutMs),
-            Effect.catchAll(() => Effect.succeed('')),
-          );
+            )
+            .pipe(
+              Effect.timeout(metadataTimeoutMs),
+              Effect.catch(() => Effect.succeed('')),
+            );
           yield* Effect.sync(() => {
             metadataCache.set(workspaceRoot, {
               atMs: Date.now(),

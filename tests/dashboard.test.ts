@@ -13,7 +13,6 @@ import {
   ranAsFor,
   relativeTime,
   shortenPath,
-  startPolling,
 } from '../views/dashboard-lib.js';
 
 const repoRoot = fileURLToPath(new URL('..', import.meta.url));
@@ -90,28 +89,6 @@ describe('argvText', () => {
     expect(argvText(['cargo', 'check'])).toBe('cargo check');
     expect(argvText([])).toBe('');
     expect(argvText(null)).toBe('');
-  });
-});
-
-describe('startPolling', () => {
-  it('loads immediately, then schedules the poll interval', async () => {
-    const calls: string[] = [];
-    let scheduled: { readonly callback: () => void; readonly intervalMs: number } | null = null;
-    startPolling(
-      async () => {
-        calls.push('load');
-      },
-      (callback, intervalMs) => {
-        scheduled = { callback, intervalMs };
-      },
-      5_000,
-    );
-    expect(calls).toEqual(['load']);
-    expect(scheduled).not.toBeNull();
-    expect(scheduled!.intervalMs).toBe(5_000);
-    scheduled!.callback();
-    await Promise.resolve();
-    expect(calls).toEqual(['load', 'load']);
   });
 });
 

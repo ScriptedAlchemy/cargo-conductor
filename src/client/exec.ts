@@ -1,7 +1,6 @@
 import { randomBytes } from 'node:crypto';
 
-import * as Socket from '@effect/platform/Socket';
-import * as NodeContext from '@effect/platform-node/NodeContext';
+import * as NodeServices from '@effect/platform-node/NodeServices';
 import * as NodeSocket from '@effect/platform-node/NodeSocket';
 import * as Deferred from 'effect/Deferred';
 import * as Effect from 'effect/Effect';
@@ -9,6 +8,7 @@ import * as Fiber from 'effect/Fiber';
 import * as Ref from 'effect/Ref';
 import * as Schedule from 'effect/Schedule';
 import type { Scope } from 'effect/Scope';
+import * as Socket from 'effect/unstable/socket/Socket';
 
 import { executeCargo } from '../daemon/executor.js';
 import { resolveDaemonConfig } from '../daemon/config.js';
@@ -67,16 +67,15 @@ const writeChannel = (io: ExecIo, channel: 'stdout' | 'stderr', data: Uint8Array
 };
 
 const mapOpenError = (error: Socket.SocketError, socketPath: string): DaemonUnreachableError | ConnectionClosedError => {
-  switch (error.reason) {
-    case 'Open':
-    case 'OpenTimeout':
+  switch (error.reason._tag) {
+    case 'SocketOpenError':
       return new DaemonUnreachableError({ cause: error, socketPath });
-    case 'Write':
-    case 'Read':
-    case 'Close':
+    case 'SocketWriteError':
+    case 'SocketReadError':
+    case 'SocketCloseError':
       return new ConnectionClosedError({ received: [], socketPath });
     default: {
-      const exhaustive: never = error;
+      const exhaustive: never = error.reason;
       return exhaustive;
     }
   }
@@ -98,7 +97,7 @@ const passthrough = (options: RunExecOptions): Effect.Effect<RunExecResult> =>
       exitCode: result.exitCode ?? 1,
       mode: 'passthrough' as const,
     };
-  }).pipe(Effect.provide(NodeContext.layer));
+  }).pipe(Effect.provide(NodeServices.layer));
 
 const handleServerMessage = (
   options: RunExecOptions,
@@ -212,10 +211,12 @@ const streamBrokered = (
     const submittedAtMs = Date.now();
     const id = shortId();
 
+    // v4 sockets connect lazily: open failures surface through the pump's
+    // `socket.run`, which routes them via mapOpenError below.
     const socket = yield* NodeSocket.makeNet({
       openTimeout: 2_000,
       path: config.socketPath,
-    }).pipe(Effect.mapError((error) => mapOpenError(error, config.socketPath)));
+    });
 
     const write = yield* socket.writer;
 
