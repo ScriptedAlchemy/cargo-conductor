@@ -39,6 +39,57 @@ export const fetchTicket = (
     (message): message is ResultResultMessage => message.type === 'result-result',
   ).pipe(Effect.map((result) => result?.request ?? null));
 
+const formatSeconds = (ms: number): string => {
+  const seconds = Math.max(0, Math.floor(ms / 1000));
+  return seconds >= 90 ? `${Math.floor(seconds / 60)}m${seconds % 60}s` : `${seconds}s`;
+};
+
+const describeAwaitedRecord = (ticket: string, record: RequestRecord | null): string => {
+  if (record === null) {
+    return `${ticket} is not known to the daemon (yet)`;
+  }
+  const command = record.argv.slice(1).join(' ');
+  const estimate = record.estimateMs === null ? '' : ` (est ~${formatSeconds(record.estimateMs)})`;
+  switch (record.status) {
+    case 'queued':
+      return `${ticket} queued ${formatSeconds(Date.now() - (record.queuedAtMs ?? record.createdAtMs))}${estimate} — ${command}`;
+    case 'running':
+      return `${ticket} running ${formatSeconds(Date.now() - (record.startedAtMs ?? Date.now()))}${estimate} — ${command}`;
+    default:
+      return `${ticket} ${record.status}${record.exitCode === null ? '' : ` exit=${record.exitCode}`} — ${command}`;
+  }
+};
+
+/**
+ * `awaitTicket` with a heartbeat: while the daemon-side wait blocks, the
+ * ticket's live record is polled and rendered through `onProgress` so a
+ * terminal wait shows queue phase, elapsed time, and the cost estimate
+ * instead of silence. Progress is best-effort — a failed poll never fails
+ * the await.
+ */
+export const awaitTicketWithProgress = (
+  ticket: string,
+  maxWaitMs: number,
+  onProgress: (line: string) => void,
+  config: DaemonConfigShape = resolveDaemonConfig(),
+  intervalMs = 5_000,
+): Effect.Effect<
+  { readonly request: RequestRecord | null; readonly timedOut: boolean },
+  TicketSocketError
+> => {
+  const startedAtMs = Date.now();
+  const beat: Effect.Effect<never> = Effect.gen(function* () {
+    for (;;) {
+      const record = yield* fetchTicket(ticket, config).pipe(Effect.orElseSucceed(() => null));
+      onProgress(
+        `[cargo-conductor] ${describeAwaitedRecord(ticket, record)} (waited ${formatSeconds(Date.now() - startedAtMs)})\n`,
+      );
+      yield* Effect.sleep(intervalMs);
+    }
+  });
+  return awaitTicket(ticket, maxWaitMs, config).pipe(Effect.raceFirst(beat));
+};
+
 export const awaitTicket = (
   ticket: string,
   maxWaitMs: number,
