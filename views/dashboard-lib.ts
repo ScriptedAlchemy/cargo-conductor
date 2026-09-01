@@ -9,6 +9,190 @@ import { packageVersion } from '../src/lib/version.js';
 export const DEMUX_FLAG = '--message-format=json-diagnostic-rendered-ansi';
 export const dashboardVersion = packageVersion;
 
+export const terminalStatuses: ReadonlySet<string> = new Set(['done', 'failed', 'killed']);
+
+/**
+ * Sections whose presence depends on live data. Contention, Metrics, Kache,
+ * and History always render (Kache additionally hides itself when the machine
+ * has no kache index); In flight, Queue, and Lanes collapse entirely when
+ * empty instead of rendering a "None." placeholder. When work is running,
+ * In flight is the first body section, above Queue.
+ */
+export type DashboardSection =
+  | 'contention'
+  | 'inFlight'
+  | 'queue'
+  | 'metrics'
+  | 'kache'
+  | 'lanes'
+  | 'history';
+
+export interface SectionCounts {
+  readonly running: number;
+  readonly queued: number;
+  readonly lanes: number;
+}
+
+export const sectionOrder = (counts: SectionCounts): readonly DashboardSection[] => [
+  'contention',
+  ...(counts.running > 0 ? (['inFlight'] as const) : []),
+  ...(counts.queued > 0 ? (['queue'] as const) : []),
+  'metrics',
+  'kache',
+  ...(counts.lanes > 0 ? (['lanes'] as const) : []),
+  'history',
+];
+
+export interface RunHistogramShape {
+  readonly buckets?: unknown;
+  readonly count?: unknown;
+  readonly min?: unknown;
+  readonly max?: unknown;
+  readonly sum?: unknown;
+}
+
+/**
+ * Below this run count the p95 column is hidden: on a tiny histogram the 95th
+ * percentile is just "the slowest run so far" dressed up as a distribution
+ * (a real n=3 dashboard showed p50 = p95 = the same bucket ceiling).
+ */
+export const percentileMinSamples = 10;
+
+/** Upper-bound estimate of the given percentile from histogram buckets ([le, cumulativeCount]). */
+export const histogramPercentile = (
+  histogram: RunHistogramShape,
+  percentile: number,
+): number | null => {
+  const count = typeof histogram.count === 'number' ? histogram.count : 0;
+  if (count === 0 || !Array.isArray(histogram.buckets)) {
+    return null;
+  }
+  const target = count * percentile;
+  for (const bucket of histogram.buckets) {
+    if (!Array.isArray(bucket)) {
+      continue;
+    }
+    const le: unknown = bucket[0];
+    const cumulative: unknown = bucket[1];
+    if (typeof le === 'number' && typeof cumulative === 'number' && cumulative >= target) {
+      return le;
+    }
+  }
+  return typeof histogram.max === 'number' ? histogram.max : null;
+};
+
+export interface RunMetricsView {
+  readonly count: number;
+  readonly meanMs: number | null;
+  readonly p50Ms: number | null;
+  /** null until the histogram reaches {@link percentileMinSamples} runs. */
+  readonly p95Ms: number | null;
+}
+
+export const runMetricsView = (runs: RunHistogramShape | undefined): RunMetricsView => {
+  const count = typeof runs?.count === 'number' ? runs.count : 0;
+  if (runs === undefined || count === 0) {
+    return { count, meanMs: null, p50Ms: null, p95Ms: null };
+  }
+  return {
+    count,
+    meanMs: typeof runs.sum === 'number' ? runs.sum / count : null,
+    p50Ms: histogramPercentile(runs, 0.5),
+    p95Ms: count >= percentileMinSamples ? histogramPercentile(runs, 0.95) : null,
+  };
+};
+
+/** Entries of a frequency metric with zero and non-numeric counts dropped. */
+export const frequencyEntries = (
+  record: Readonly<Record<string, unknown>> | undefined,
+): readonly (readonly [string, number])[] =>
+  record === undefined
+    ? []
+    : Object.entries(record).filter(
+        (entry): entry is [string, number] => typeof entry[1] === 'number' && entry[1] > 0,
+      );
+
+export const frequencyTotal = (record: Readonly<Record<string, unknown>> | undefined): number =>
+  frequencyEntries(record).reduce((sum, [, value]) => sum + value, 0);
+
+export interface TicketDetail {
+  readonly ticket: string;
+  readonly status: string;
+  readonly argv: readonly string[] | null;
+  readonly execArgv: readonly string[] | null;
+  readonly workspaceRoot: string | null;
+  readonly exitCode: number | null;
+  readonly signal: string | null;
+  readonly runMs: number | null;
+  readonly waitMs: number | null;
+  readonly error: string | null;
+  readonly errorCount: number | null;
+  readonly warningCount: number | null;
+  readonly outputTail: string | null;
+}
+
+const stringOrNull = (value: unknown): string | null =>
+  typeof value === 'string' && value.length > 0 ? value : null;
+
+const numberOrNull = (value: unknown): number | null =>
+  typeof value === 'number' ? value : null;
+
+const stringArrayOrNull = (value: unknown): readonly string[] | null =>
+  Array.isArray(value) && value.every((part) => typeof part === 'string')
+    ? (value as readonly string[])
+    : null;
+
+/** Shape a request record (status row or conductor_result payload) for the detail drawer. */
+export const ticketDetailFrom = (record: unknown): TicketDetail | null => {
+  if (record === null || typeof record !== 'object') {
+    return null;
+  }
+  const row = record as Readonly<Record<string, unknown>>;
+  const ticket = stringOrNull(row['ticket']);
+  if (ticket === null) {
+    return null;
+  }
+  return {
+    ticket,
+    status: stringOrNull(row['status']) ?? 'unknown',
+    argv: stringArrayOrNull(row['argv']),
+    execArgv: stringArrayOrNull(row['execArgv']),
+    workspaceRoot: stringOrNull(row['workspaceRoot']),
+    exitCode: numberOrNull(row['exitCode']),
+    signal: stringOrNull(row['signal']),
+    runMs: numberOrNull(row['runMs']),
+    waitMs: numberOrNull(row['waitMs']),
+    error: stringOrNull(row['error']),
+    errorCount: numberOrNull(row['errorCount']),
+    warningCount: numberOrNull(row['warningCount']),
+    outputTail: stringOrNull(row['outputTail']),
+  };
+};
+
+/**
+ * Resolve the drawer detail for a clicked row. Status payloads from a running
+ * daemon deliberately null `outputTail` on every row to keep the report
+ * small, so a finished row without a tail needs one follow-up
+ * `conductor_result` fetch (the ledger keeps the ANSI-stripped tail). Rows
+ * that already carry a tail — the stopped-daemon status path reads the ledger
+ * directly — and rows still queued/running (no tail exists yet) skip the
+ * fetch.
+ */
+export const resolveTicketDetail = async (
+  row: unknown,
+  fetchRecord: (ticket: string) => Promise<unknown>,
+): Promise<TicketDetail | null> => {
+  const fromRow = ticketDetailFrom(row);
+  if (fromRow === null) {
+    return null;
+  }
+  if (fromRow.outputTail !== null || !terminalStatuses.has(fromRow.status)) {
+    return fromRow;
+  }
+  const fetched = ticketDetailFrom(await fetchRecord(fromRow.ticket));
+  return fetched ?? fromRow;
+};
+
 const asStrings = (value: unknown): readonly string[] | null =>
   Array.isArray(value) && value.every((part) => typeof part === 'string')
     ? (value as readonly string[])

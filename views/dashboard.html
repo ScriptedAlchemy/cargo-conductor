@@ -53,6 +53,13 @@
       .pill.done { background: rgba(125, 206, 154, 0.14); color: var(--good); }
       .pill.failed { background: rgba(224, 122, 95, 0.16); color: var(--bad); }
       .pill.killed { background: rgba(227, 154, 85, 0.16); color: var(--warn); }
+      .pill.neutral { background: rgba(232, 228, 217, 0.1); color: var(--muted); }
+      tr.selectable { cursor: pointer; }
+      tr.selectable:hover td { background: rgba(232, 228, 217, 0.045); }
+      tr.selectable:hover .ticket { color: var(--accent); }
+      .down-cue { color: var(--bad); margin: 4px 0 0; font-size: 0.88rem; }
+      .down-cue code { font-family: var(--mono); font-size: 0.8rem; color: var(--ink); }
+      .stat b.gated { color: var(--muted); font-size: 1.05rem; }
       .cmd {
         font-family: var(--mono);
         font-size: 0.8rem;
@@ -195,6 +202,69 @@
         margin-top: 12px;
         color: var(--bad);
         font-size: 0.84rem;
+      }
+      .drawer-backdrop {
+        position: fixed;
+        inset: 0;
+        background: rgba(16, 14, 11, 0.66);
+        display: flex;
+        justify-content: flex-end;
+        z-index: 10;
+      }
+      .drawer {
+        width: min(680px, 92vw);
+        height: 100%;
+        overflow-y: auto;
+        box-sizing: border-box;
+        padding: 16px 18px 22px;
+        background: var(--panel);
+        border-left: 1px solid var(--line);
+        box-shadow: -18px 0 40px rgba(0, 0, 0, 0.45);
+      }
+      .drawer-head {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        margin-bottom: 10px;
+      }
+      .drawer-head .ticket { font-size: 0.95rem; color: var(--accent); }
+      .drawer-close {
+        margin-left: auto;
+        font-size: 0.8rem;
+        line-height: 1.4;
+      }
+      .drawer-cmd {
+        font-family: var(--mono);
+        font-size: 0.82rem;
+        word-break: break-all;
+        margin-bottom: 8px;
+      }
+      .drawer-meta {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: baseline;
+        gap: 8px;
+        margin-bottom: 10px;
+      }
+      .drawer-error {
+        color: var(--bad);
+        font-family: var(--mono);
+        font-size: 0.78rem;
+        white-space: pre-wrap;
+        word-break: break-word;
+        margin: 0 0 10px;
+      }
+      .drawer .output {
+        margin: 0;
+        padding: 10px 12px;
+        border: 1px solid var(--line);
+        border-radius: 4px;
+        background: #100e0b;
+        font-family: var(--mono);
+        font-size: 0.74rem;
+        line-height: 1.45;
+        white-space: pre-wrap;
+        word-break: break-word;
       }
       button {
         border: 1px solid var(--line);
