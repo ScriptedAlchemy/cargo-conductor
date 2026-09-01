@@ -1,7 +1,7 @@
 import { RegistryProvider, useAtomRefresh, useAtomSet, useAtomValue } from '@effect/atom-react';
 import { Cause, Data, Effect, Option, Schedule, Stream } from 'effect';
 import { AsyncResult, Atom } from 'effect/unstable/reactivity';
-import { useEffect, useState, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { createRoot } from 'react-dom/client';
 
 import {
@@ -12,9 +12,19 @@ import {
   formatBytes,
   formatCompactNumber,
   formatMs,
+  frequencyEntries,
+  frequencyTotal,
+  percentileMinSamples,
   ranAsFor,
   relativeTime,
+  resolveTicketDetail,
+  runMetricsView,
+  sectionOrder,
   shortenPath,
+  terminalStatuses,
+  ticketDetailFrom,
+  type RunHistogramShape,
+  type TicketDetail,
 } from './dashboard-lib.js';
 
 interface JsonRpcMessage {
@@ -45,22 +55,15 @@ interface StructuredContent {
   readonly active?: unknown;
   readonly recent?: unknown;
   readonly operation?: unknown;
+  readonly request?: unknown;
   readonly structuredContent?: unknown;
   readonly metrics?: unknown;
   readonly system?: unknown;
   readonly kache?: unknown;
 }
 
-interface RunHistogram {
-  readonly buckets?: unknown;
-  readonly count?: unknown;
-  readonly min?: unknown;
-  readonly max?: unknown;
-  readonly sum?: unknown;
-}
-
 interface StatusMetricsShape {
-  readonly cargo_run_ms?: RunHistogram;
+  readonly cargo_run_ms?: RunHistogramShape;
   readonly attach_mode?: Readonly<Record<string, unknown>>;
   readonly job_outcome?: Readonly<Record<string, unknown>>;
 }
@@ -131,7 +134,6 @@ type Initialization =
 
 const pending = new Map<number, PendingRequest>();
 const pushedStatusAtom = Atom.make<PushedStatus | null>(null);
-const terminalStatuses = new Set(['done', 'failed', 'killed']);
 let nextId = 0;
 
 const postMessage = (payload: Record<string, unknown>): void => {
@@ -199,6 +201,19 @@ const fetchStatus = Effect.tryPromise({
 export const statusAtom = Atom.make(
   Stream.fromEffectSchedule(fetchStatus, Schedule.spaced('5 seconds')),
 );
+
+/**
+ * Follow-up fetch for the detail drawer: status rows arrive with their
+ * output tail stripped (the daemon nulls `outputTail` to keep status small),
+ * while `conductor_result` reads the full ledger record, tail included.
+ */
+const fetchTicketRecord = async (ticketId: string): Promise<unknown> => {
+  const response = await rpcRequest('tools/call', {
+    arguments: { ticket: ticketId },
+    name: 'conductor_result',
+  });
+  return asRecord(response.structuredContent)?.request ?? null;
+};
 
 const arrayOrEmpty = <T,>(value: unknown): readonly T[] => (Array.isArray(value) ? value : []);
 
@@ -286,17 +301,24 @@ const requestCells = (row: RequestRow): readonly ReactNode[] => [
   who(row),
 ];
 
+interface TableRowSpec {
+  readonly cells: readonly ReactNode[];
+  readonly onSelect?: () => void;
+}
+
 const Table = ({
+  empty = 'None.',
   headers,
   numericColumns = [],
   rows,
 }: {
+  readonly empty?: string;
   readonly headers: readonly string[];
   readonly numericColumns?: readonly number[];
-  readonly rows: readonly (readonly ReactNode[])[];
+  readonly rows: readonly TableRowSpec[];
 }): ReactNode => {
   if (rows.length === 0) {
-    return <p className="empty">None.</p>;
+    return <p className="empty">{empty}</p>;
   }
   return (
     <table>
@@ -311,8 +333,13 @@ const Table = ({
       </thead>
       <tbody>
         {rows.map((row, rowIndex) => (
-          <tr key={rowIndex}>
-            {row.map((cell, cellIndex) => (
+          <tr
+            className={row.onSelect === undefined ? undefined : 'selectable'}
+            key={rowIndex}
+            onClick={row.onSelect}
+            title={row.onSelect === undefined ? undefined : 'Show cargo output'}
+          >
+            {row.cells.map((cell, cellIndex) => (
               <td
                 className={numericColumns.includes(cellIndex) ? 'numeric' : undefined}
                 key={cellIndex}
@@ -389,51 +416,119 @@ const LoadStat = ({ system }: { readonly system: SystemLoadShape | null }): Reac
   const clamp =
     typeof system.clampThresholdPerCore === 'number' ? system.clampThresholdPerCore : null;
   const clamped = clamp !== null && perCore > clamp;
+  const title = `1-minute load average ${system.loadAvg1.toFixed(1)} across ${system.cores} cores (${perCore.toFixed(2)}/core); ${clamp === null ? 'admission load clamp off' : `admission defers above ${clamp}/core`}`;
   return (
-    <div className="stat" title={clamp === null ? 'admission load clamp off' : `admission defers above ${clamp}/core`}>
+    <div className="stat" title={title}>
       <b>
         {system.loadAvg1.toFixed(1)}
-        <span className="est"> ({perCore.toFixed(2)}/core{clamped ? ' · clamping' : ''})</span>
+        <span className="est"> / {system.cores} cores{clamped ? ' · clamping' : ''}</span>
       </b>
-      <span>load ({system.cores} cores)</span>
+      <span>loadavg (1m) · {perCore.toFixed(2)}/core</span>
     </div>
   );
 };
 
 const StatusPill = ({ status }: { readonly status: unknown }): ReactNode => {
-  const value = typeof status === 'string' && terminalStatuses.has(status) ? status : 'unknown';
-  return <span className={`pill ${value}`}>{value}</span>;
+  const value = typeof status === 'string' && status.length > 0 ? status : 'unknown';
+  return <span className={`pill ${terminalStatuses.has(value) ? value : 'neutral'}`}>{value}</span>;
 };
 
-/** Upper-bound estimate of the given percentile from histogram buckets ([le, cumulativeCount]). */
-const histogramPercentile = (histogram: RunHistogram, percentile: number): number | null => {
-  const count = typeof histogram.count === 'number' ? histogram.count : 0;
-  if (count === 0 || !Array.isArray(histogram.buckets)) {
+type DrawerState =
+  | { readonly _tag: 'Closed' }
+  | { readonly _tag: 'Loading'; readonly detail: TicketDetail }
+  | { readonly _tag: 'Loaded'; readonly detail: TicketDetail }
+  | { readonly _tag: 'Failed'; readonly detail: TicketDetail; readonly message: string };
+
+const DrawerOutput = ({ state }: { readonly state: Exclude<DrawerState, { _tag: 'Closed' }> }): ReactNode => {
+  switch (state._tag) {
+    case 'Loading':
+      return <p className="empty">Loading output…</p>;
+    case 'Failed':
+      return <p className="drawer-error">Could not load output: {state.message}</p>;
+    case 'Loaded':
+      return state.detail.outputTail === null ? (
+        <p className="empty">
+          {terminalStatuses.has(state.detail.status)
+            ? 'No output was captured for this ticket.'
+            : 'No output yet — the tail is captured when the run finishes.'}
+        </p>
+      ) : (
+        <pre className="output">{state.detail.outputTail}</pre>
+      );
+    default: {
+      const exhaustive: never = state;
+      return exhaustive;
+    }
+  }
+};
+
+const TicketDrawer = ({
+  onClose,
+  state,
+}: {
+  readonly onClose: () => void;
+  readonly state: DrawerState;
+}): ReactNode => {
+  const open = state._tag !== 'Closed';
+  useEffect(() => {
+    if (!open) {
+      return;
+    }
+    const onKey = (event: KeyboardEvent): void => {
+      if (event.key === 'Escape') {
+        onClose();
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => {
+      window.removeEventListener('keydown', onKey);
+    };
+  }, [open, onClose]);
+  if (state._tag === 'Closed') {
     return null;
   }
-  const target = count * percentile;
-  for (const bucket of histogram.buckets) {
-    if (!Array.isArray(bucket)) {
-      continue;
-    }
-    const le: unknown = bucket[0];
-    const cumulative: unknown = bucket[1];
-    if (typeof le === 'number' && typeof cumulative === 'number' && cumulative >= target) {
-      return le;
-    }
-  }
-  return typeof histogram.max === 'number' ? histogram.max : null;
+  const detail = state.detail;
+  const counts =
+    detail.errorCount === null && detail.warningCount === null
+      ? null
+      : `${detail.errorCount ?? 0} error${detail.errorCount === 1 ? '' : 's'} · ${detail.warningCount ?? 0} warning${detail.warningCount === 1 ? '' : 's'}`;
+  return (
+    <div className="drawer-backdrop" onClick={onClose}>
+      <aside
+        aria-label={`ticket ${detail.ticket}`}
+        className="drawer"
+        onClick={(event) => event.stopPropagation()}
+        role="dialog"
+      >
+        <div className="drawer-head">
+          <span className="ticket">{detail.ticket}</span>
+          <StatusPill status={detail.status} />
+          <button aria-label="Close" className="drawer-close" onClick={onClose} type="button">
+            ✕
+          </button>
+        </div>
+        {detail.argv === null ? null : (
+          <div className="drawer-cmd" title={argvTitle(detail.argv)}>
+            {argvText(detail.argv)}
+          </div>
+        )}
+        <div className="drawer-meta">
+          {detail.workspaceRoot === null ? null : workspace(detail.workspaceRoot)}
+          {detail.exitCode === null ? null : <span className="chip">exit {detail.exitCode}</span>}
+          {detail.signal === null ? null : <span className="chip">signal {detail.signal}</span>}
+          {detail.runMs === null ? null : <span className="chip">ran {formatMs(detail.runMs)}</span>}
+          {detail.waitMs === null ? null : <span className="chip">waited {formatMs(detail.waitMs)}</span>}
+          {counts === null ? null : <span className="chip">{counts}</span>}
+        </div>
+        {detail.error === null ? null : <div className="drawer-error">{detail.error}</div>}
+        <DrawerOutput state={state} />
+      </aside>
+    </div>
+  );
 };
 
-const frequencyText = (record: Readonly<Record<string, unknown>> | undefined): string => {
-  if (record === undefined) {
-    return '—';
-  }
-  const parts = Object.entries(record)
-    .filter((entry): entry is [string, number] => typeof entry[1] === 'number' && entry[1] > 0)
-    .map(([key, value]) => `${key} ${formatCompactNumber(value)}`);
-  return parts.length === 0 ? 'none yet' : parts.join(' · ');
-};
+const frequencyText = (entries: readonly (readonly [string, number])[]): string =>
+  entries.map(([key, value]) => `${key} ${formatCompactNumber(value)}`).join(' · ');
 
 const MetricsSection = ({
   finished,
@@ -442,11 +537,7 @@ const MetricsSection = ({
   readonly finished: readonly RequestRow[];
   readonly metrics: StatusMetricsShape | null;
 }): ReactNode => {
-  const runs = metrics?.cargo_run_ms;
-  const runCount = typeof runs?.count === 'number' ? runs.count : 0;
-  const meanMs = runCount > 0 && typeof runs?.sum === 'number' ? runs.sum / runCount : null;
-  const p50 = runs === undefined ? null : histogramPercentile(runs, 0.5);
-  const p95 = runs === undefined ? null : histogramPercentile(runs, 0.95);
+  const runs = runMetricsView(metrics?.cargo_run_ms);
   // Queue latency derives from the visible finished rows: honest about its
   // window, and available even before the daemon accumulates histograms.
   const waits = finished
@@ -455,43 +546,60 @@ const MetricsSection = ({
     .sort((left, right) => left - right);
   const waitP50 = waits.length === 0 ? null : waits[Math.floor((waits.length - 1) * 0.5)];
   const waitMax = waits.length === 0 ? null : waits[waits.length - 1];
-  const attach = metrics?.attach_mode;
-  const attachTotal =
-    attach === undefined
-      ? 0
-      : Object.values(attach).reduce<number>(
-          (sum, value) => (typeof value === 'number' ? sum + value : sum),
-          0,
-        );
-  const percentileScale = p95 ?? p50 ?? 0;
+  const outcomes = frequencyEntries(metrics?.job_outcome);
+  const attachEntries = frequencyEntries(metrics?.attach_mode);
+  const attachTotal = frequencyTotal(metrics?.attach_mode);
+  const percentileScale = runs.p95Ms ?? runs.p50Ms ?? 0;
 
   return (
     <section>
       <h2>Metrics <span className="count">(since daemon start)</span></h2>
       <div className="stats">
-        <Stat label="runs tracked" value={formatCompactNumber(runCount)} />
+        <Stat label="runs tracked (n)" value={formatCompactNumber(runs.count)} />
         <Stat
-          barPercent={p50 === null || percentileScale <= 0 ? undefined : (p50 / percentileScale) * 100}
+          barPercent={
+            runs.p50Ms === null || percentileScale <= 0
+              ? undefined
+              : (runs.p50Ms / percentileScale) * 100
+          }
           label="run p50"
-          value={p50 === null ? '—' : `≤${formatMs(p50)}`}
+          value={runs.p50Ms === null ? '—' : `≤${formatMs(runs.p50Ms)}`}
         />
-        <Stat
-          barPercent={p95 === null || percentileScale <= 0 ? undefined : (p95 / percentileScale) * 100}
-          label="run p95"
-          value={p95 === null ? '—' : `≤${formatMs(p95)}`}
-        />
-        <Stat label="run mean" value={meanMs === null ? '—' : formatMs(meanMs)} />
+        {/* p95 on a tiny sample is just "slowest run so far": gated in runMetricsView. */}
+        {runs.p95Ms === null ? (
+          runs.count > 0 ? (
+            <div className="stat" title={`p95 hidden until ${percentileMinSamples} runs (have ${runs.count})`}>
+              <b className="gated">n&lt;{percentileMinSamples}</b>
+              <span>run p95</span>
+            </div>
+          ) : null
+        ) : (
+          <Stat
+            barPercent={percentileScale <= 0 ? undefined : (runs.p95Ms / percentileScale) * 100}
+            label="run p95"
+            value={`≤${formatMs(runs.p95Ms)}`}
+          />
+        )}
+        <Stat label="run mean" value={runs.meanMs === null ? '—' : formatMs(runs.meanMs)} />
         <Stat
           label={`wait p50 (last ${waits.length})`}
           value={waitP50 === null ? '—' : formatMs(waitP50)}
         />
         <Stat label="wait max" value={waitMax === null ? '—' : formatMs(waitMax)} />
-        <Stat label="runs avoided" value={formatCompactNumber(attachTotal)} />
+        {attachTotal > 0 ? (
+          <Stat label="runs avoided" value={formatCompactNumber(attachTotal)} />
+        ) : null}
       </div>
-      <div className="stats metricsdetail">
-        <Stat label="outcomes" value={frequencyText(metrics?.job_outcome)} />
-        <Stat label="attach modes" value={frequencyText(attach)} />
-      </div>
+      {outcomes.length === 0 && attachEntries.length === 0 ? null : (
+        <div className="stats metricsdetail">
+          {outcomes.length === 0 ? null : (
+            <Stat label="outcomes" value={frequencyText(outcomes)} />
+          )}
+          {attachEntries.length === 0 ? null : (
+            <Stat label="attach modes (runs avoided)" value={frequencyText(attachEntries)} />
+          )}
+        </div>
+      )}
     </section>
   );
 };
@@ -594,6 +702,8 @@ const KacheSection = ({ value }: { readonly value: unknown }): ReactNode => {
 
 const DashboardContent = ({ structured }: { readonly structured: StructuredContent | null }) => {
   const nowMs = Date.now();
+  const [drawer, setDrawer] = useState<DrawerState>({ _tag: 'Closed' });
+  const drawerSeq = useRef(0);
   const active = arrayOrEmpty<RequestRow>(structured?.active);
   const recent = arrayOrEmpty<RequestRow>(structured?.recent);
   const lanes = arrayOrEmpty<LaneRow>(structured?.lanes);
@@ -618,77 +728,156 @@ const DashboardContent = ({ structured }: { readonly structured: StructuredConte
     activeLanes.length === lanes.length
       ? String(lanes.length)
       : `${activeLanes.length} active · ${lanes.length} seen`;
+  const daemonUp = structured?.daemon === 'running';
+
+  const closeDrawer = (): void => {
+    drawerSeq.current += 1;
+    setDrawer({ _tag: 'Closed' });
+  };
+  const openTicket = (row: RequestRow): void => {
+    const base = ticketDetailFrom(row);
+    if (base === null) {
+      return;
+    }
+    const seq = ++drawerSeq.current;
+    setDrawer({ _tag: 'Loading', detail: base });
+    resolveTicketDetail(row, fetchTicketRecord).then(
+      (detail) => {
+        if (drawerSeq.current === seq) {
+          setDrawer({ _tag: 'Loaded', detail: detail ?? base });
+        }
+      },
+      (error: unknown) => {
+        if (drawerSeq.current === seq) {
+          setDrawer({
+            _tag: 'Failed',
+            detail: base,
+            message: error instanceof Error ? error.message : String(error),
+          });
+        }
+      },
+    );
+  };
+  const selectRow = (row: RequestRow): (() => void) | undefined =>
+    typeof row.ticket === 'string' ? () => openTicket(row) : undefined;
+
+  const renderSection = (section: ReturnType<typeof sectionOrder>[number]): ReactNode => {
+    switch (section) {
+      case 'contention':
+        return (
+          <section key="contention">
+            <h2>Contention</h2>
+            {daemonUp ? (
+              <div className="stats">
+                <LoadStat system={system} />
+                <AdmissionMeter
+                  permitHolders={permitHolders}
+                  riders={riders}
+                  maxConcurrent={maxConcurrent}
+                />
+              </div>
+            ) : (
+              <p className="down-cue">
+                Daemon is not running — it starts on demand with any cargo exec, or run{' '}
+                <code>conductor daemon start</code>.
+              </p>
+            )}
+          </section>
+        );
+      case 'inFlight':
+        return (
+          <section key="inFlight">
+            <h2>In flight <span className="count">({running.length})</span></h2>
+            <Table
+              headers={['ticket', 'command', 'workspace', 'who', 'elapsed']}
+              numericColumns={[4]}
+              rows={running.map((row) => ({
+                cells: [
+                  ...requestCells(row),
+                  progress(row.startedAtMs ?? row.createdAtMs, row.estimateMs, nowMs),
+                ],
+                onSelect: selectRow(row),
+              }))}
+            />
+          </section>
+        );
+      case 'queue':
+        return (
+          <section key="queue">
+            <h2>Queue <span className="count">({queueRows.length})</span></h2>
+            <Table
+              headers={['ticket', 'command', 'workspace', 'who', 'waiting', 'attached']}
+              numericColumns={[4]}
+              rows={queueRows.map((row) => ({
+                cells: [
+                  ...requestCells(row),
+                  progress(row.createdAtMs, row.estimateMs, nowMs),
+                  typeof row.attachedTo === 'string' ? <AttachChip row={row} /> : '—',
+                ],
+                onSelect: selectRow(row),
+              }))}
+            />
+          </section>
+        );
+      case 'metrics':
+        return <MetricsSection finished={finished} key="metrics" metrics={metrics} />;
+      case 'kache':
+        return <KacheSection key="kache" value={structured?.kache} />;
+      case 'lanes':
+        return (
+          <section key="lanes">
+            <h2>Lanes <span className="count">({laneCount})</span></h2>
+            <Table
+              headers={['workspace', 'running', 'queued']}
+              numericColumns={[2]}
+              rows={activeLanes.map((lane) => ({
+                cells: [
+                  workspace(lane.workspaceRoot),
+                  ticket(typeof lane.runningTicket === 'string' ? lane.runningTicket : null),
+                  typeof lane.queued === 'number' ? String(lane.queued) : '—',
+                ],
+              }))}
+            />
+          </section>
+        );
+      case 'history':
+        return (
+          <section key="history">
+            <h2>History <span className="count">({finished.length})</span></h2>
+            <Table
+              empty="No finished work yet."
+              headers={['ticket', 'status', 'who', 'age', 'wait', 'run', 'command']}
+              numericColumns={[3, 4, 5]}
+              rows={finished.map((row) => ({
+                cells: [
+                  ticket(row.ticket),
+                  <StatusPill status={row.status} />,
+                  who(row),
+                  typeof row.createdAtMs === 'number' ? relativeTime(row.createdAtMs, nowMs) : '—',
+                  duration(row.waitMs),
+                  duration(row.runMs),
+                  <><Command row={row} /><AttachChip row={row} /></>,
+                ],
+                onSelect: selectRow(row),
+              }))}
+            />
+          </section>
+        );
+      default: {
+        const exhaustive: never = section;
+        return exhaustive;
+      }
+    }
+  };
 
   return (
     <div className="grid">
-      <section>
-        <h2>Contention</h2>
-        <div className="stats">
-          <Stat label="daemon" value={structured?.daemon === 'running' ? 'up' : 'down'} />
-          <Stat label="pid" value={structured?.pid == null ? '—' : String(structured.pid)} />
-          <Stat label="queued" value={String(queued.length)} />
-          <Stat label="attached" value={String(attached.length)} />
-          <LoadStat system={system} />
-          <AdmissionMeter
-            permitHolders={permitHolders}
-            riders={riders}
-            maxConcurrent={maxConcurrent}
-          />
-        </div>
-      </section>
-      <section>
-        <h2>In flight <span className="count">({running.length})</span></h2>
-        <Table
-          headers={['ticket', 'command', 'workspace', 'who', 'elapsed']}
-          numericColumns={[4]}
-          rows={running.map((row) => [
-            ...requestCells(row),
-            progress(row.startedAtMs ?? row.createdAtMs, row.estimateMs, nowMs),
-          ])}
-        />
-      </section>
-      <section>
-        <h2>Queue <span className="count">({queueRows.length})</span></h2>
-        <Table
-          headers={['ticket', 'command', 'workspace', 'who', 'waiting', 'attached']}
-          numericColumns={[4]}
-          rows={queueRows.map((row) => [
-            ...requestCells(row),
-            progress(row.createdAtMs, row.estimateMs, nowMs),
-            typeof row.attachedTo === 'string' ? <AttachChip row={row} /> : '—',
-          ])}
-        />
-      </section>
-      <MetricsSection finished={finished} metrics={metrics} />
-      <KacheSection value={structured?.kache} />
-      <section>
-        <h2>Lanes <span className="count">({laneCount})</span></h2>
-        <Table
-          headers={['workspace', 'running', 'queued']}
-          numericColumns={[2]}
-          rows={activeLanes.map((lane) => [
-            workspace(lane.workspaceRoot),
-            ticket(typeof lane.runningTicket === 'string' ? lane.runningTicket : null),
-            typeof lane.queued === 'number' ? String(lane.queued) : '—',
-          ])}
-        />
-      </section>
-      <section>
-        <h2>History <span className="count">({finished.length})</span></h2>
-        <Table
-          headers={['ticket', 'status', 'who', 'age', 'wait', 'run', 'command']}
-          numericColumns={[3, 4, 5]}
-          rows={finished.map((row) => [
-            ticket(row.ticket),
-            <StatusPill status={row.status} />,
-            who(row),
-            typeof row.createdAtMs === 'number' ? relativeTime(row.createdAtMs, nowMs) : '—',
-            duration(row.waitMs),
-            duration(row.runMs),
-            <><Command row={row} /><AttachChip row={row} /></>,
-          ])}
-        />
-      </section>
+      {sectionOrder({
+        lanes: activeLanes.length,
+        queued: queueRows.length,
+        running: running.length,
+      }).map(renderSection)}
+      <TicketDrawer onClose={closeDrawer} state={drawer} />
     </div>
   );
 };
