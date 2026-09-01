@@ -109,14 +109,3 @@ export const shortenPath = (path: string, maxLength = 38): string => {
   }
   return `…/${segments.slice(-2).join('/')}`;
 };
-
-export const startPolling = (
-  load: () => Promise<void>,
-  schedule: (callback: () => void, intervalMs: number) => void,
-  intervalMs: number,
-): void => {
-  void load();
-  schedule(() => {
-    void load();
-  }, intervalMs);
-};

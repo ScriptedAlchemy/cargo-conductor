@@ -36,10 +36,9 @@ export interface DaemonConfigShape {
   readonly loadMinConcurrent: number;
 }
 
-export class DaemonConfig extends Context.Tag('cargo-conductor/DaemonConfig')<
-  DaemonConfig,
-  DaemonConfigShape
->() {}
+export class DaemonConfig extends Context.Service<DaemonConfig, DaemonConfigShape>()(
+  'cargo-conductor/DaemonConfig',
+) {}
 
 const defaultMaxConcurrent = 5;
 

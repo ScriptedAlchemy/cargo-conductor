@@ -1,6 +1,5 @@
 import { availableParallelism, loadavg } from 'node:os';
 
-import * as CommandExecutor from '@effect/platform/CommandExecutor';
 import * as Cause from 'effect/Cause';
 import * as Context from 'effect/Context';
 import * as Data from 'effect/Data';
@@ -11,6 +10,8 @@ import * as Layer from 'effect/Layer';
 import * as Metric from 'effect/Metric';
 import * as Queue from 'effect/Queue';
 import * as Ref from 'effect/Ref';
+import * as Semaphore from 'effect/Semaphore';
+import * as ChildProcessSpawner from 'effect/unstable/process/ChildProcessSpawner';
 
 import {
   batchCompatibleFor,
@@ -151,7 +152,7 @@ export interface BrokerApi {
   ) => Effect.Effect<readonly SessionCompletedRecord[]>;
 }
 
-export class Broker extends Context.Tag('cargo-conductor/Broker')<Broker, BrokerApi>() {}
+export class Broker extends Context.Service<Broker, BrokerApi>()('cargo-conductor/Broker') {}
 
 type JobState = 'queued' | 'starting' | 'kill-requested' | 'running' | 'finished';
 
@@ -405,10 +406,9 @@ export const laneKeyFor = (workspaceRoot: string, targetDir: string): string =>
 
 const invalidLaneKey = 'invalid';
 
-const cargoRunMetric = Metric.timerWithBoundaries(
-  'cargo_run_ms',
-  [1e3, 5e3, 15e3, 3e4, 6e4, 12e4, 3e5],
-);
+const cargoRunMetric = Metric.timer('cargo_run_ms', {
+  boundaries: [1e3, 5e3, 15e3, 3e4, 6e4, 12e4, 3e5],
+});
 const jobOutcomeMetric = Metric.frequency('job_outcome', {
   preregisteredWords: ['done', 'failed', 'killed'],
 });
@@ -426,8 +426,8 @@ const isTerminalStatus = (status: string): boolean =>
 const guarded = (effect: Effect.Effect<void>): Effect.Effect<void> =>
   effect.pipe(
     Effect.tapDefect((cause) => Effect.logDebug('broker callback defect', cause)),
-    Effect.catchAllCause((cause) =>
-      Cause.isInterruptedOnly(cause)
+    Effect.catchCause((cause) =>
+      Cause.hasInterruptsOnly(cause)
         ? Effect.failCause(cause)
         : Effect.logError(`broker callback failed: ${Cause.pretty(cause)}`),
     ),
@@ -464,8 +464,8 @@ const requeueReasonFor = (mode: AttachMode, status: FinishedStatus): string =>
 export const BrokerLive: Layer.Layer<
   Broker,
   never,
-  DaemonConfig | Ledger | CostModel | Topology | CommandExecutor.CommandExecutor
-> = Layer.scoped(
+  DaemonConfig | Ledger | CostModel | Topology | ChildProcessSpawner.ChildProcessSpawner
+> = Layer.effect(
   Broker,
   Effect.gen(function* () {
     const config = yield* DaemonConfig;
@@ -473,15 +473,15 @@ export const BrokerLive: Layer.Layer<
     yield* ledger.ingestPassthroughSpool(config.stateDir);
     const costModel = yield* CostModel;
     const topology = yield* Topology;
-    const commandExecutor = yield* CommandExecutor.CommandExecutor;
+    const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
     const daemonScope = yield* Effect.scope;
     const startedAtMs = Date.now();
 
-    const admission = yield* Effect.makeSemaphore(config.maxConcurrent);
+    const admission = yield* Semaphore.make(config.maxConcurrent);
     const admittedCount = yield* Ref.make(0);
-    const laneCreation = yield* Effect.makeSemaphore(1);
+    const laneCreation = yield* Semaphore.make(1);
     const lanes = new Map<string, Lane>();
-    const laneWorkers = new Set<Fiber.RuntimeFiber<never, never>>();
+    const laneWorkers = new Set<Fiber.Fiber<never, never>>();
     const inFlight = new Map<string, InFlightEntry>();
     const ticketWaiters = new Map<string, Deferred.Deferred<RequestRecord>[]>();
 
@@ -514,7 +514,7 @@ export const BrokerLive: Layer.Layer<
       });
 
     const recoverDefect = <A>(fallback: A) => (cause: Cause.Cause<never>): Effect.Effect<A> =>
-      Cause.isInterruptedOnly(cause)
+      Cause.hasInterruptsOnly(cause)
         ? Effect.failCause(cause)
         : Effect.logError(`broker dependency failed: ${Cause.pretty(cause)}`).pipe(
             Effect.as(fallback),
@@ -562,7 +562,7 @@ export const BrokerLive: Layer.Layer<
           liveAttachments,
           (attachment) =>
             Effect.sync(() => attachment.tail.push(data)).pipe(
-              Effect.zipRight(
+              Effect.andThen(
                 guarded(
                   attachment.callbacks.onOutput({
                     ticket: attachment.ticket,
@@ -584,7 +584,7 @@ export const BrokerLive: Layer.Layer<
         chunks,
         (chunk) =>
           Effect.sync(() => attachment.tail.push(chunk.data)).pipe(
-            Effect.zipRight(
+            Effect.andThen(
               guarded(
                 attachment.callbacks.onOutput({
                   ticket: attachment.ticket,
@@ -787,11 +787,11 @@ export const BrokerLive: Layer.Layer<
         const plan = planDemux(intent, input.argv);
         const editedRecently = yield* topology
           .editedRecently(intent.workspaceRoot, intent.packages)
-          .pipe(Effect.catchAllCause(recoverDefect(false)));
+          .pipe(Effect.catchCause(recoverDefect(false)));
         const depClosure = yield* topology
           .dependencyClosure(intent.workspaceRoot, intent.packages)
           .pipe(
-            Effect.catchAllCause(
+            Effect.catchCause(
               recoverDefect<ReadonlySet<string>>(new Set<string>()),
             ),
           );
@@ -964,7 +964,7 @@ export const BrokerLive: Layer.Layer<
               atMs,
               leaderTicket: leader.ticket,
               mode: attachment.mode,
-            }).pipe(Effect.zipRight(Metric.update(attachModeMetric, attachment.mode))),
+            }).pipe(Effect.andThen(Metric.update(attachModeMetric, attachment.mode))),
           { discard: true },
         );
         yield* Effect.sync(() => {
@@ -1117,7 +1117,7 @@ export const BrokerLive: Layer.Layer<
               kinds.add(kind);
             }
             demux.unitKinds.set(packageName, kinds);
-          }).pipe(Effect.zipRight(releaseSatisfiedAttachments(job)));
+          }).pipe(Effect.andThen(releaseSatisfiedAttachments(job)));
         }
         case 'message': {
           const packageName = event.packageName;
@@ -1164,9 +1164,9 @@ export const BrokerLive: Layer.Layer<
                     : { kind: 'package', packageName },
                 );
           return recordDiagnostics.pipe(
-            Effect.zipRight(record),
-            Effect.zipRight(forward),
-            Effect.zipRight(releaseSatisfiedAttachments(job)),
+            Effect.andThen(record),
+            Effect.andThen(forward),
+            Effect.andThen(releaseSatisfiedAttachments(job)),
           );
         }
         case 'build-finished':
@@ -1454,8 +1454,8 @@ export const BrokerLive: Layer.Layer<
             : { onStdoutLine: (line: string) => handleStdoutLine(job, line) }),
         }).pipe(
           Effect.withSpan('cargo.exec'),
-          Metric.trackDuration(cargoRunMetric),
-          Effect.provideService(CommandExecutor.CommandExecutor, commandExecutor),
+          Effect.trackDuration(cargoRunMetric),
+          Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
         );
         const finishedAtMs = Date.now();
         if (result.outcome === 'done') {
@@ -1521,7 +1521,7 @@ export const BrokerLive: Layer.Layer<
         yield* waitForLoadHeadroom;
         yield* admission.withPermits(1)(
           Ref.update(admittedCount, (count) => count + 1).pipe(
-            Effect.zipRight(runAdmitted(lane, job)),
+            Effect.andThen(runAdmitted(lane, job)),
             Effect.ensuring(Ref.update(admittedCount, (count) => count - 1)),
           ),
         );
@@ -1532,13 +1532,13 @@ export const BrokerLive: Layer.Layer<
         yield* foldBatch(lane, job);
         yield* processJob(lane, job);
       }).pipe(
-        Effect.catchAllCause((cause) => {
-          if (Cause.isInterruptedOnly(cause)) {
+        Effect.catchCause((cause) => {
+          if (Cause.hasInterruptsOnly(cause)) {
             return Effect.failCause(cause);
           }
           const message = Cause.pretty(cause);
           return Effect.logError(`lane ${lane.key} job ${job.ticket} crashed`, cause).pipe(
-            Effect.zipRight(
+            Effect.andThen(
               settleJob(lane, job, 'failed', null, null, message, Date.now()).pipe(
                 Effect.ignore,
               ),
@@ -1563,9 +1563,9 @@ export const BrokerLive: Layer.Layer<
     const laneWorker = (lane: Lane): Effect.Effect<never> =>
       Effect.forever(
         Queue.take(lane.wake).pipe(
-          Effect.zipRight(drainLane(lane)),
-          Effect.catchAllCause((cause) =>
-            Cause.isInterruptedOnly(cause)
+          Effect.andThen(drainLane(lane)),
+          Effect.catchCause((cause) =>
+            Cause.hasInterruptsOnly(cause)
               ? Effect.failCause(cause)
               : Effect.logError(`lane ${lane.key} iteration crashed`, cause),
           ),
@@ -1639,7 +1639,7 @@ export const BrokerLive: Layer.Layer<
       callbacks.onRegistered === undefined
         ? Effect.succeed(true)
         : callbacks.onRegistered(ticket).pipe(
-            Effect.catchAllCause((cause) =>
+            Effect.catchCause((cause) =>
               Effect.logError(
                 `ticket ${ticket} ownership registration failed: ${Cause.pretty(cause)}`,
               ).pipe(Effect.as(false)),
@@ -1804,7 +1804,7 @@ export const BrokerLive: Layer.Layer<
             return yield* Deferred.await(waiter).pipe(
               Effect.timeout(`${Math.max(0, maxWaitMs)} millis`),
               Effect.map((record) => ({ record, timedOut: false })),
-              Effect.catchTag('TimeoutException', () =>
+              Effect.catchTag('TimeoutError', () =>
                 ledger.getRequestByTicket(ticket).pipe(
                   Effect.map((record) => ({
                     record,

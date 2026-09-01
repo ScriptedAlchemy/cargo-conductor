@@ -1,13 +1,11 @@
-import * as Command from '@effect/platform/Command';
-import type * as CommandExecutor from '@effect/platform/CommandExecutor';
-import * as Data from 'effect/Data';
 import * as Cause from 'effect/Cause';
 import * as Deferred from 'effect/Deferred';
 import * as Effect from 'effect/Effect';
 import * as Exit from 'effect/Exit';
 import * as Fiber from 'effect/Fiber';
-import * as Option from 'effect/Option';
 import * as Stream from 'effect/Stream';
+import * as ChildProcess from 'effect/unstable/process/ChildProcess';
+import type * as ChildProcessSpawner from 'effect/unstable/process/ChildProcessSpawner';
 
 import { realCargoBin } from './real-cargo.js';
 
@@ -87,21 +85,31 @@ export class TailBuffer {
   }
 }
 
-class SignalSendError extends Data.TaggedError('SignalSendError')<{
-  readonly cause: unknown;
-  readonly signal: NodeJS.Signals;
-}> {}
-
-const signalPattern = /signal:\s*(\w+)/;
+const signalPattern = /signal:\s*'?(\w+)'?/;
 
 /**
- * @effect/platform's Process.exitCode exposes a structured numeric exit only
- * on success. Signal exits arrive as PlatformError message text in the form
- * "... signal: SIGTERM ...", so contain that version-coupled parsing here.
+ * The platform's ChildProcess.exitCode exposes a structured numeric exit only
+ * on success. Signal exits arrive as PlatformError text in the form
+ * "... signal: 'SIGTERM' ...", and since effect v4 that text lives on the
+ * cause chain: the surfaced error message is just "Unknown:
+ * ChildProcess.exitCode (...)" with the signal error attached as its cause.
+ * Contain that version-coupled parsing here.
  */
-const parseSignal = (message: string): string | null => {
-  const match = signalPattern.exec(message);
-  return match?.[1] ?? null;
+const parseSignal = (error: unknown): string | null => {
+  let current: unknown = error;
+  const seen = new Set<unknown>();
+  while (typeof current === 'object' && current !== null && !seen.has(current)) {
+    seen.add(current);
+    const candidate = current as { readonly message?: unknown; readonly cause?: unknown };
+    if (typeof candidate.message === 'string') {
+      const match = signalPattern.exec(candidate.message);
+      if (match?.[1] !== undefined) {
+        return match[1];
+      }
+    }
+    current = candidate.cause ?? null;
+  }
+  return null;
 };
 
 const spawnFailure = (message: string): ExecutionResult => ({
@@ -135,7 +143,7 @@ const killGraceMs = (env: Readonly<Record<string, string>> | undefined): number 
   return Number.isInteger(parsed) && parsed >= 0 ? parsed : defaultKillGraceMs;
 };
 
-const buildCommand = (options: ExecuteCargoOptions): Command.Command | undefined => {
+const buildCommand = (options: ExecuteCargoOptions): ChildProcess.StandardCommand | undefined => {
   const executable = options.argv[0];
   if (executable === undefined) {
     return undefined;
@@ -145,11 +153,14 @@ const buildCommand = (options: ExecuteCargoOptions): Command.Command | undefined
   // to itself. CARGO_CONDUCTOR_INSIDE lets the shim pass nested invocations
   // straight through to the real binary.
   const resolved = executable === 'cargo' ? realCargoBin(options.env ?? process.env) : executable;
-  const command = Command.stdin(
-    Command.workingDirectory(Command.make(resolved, ...options.argv.slice(1)), options.cwd),
-    'pipe',
-  );
-  return Command.env(command, { ...options.env, CARGO_CONDUCTOR_INSIDE: '1' });
+  // `env` is a delta on top of the caller environment; extendEnv keeps the
+  // inherited PATH/HOME etc. (v4 replaces the environment by default).
+  return ChildProcess.make(resolved, options.argv.slice(1), {
+    cwd: options.cwd,
+    env: { ...options.env, CARGO_CONDUCTOR_INSIDE: '1' },
+    extendEnv: true,
+    stdin: 'pipe',
+  });
 };
 
 const toResult = (waited: WaitOutcome, outputTail: string): ExecutionResult => {
@@ -216,7 +227,7 @@ const pumpError = (
 
 export const executeCargo = (
   options: ExecuteCargoOptions,
-): Effect.Effect<ExecutionResult, never, CommandExecutor.CommandExecutor> => {
+): Effect.Effect<ExecutionResult, never, ChildProcessSpawner.ChildProcessSpawner> => {
   const command = buildCommand(options);
   if (command === undefined) {
     return Effect.succeed(spawnFailure('argv must be non-empty'));
@@ -225,7 +236,7 @@ export const executeCargo = (
   const tail = new TailBuffer(options.tailBytes);
 
   return Effect.scoped(
-    Command.start(command).pipe(
+    command.pipe(
       Effect.matchEffect({
         onFailure: (error) => Effect.succeed(spawnFailure(error.message)),
         onSuccess: (child) =>
@@ -248,17 +259,17 @@ export const executeCargo = (
               );
             };
 
-            const stdoutFiber = yield* Effect.fork(consume('stdout'));
-            const stderrFiber = yield* Effect.fork(consume('stderr'));
+            const stdoutFiber = yield* Effect.forkChild(consume('stdout'));
+            const stderrFiber = yield* Effect.forkChild(consume('stderr'));
 
             const observedExit = yield* Deferred.make<WaitOutcome>();
-            yield* Effect.fork(
+            yield* Effect.forkChild(
               child.exitCode.pipe(
                 Effect.match({
                   onSuccess: (code): WaitOutcome => ({ kind: 'exited', code }),
                   onFailure: (error): WaitOutcome => ({
                     kind: 'signaled',
-                    signal: parseSignal(error.message),
+                    signal: parseSignal(error),
                   }),
                 }),
                 Effect.flatMap((waited) => Deferred.succeed(observedExit, waited)),
@@ -281,30 +292,19 @@ export const executeCargo = (
               reason: string,
             ): Effect.Effect<{ readonly waited?: WaitOutcome; readonly error?: string }> =>
               Effect.gen(function* () {
-                const sendSignal = (signal: NodeJS.Signals) =>
-                  Effect.try({
-                    try: () => {
-                      const pid = Number(child.pid);
-                      process.kill(process.platform === 'win32' ? pid : -pid, signal);
-                    },
-                    catch: (cause) => new SignalSendError({ cause, signal }),
-                  });
-                const term = yield* Effect.exit(sendSignal('SIGTERM'));
-                if (Exit.isFailure(term)) {
-                  return {
-                    error: `${reason}: failed to send SIGTERM: ${Cause.pretty(term.cause)}`,
-                  };
-                }
-                const graceful = yield* awaitObservedExit.pipe(
-                  Effect.timeoutOption(killGraceMs(options.env)),
+                // handle.kill signals the child's process group (the child is
+                // spawned detached, so rustc children die too), waits for the
+                // process to exit, and escalates to a group SIGKILL if it
+                // survives the grace window.
+                const killed = yield* Effect.exit(
+                  child.kill({
+                    killSignal: 'SIGTERM',
+                    forceKillAfter: killGraceMs(options.env),
+                  }),
                 );
-                if (Option.isSome(graceful)) {
-                  return { waited: graceful.value };
-                }
-                const killed = yield* Effect.exit(sendSignal('SIGKILL'));
                 if (Exit.isFailure(killed)) {
                   return {
-                    error: `${reason}: failed to send SIGKILL: ${Cause.pretty(killed.cause)}`,
+                    error: `${reason}: failed to terminate: ${Cause.pretty(killed.cause)}`,
                   };
                 }
                 return { waited: yield* awaitObservedExit };

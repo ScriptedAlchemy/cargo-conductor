@@ -179,7 +179,7 @@ describe('conductor daemon', () => {
   it('kills a running request via the kill message', () =>
     withDaemon(5, (fixture) =>
       Effect.gen(function* () {
-        const runFiber = yield* Effect.fork(
+        const runFiber = yield* Effect.forkChild(
           execRequest(fixture, { cwd: fixture.ws1, sleep: '10', timeoutMs: 15_000 }),
         );
         const report = yield* pollReport(fixture, (candidate) =>
@@ -340,7 +340,7 @@ describe('conductor daemon', () => {
           for (let attempt = 0; attempt < 30; attempt += 1) {
             const alive = yield* pingDaemon(fixture.config.socketPath, 300).pipe(
               Effect.map(() => true),
-              Effect.catchAll(() => Effect.succeed(false)),
+              Effect.orElseSucceed(() => false),
             );
             if (!alive) {
               return true;

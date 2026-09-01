@@ -80,7 +80,7 @@ describe('json demux early release', () => {
           '{"reason":"build-finished","success":false}',
           'exit:101',
         ]);
-        const leaderFiber = yield* Effect.fork(
+        const leaderFiber = yield* Effect.forkChild(
           execRequest(fixture, {
             cwd: fixture.ws1,
             argv: [staged.cargoPath, 'check', '-p', 'aa', '-p', 'bb'],
@@ -138,7 +138,7 @@ describe('json demux early release', () => {
           '{"reason":"build-finished","success":true}',
           'exit:0',
         ]);
-        const leaderFiber = yield* Effect.fork(
+        const leaderFiber = yield* Effect.forkChild(
           execRequest(fixture, {
             cwd: fixture.ws1,
             argv: [staged.cargoPath, 'check', '-p', 'aa', '-p', 'bb'],
@@ -181,7 +181,7 @@ describe('json demux early release', () => {
           '{"reason":"build-finished","success":false}',
           'exit:101',
         ]);
-        const leaderFiber = yield* Effect.fork(
+        const leaderFiber = yield* Effect.forkChild(
           execRequest(fixture, {
             cwd: fixture.ws1,
             argv: [staged.cargoPath, 'check', '-p', 'aa', '-p', 'bb'],
@@ -223,7 +223,7 @@ describe('json demux early release', () => {
           '{"reason":"build-finished","success":false}',
           'exit:101',
         ]);
-        const leaderFiber = yield* Effect.fork(
+        const leaderFiber = yield* Effect.forkChild(
           execRequest(fixture, {
             cwd: fixture.ws1,
             argv: [staged.cargoPath, 'check', '-p', 'aa', '-p', 'bb'],
@@ -266,7 +266,7 @@ describe('json demux early release', () => {
           '{"reason":"build-finished","success":false}',
           'exit:101',
         ]);
-        const leaderFiber = yield* Effect.fork(
+        const leaderFiber = yield* Effect.forkChild(
           execRequest(fixture, {
             cwd: fixture.ws1,
             argv: [staged.cargoPath, 'check', '-p', 'aa', '-p', 'bb'],

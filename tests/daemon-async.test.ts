@@ -1,7 +1,7 @@
 import { rmSync } from 'node:fs';
 import { join } from 'node:path';
 
-import { NodeContext } from '@effect/platform-node';
+import { NodeServices } from '@effect/platform-node';
 import { describe, expect, it } from '@rstest/core';
 import * as Deferred from 'effect/Deferred';
 import * as Effect from 'effect/Effect';
@@ -37,7 +37,7 @@ describe('async tickets', () => {
       ),
       Layer.provideMerge(Layer.succeed(Ledger, baseLedger)),
       Layer.provideMerge(Layer.succeed(DaemonConfig, fixture.config)),
-      Layer.provideMerge(NodeContext.layer),
+      Layer.provideMerge(NodeServices.layer),
     );
 
     try {
@@ -60,7 +60,7 @@ describe('async tickets', () => {
                 onStarted: () => Effect.void,
               },
             );
-            const waiting = yield* Effect.fork(broker.awaitTicket(submitted.ticket, 60_000));
+            const waiting = yield* Effect.forkChild(broker.awaitTicket(submitted.ticket, 60_000));
             yield* Effect.sleep('20 millis');
             const registeredWaiters = yield* broker._testWaiterCount(submitted.ticket);
             expect(registeredWaiters).toBe(1);
@@ -95,9 +95,9 @@ describe('async tickets', () => {
       ),
       Layer.provideMerge(Layer.succeed(Ledger, ledger)),
       Layer.provideMerge(Layer.succeed(DaemonConfig, fixture.config)),
-      Layer.provideMerge(NodeContext.layer),
+      Layer.provideMerge(NodeServices.layer),
     );
-    const started = Effect.runSync(Deferred.make<void>());
+    const started = Deferred.makeUnsafe<void>();
     const callbacks = {
       onExit: () => Effect.void,
       onOutput: () => Effect.void,
@@ -158,7 +158,7 @@ describe('async tickets', () => {
             );
             tickets.push(anotherQueued.ticket);
 
-            const waiter = yield* Effect.fork(broker.awaitTicket(queued.ticket, 60_000));
+            const waiter = yield* Effect.forkChild(broker.awaitTicket(queued.ticket, 60_000));
             yield* Effect.sleep('20 millis');
             const waiterCount = yield* broker._testWaiterCount();
             expect(waiterCount).toBe(1);
@@ -201,7 +201,7 @@ describe('async tickets', () => {
       ),
       Layer.provideMerge(Layer.succeed(Ledger, ledger)),
       Layer.provideMerge(Layer.succeed(DaemonConfig, fixture.config)),
-      Layer.provideMerge(NodeContext.layer),
+      Layer.provideMerge(NodeServices.layer),
     );
 
     try {
@@ -221,7 +221,7 @@ describe('async tickets', () => {
                 onExit: () => Effect.void,
                 onOutput: () => Effect.void,
                 onRegistered: () => Effect.succeed(false),
-                onStarted: () => Effect.dieMessage('registration-refused job spawned'),
+                onStarted: () => Effect.die(new Error('registration-refused job spawned')),
               },
             );
             const result = yield* broker.awaitTicket(submitted.ticket, 2_000);
@@ -240,10 +240,10 @@ describe('async tickets', () => {
     const fixture = makeFixture(1);
     const db = openLedgerDatabase(fixture.config.databasePath);
     const baseLedger = createLedgerApi(db);
-    const readStarted = Effect.runSync(Deferred.make<void>());
-    const releaseRead = Effect.runSync(Deferred.make<void>());
-    const runStarted = Effect.runSync(Deferred.make<void>());
-    const runFinished = Effect.runSync(Deferred.make<void>());
+    const readStarted = Deferred.makeUnsafe<void>();
+    const releaseRead = Deferred.makeUnsafe<void>();
+    const runStarted = Deferred.makeUnsafe<void>();
+    const runFinished = Deferred.makeUnsafe<void>();
     let delayNextRead = false;
     let delayed = false;
     const ledger: LedgerApi = {
@@ -273,7 +273,7 @@ describe('async tickets', () => {
       ),
       Layer.provideMerge(Layer.succeed(Ledger, ledger)),
       Layer.provideMerge(Layer.succeed(DaemonConfig, fixture.config)),
-      Layer.provideMerge(NodeContext.layer),
+      Layer.provideMerge(NodeServices.layer),
     );
 
     try {
@@ -298,7 +298,7 @@ describe('async tickets', () => {
             );
             yield* Deferred.await(runStarted);
             delayNextRead = true;
-            const awaiting = yield* Effect.fork(broker.awaitTicket(submitted.ticket, 5_000));
+            const awaiting = yield* Effect.forkChild(broker.awaitTicket(submitted.ticket, 5_000));
             yield* Deferred.await(readStarted);
             yield* Deferred.await(runFinished);
             yield* Deferred.succeed(releaseRead, undefined);

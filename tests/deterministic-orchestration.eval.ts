@@ -173,7 +173,7 @@ describe('deterministic cargo-conductor acceptance evals', () => {
           const env = realCargoEnv(fixture, 'coverage', {
             CC_EVAL_SLEEP_MS: '3000',
           });
-          const broadFiber = yield* Effect.fork(
+          const broadFiber = yield* Effect.forkChild(
             execRequest(fixture, {
               argv: ['cargo', 'check', '--workspace'],
               cwd: coverageWorkspace,
@@ -253,9 +253,12 @@ describe('deterministic cargo-conductor acceptance evals', () => {
           yield* startFakeBlocker(fixture, foldingWorkspace, targetName);
           const env = realCargoEnv(fixture, targetName);
           const packages = ['check-a', 'check-b', 'check-c'] as const;
+          // Fork sequentially: under v4, a concurrent Effect.all runs each
+          // element on a transient fiber, and forkChild would parent the exec
+          // fiber to it — interrupting the request the moment the fork returns.
           const fibers = yield* Effect.all(
             packages.map((packageName) =>
-              Effect.fork(
+              Effect.forkChild(
                 execRequest(fixture, {
                   argv: ['cargo', 'check', '-p', packageName],
                   cwd: foldingWorkspace,
@@ -264,7 +267,6 @@ describe('deterministic cargo-conductor acceptance evals', () => {
                 }),
               ),
             ),
-            { concurrency: 'unbounded' },
           );
           yield* pollReport(
             fixture,
@@ -277,7 +279,7 @@ describe('deterministic cargo-conductor acceptance evals', () => {
               ),
             600,
           );
-          const clients = yield* Effect.all(fibers.map(Fiber.join), {
+          const clients = yield* Effect.forEach(fibers, Fiber.join, {
             concurrency: 'unbounded',
           });
           const exits = clients.map(findExit);
@@ -315,27 +317,27 @@ describe('deterministic cargo-conductor acceptance evals', () => {
           const targetName = 'test-fold';
           yield* startFakeBlocker(fixture, foldingWorkspace, targetName);
           const env = realCargoEnv(fixture, targetName);
-          const [alphaFiber, betaFiber] = yield* Effect.all(
-            [
-              Effect.fork(
-                execRequest(fixture, {
-                  argv: ['cargo', 'test', '-p', 'test-pkg', '--', 'alpha_only'],
-                  cwd: foldingWorkspace,
-                  extraEnv: env,
-                  timeoutMs: realCargoTimeoutMs,
-                }),
-              ),
-              Effect.fork(
-                execRequest(fixture, {
-                  argv: ['cargo', 'test', '-p', 'test-pkg', '--', 'beta_only'],
-                  cwd: foldingWorkspace,
-                  extraEnv: env,
-                  timeoutMs: realCargoTimeoutMs,
-                }),
-              ),
-            ],
-            { concurrency: 'unbounded' },
-          );
+          // Fork sequentially (see the composite-check eval above): a
+          // concurrent Effect.all would parent these forks to transient
+          // element fibers and interrupt them immediately under v4.
+          const [alphaFiber, betaFiber] = yield* Effect.all([
+            Effect.forkChild(
+              execRequest(fixture, {
+                argv: ['cargo', 'test', '-p', 'test-pkg', '--', 'alpha_only'],
+                cwd: foldingWorkspace,
+                extraEnv: env,
+                timeoutMs: realCargoTimeoutMs,
+              }),
+            ),
+            Effect.forkChild(
+              execRequest(fixture, {
+                argv: ['cargo', 'test', '-p', 'test-pkg', '--', 'beta_only'],
+                cwd: foldingWorkspace,
+                extraEnv: env,
+                timeoutMs: realCargoTimeoutMs,
+              }),
+            ),
+          ]);
           yield* pollReport(
             fixture,
             (report) =>
@@ -394,7 +396,7 @@ describe('deterministic cargo-conductor acceptance evals', () => {
             CC_EVAL_FAST_SLEEP_MS: '1000',
             CC_EVAL_SLOW_SLEEP_MS: '5000',
           });
-          const leaderFiber = yield* Effect.fork(
+          const leaderFiber = yield* Effect.forkChild(
             execRequest(fixture, {
               argv: ['cargo', 'check', '--workspace'],
               cwd: demuxWorkspace,
@@ -487,9 +489,9 @@ describe('deterministic cargo-conductor acceptance evals', () => {
           }
 
           yield* startFakeBlocker(fixture, fixtureWorkspace, targetName, '2');
-          const fibers = new Map<string, Fiber.RuntimeFiber<readonly ServerMessage[], unknown>>();
+          const fibers = new Map<string, Fiber.Fiber<readonly ServerMessage[], unknown>>();
           for (const job of jobs) {
-            const fiber = yield* Effect.fork(
+            const fiber = yield* Effect.forkChild(
               execRequest(fixture, {
                 argv: job.argv,
                 cwd: fixtureWorkspace,
@@ -515,7 +517,7 @@ describe('deterministic cargo-conductor acceptance evals', () => {
             jobs.map((job) => {
               const fiber = fibers.get(job.name);
               if (fiber === undefined) {
-                return Effect.dieMessage(`missing ${job.name} fiber`);
+                return Effect.die(new Error(`missing ${job.name} fiber`));
               }
               return Fiber.join(fiber);
             }),

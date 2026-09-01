@@ -1,14 +1,12 @@
 import { rmSync } from 'node:fs';
 
-import { NodeContext, NodeSocketServer } from '@effect/platform-node';
-import type * as SocketServer from '@effect/platform/SocketServer';
+import { NodeServices, NodeSocketServer } from '@effect/platform-node';
 import * as Config from 'effect/Config';
 import * as Deferred from 'effect/Deferred';
 import * as Effect from 'effect/Effect';
 import * as Layer from 'effect/Layer';
-import * as Logger from 'effect/Logger';
-import * as LogLevel from 'effect/LogLevel';
-import * as Option from 'effect/Option';
+import * as References from 'effect/References';
+import type * as SocketServer from 'effect/unstable/socket/SocketServer';
 
 import { packageVersion } from '../lib/version.js';
 
@@ -30,14 +28,13 @@ const appLayer = (config: DaemonConfigShape) =>
     Layer.provideMerge(TopologyLive),
     Layer.provideMerge(LedgerLive),
     Layer.provideMerge(Layer.succeed(DaemonConfig, config)),
-    Layer.provideMerge(NodeContext.layer),
+    Layer.provideMerge(NodeServices.layer),
   );
 
-const minimumLogLevelLayer = Layer.unwrapEffect(
+const minimumLogLevelLayer = Layer.unwrap(
   Config.logLevel('CARGO_CONDUCTOR_LOG_LEVEL').pipe(
-    Config.withDefault(LogLevel.Info),
-    Effect.orElseSucceed(() => LogLevel.Info),
-    Effect.map(Logger.minimumLogLevel),
+    Effect.catch(() => Effect.succeed('Info' as const)),
+    Effect.map((level) => Layer.succeed(References.MinimumLogLevel, level)),
   ),
 );
 
@@ -80,9 +77,11 @@ export const runDaemon = (
   config: DaemonConfigShape = resolveDaemonConfig(),
 ): Effect.Effect<DaemonOutcome, SingletonLockError | SocketServer.SocketServerError> =>
   Effect.scoped(daemonProgram).pipe(
-    Effect.withUnhandledErrorLogLevel(Option.some(LogLevel.Error)),
-    Effect.provide(appLayer(config)),
-    Effect.provide(minimumLogLevelLayer),
+    // Defects escaping any daemon fiber must land in the log at Error, not
+    // vanish at the default level.
+    Effect.provideService(References.UnhandledLogLevel, 'Error'),
+    // One merged provide: chained provides can split layer lifecycles.
+    Effect.provide(Layer.mergeAll(appLayer(config), minimumLogLevelLayer)),
     Effect.as('completed' as const),
     Effect.catchTag('DaemonAlreadyRunning', () => Effect.succeed('already-running' as const)),
   );

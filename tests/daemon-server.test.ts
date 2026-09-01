@@ -1,5 +1,5 @@
 import { describe, expect, it } from '@rstest/core';
-import * as Socket from '@effect/platform/Socket';
+import * as Socket from 'effect/unstable/socket/Socket';
 import * as Deferred from 'effect/Deferred';
 import * as Effect from 'effect/Effect';
 
@@ -13,10 +13,10 @@ const brokerWith = (overrides: Partial<BrokerApi> = {}): BrokerApi => ({
   getTicket: () => Effect.succeed(null),
   kill: () => Effect.succeed(true),
   recordAttempt: () => Effect.succeed({ ticket: 'cc-attempt' }),
-  report: () => Effect.dieMessage('status exploded'),
+  report: () => Effect.die(new Error('status exploded')),
   sessionCompleted: () => Effect.succeed([]),
   sessionPending: () => Effect.succeed([]),
-  submit: () => Effect.dieMessage('unexpected submit'),
+  submit: () => Effect.die(new Error('unexpected submit')),
   ...overrides,
 });
 
@@ -38,7 +38,7 @@ const runMessages = (
                 replies.push(JSON.parse(line) as ServerMessage);
               }
             }
-          }).pipe(Effect.zipRight(Deferred.succeed(written, undefined)), Effect.asVoid),
+          }).pipe(Effect.andThen(Deferred.succeed(written, undefined)), Effect.asVoid),
         ),
         run: (handler: (chunk: Uint8Array) => Effect.Effect<unknown> | void) =>
           Effect.gen(function* () {
@@ -160,7 +160,7 @@ describe('daemon connection defect boundaries', () => {
         })}\n`,
       ],
       brokerWith({
-        awaitTicket: () => Effect.dieMessage('await exploded'),
+        awaitTicket: () => Effect.die(new Error('await exploded')),
       }),
     );
 
@@ -240,7 +240,7 @@ describe('daemon connection defect boundaries', () => {
       ],
       brokerWith({
         awaitTicket: () => Effect.never,
-        report: () => Effect.dieMessage('unexpected report'),
+        report: () => Effect.die(new Error('unexpected report')),
       }),
     );
 

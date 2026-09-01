@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 
-import type * as Socket from '@effect/platform/Socket';
+import type * as Socket from 'effect/unstable/socket/Socket';
 import * as Cause from 'effect/Cause';
 import * as Deferred from 'effect/Deferred';
 import * as Effect from 'effect/Effect';
@@ -231,10 +231,10 @@ export const makeConnectionHandler =
         const recoverHandlerDefect =
           (id: string | null, handler: string) =>
           (cause: Cause.Cause<unknown>): Effect.Effect<void> =>
-            Cause.isInterruptedOnly(cause)
+            Cause.hasInterruptsOnly(cause)
               ? Effect.interrupt
               : Effect.logError(`daemon ${handler} failed`, cause).pipe(
-                  Effect.zipRight(
+                  Effect.andThen(
                     id === null
                       ? Effect.void
                       : send({
@@ -252,10 +252,10 @@ export const makeConnectionHandler =
             if (message !== null) {
               return Effect.succeed(message);
             }
-            return Queue.take(outboundWake).pipe(Effect.zipRight(takeOutbound()));
+            return Queue.take(outboundWake).pipe(Effect.andThen(takeOutbound()));
           });
 
-        yield* Effect.fork(
+        yield* Effect.forkChild(
           Effect.forever(
             Effect.gen(function* () {
               const message = yield* takeOutbound();
@@ -263,7 +263,7 @@ export const makeConnectionHandler =
               yield* write(batch.map(encodeServerMessage).join(''));
             }),
           ).pipe(
-            Effect.catchAllCause(() =>
+            Effect.catchCause(() =>
               Effect.sync(() => {
                 connection.closed = true;
               }),
@@ -273,7 +273,7 @@ export const makeConnectionHandler =
 
         const handleExec = (message: ExecRequest): Effect.Effect<void> =>
           Effect.gen(function* () {
-            const submitted = yield* Effect.either(
+            const submitted = yield* Effect.result(
               options.broker.submit(
                 {
                   argv: message.argv,
@@ -332,28 +332,28 @@ export const makeConnectionHandler =
                 },
               ),
             );
-            if (submitted._tag === 'Left') {
+            if (submitted._tag === 'Failure') {
               yield* send({
                 type: 'error',
                 id: message.id,
                 code: 'bad-intent',
-                message: submitted.left.message,
+                message: submitted.failure.message,
               });
               return;
             }
             yield* send({
               type: 'ack',
               id: message.id,
-              ticket: submitted.right.ticket,
-              laneKey: submitted.right.laneKey,
-              position: submitted.right.position,
-              ...(submitted.right.attachedTo === undefined
+              ticket: submitted.success.ticket,
+              laneKey: submitted.success.laneKey,
+              position: submitted.success.position,
+              ...(submitted.success.attachedTo === undefined
                 ? {}
-                : { attachedTo: submitted.right.attachedTo }),
-              ...(submitted.right.attachMode === undefined
+                : { attachedTo: submitted.success.attachedTo }),
+              ...(submitted.success.attachMode === undefined
                 ? {}
-                : { attachMode: submitted.right.attachMode }),
-              ...(submitted.right.etaMs === undefined ? {} : { etaMs: submitted.right.etaMs }),
+                : { attachMode: submitted.success.attachMode }),
+              ...(submitted.success.etaMs === undefined ? {} : { etaMs: submitted.success.etaMs }),
             });
           });
 
@@ -363,7 +363,7 @@ export const makeConnectionHandler =
               return Effect.asVoid(
                 Effect.forkScoped(
                   handleExec(message).pipe(
-                    Effect.catchAllCause(recoverHandlerDefect(message.id, 'exec handler')),
+                    Effect.catchCause(recoverHandlerDefect(message.id, 'exec handler')),
                   ),
                 ),
               );
@@ -425,7 +425,7 @@ export const makeConnectionHandler =
                       timedOut: waited.timedOut,
                     });
                   }).pipe(
-                    Effect.catchAllCause(recoverHandlerDefect(message.id, 'await handler')),
+                    Effect.catchCause(recoverHandlerDefect(message.id, 'await handler')),
                   ),
                 ),
               );
@@ -460,12 +460,12 @@ export const makeConnectionHandler =
               // before the latch tears the server down.
               return write(encodeServerMessage({ type: 'shutting-down', id: message.id })).pipe(
                 Effect.ignore,
-                Effect.zipRight(Deferred.succeed(options.shutdownLatch, undefined)),
+                Effect.andThen(Deferred.succeed(options.shutdownLatch, undefined)),
                 Effect.asVoid,
               );
             default: {
               const exhaustive: never = message;
-              return Effect.dieMessage(`Unhandled client message: ${String(exhaustive)}`);
+              return Effect.die(new Error(`Unhandled client message: ${String(exhaustive)}`));
             }
           }
         };
@@ -499,7 +499,7 @@ export const makeConnectionHandler =
             requestId = parsed.data.id;
             yield* handleMessage(parsed.data);
           }).pipe(
-            Effect.catchAllCause((cause) =>
+            Effect.catchCause((cause) =>
               recoverHandlerDefect(requestId, 'connection message handler')(cause),
             ),
           );
@@ -510,7 +510,7 @@ export const makeConnectionHandler =
           .run((chunk) => Effect.forEach(lineBuffer.push(chunk), handleLine, { discard: true }))
           .pipe(
             // Abrupt disconnects are routine (agent shells die mid-build).
-            Effect.catchAll(() => Effect.void),
+            Effect.catch(() => Effect.void),
             Effect.ensuring(
               Effect.gen(function* () {
                 const tickets = yield* Effect.sync(() => {

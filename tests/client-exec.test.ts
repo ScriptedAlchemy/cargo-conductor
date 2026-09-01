@@ -126,7 +126,7 @@ describe('runExecClient', () => {
             yield* Effect.forkScoped(runDaemon(fixture.config));
             yield* pingDaemon(fixture.config.socketPath, 500).pipe(
               Effect.retry(
-                Schedule.spaced('50 millis').pipe(Schedule.intersect(Schedule.recurs(100))),
+                Schedule.spaced('50 millis').pipe(Schedule.upTo({ times: 100 })),
               ),
             );
             const messages = yield* requestOverSocket({

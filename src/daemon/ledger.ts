@@ -120,7 +120,7 @@ export interface LedgerApi {
   readonly reapOrphans: (atMs: number, error: string) => Effect.Effect<number>;
 }
 
-export class Ledger extends Context.Tag('cargo-conductor/Ledger')<Ledger, LedgerApi>() {}
+export class Ledger extends Context.Service<Ledger, LedgerApi>()('cargo-conductor/Ledger') {}
 
 const schemaStatements = `
 CREATE TABLE IF NOT EXISTS requests (
@@ -687,7 +687,7 @@ export const createLedgerApi = (db: DatabaseSync): LedgerApi => {
   };
 };
 
-export const LedgerLive: Layer.Layer<Ledger, never, DaemonConfig> = Layer.scoped(
+export const LedgerLive: Layer.Layer<Ledger, never, DaemonConfig> = Layer.effect(
   Ledger,
   Effect.gen(function* () {
     const config = yield* DaemonConfig;

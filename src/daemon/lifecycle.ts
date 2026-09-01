@@ -217,7 +217,7 @@ export const runForegroundDaemon = (
   const program = runDaemon(config);
   const fiber = Effect.runFork(program);
   const interrupt = (): void => {
-    Effect.runFork(Fiber.interruptFork(fiber));
+    fiber.interruptUnsafe();
   };
   const shutdown = makeSignalShutdownController(interrupt);
   const onSigint = (): void => shutdown.onSignal('SIGINT');
@@ -237,7 +237,7 @@ export const runForegroundDaemon = (
         running: outcome === 'already-running',
       });
     }
-    if (Cause.isInterruptedOnly(exit.cause)) {
+    if (Cause.hasInterruptsOnly(exit.cause)) {
       return result(config, 'run', {
         message: 'completed',
         pid: process.pid,

@@ -2,7 +2,7 @@ import { chmodSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import * as NodeContext from '@effect/platform-node/NodeContext';
+import * as NodeServices from '@effect/platform-node/NodeServices';
 import { afterEach, describe, expect, it } from '@rstest/core';
 import * as Deferred from 'effect/Deferred';
 import * as Effect from 'effect/Effect';
@@ -50,10 +50,10 @@ afterEach(() => {
   }
 });
 
-const unusedKill = (): Deferred.Deferred<void> => Effect.runSync(Deferred.make<void>());
+const unusedKill = (): Deferred.Deferred<void> => Deferred.makeUnsafe<void>();
 
 const runExecute = (options: ExecuteCargoOptions): Promise<ExecutionResult> =>
-  Effect.runPromise(executeCargo(options).pipe(Effect.provide(NodeContext.layer)));
+  Effect.runPromise(executeCargo(options).pipe(Effect.provide(NodeServices.layer)));
 
 const concatUtf8 = (chunks: readonly Uint8Array[]): string => Buffer.concat(chunks).toString('utf8');
 

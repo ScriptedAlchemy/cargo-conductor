@@ -44,7 +44,7 @@ describe('test batch folding', () => {
             sleep: '2',
           });
 
-          const alpha = yield* Effect.fork(
+          const alpha = yield* Effect.forkChild(
             execRequest(fixture, {
               argv: ['cargo', 'test', '-p', 'aa', '--', 'filter_a'],
               cwd: fixture.ws1,
@@ -56,14 +56,14 @@ describe('test batch folding', () => {
               (record) => record.status === 'queued' && record.argv.includes('filter_a'),
             ),
           );
-          const alphaFollowerOne = yield* Effect.fork(
+          const alphaFollowerOne = yield* Effect.forkChild(
             execRequest(fixture, {
               argv: ['cargo', 'test', '-p', 'aa', '--', 'filter_a'],
               cwd: fixture.ws1,
               timeoutMs: 30_000,
             }),
           );
-          const alphaFollowerTwo = yield* Effect.fork(
+          const alphaFollowerTwo = yield* Effect.forkChild(
             execRequest(fixture, {
               argv: ['cargo', 'test', '-p', 'aa', '--', 'filter_a'],
               cwd: fixture.ws1,
@@ -78,7 +78,7 @@ describe('test batch folding', () => {
               ).length === 2,
           );
 
-          const beta = yield* Effect.fork(
+          const beta = yield* Effect.forkChild(
             execRequest(fixture, {
               argv: ['cargo', 'test', '-p', 'bb', '--', 'filter_b'],
               cwd: fixture.ws1,
@@ -90,7 +90,7 @@ describe('test batch folding', () => {
               (record) => record.status === 'queued' && record.argv.includes('filter_b'),
             ),
           );
-          const betaFollower = yield* Effect.fork(
+          const betaFollower = yield* Effect.forkChild(
             execRequest(fixture, {
               argv: ['cargo', 'test', '-p', 'bb', '--', 'filter_b'],
               cwd: fixture.ws1,
@@ -116,8 +116,9 @@ describe('test batch folding', () => {
           expect(output).toContain('filter_a');
           expect(output).toContain('filter_b');
 
-          yield* Effect.all(
-            [alpha, alphaFollowerOne, alphaFollowerTwo, beta].map(Fiber.join),
+          yield* Effect.forEach(
+            [alpha, alphaFollowerOne, alphaFollowerTwo, beta],
+            Fiber.join,
             { concurrency: 'unbounded', discard: true },
           );
         }),

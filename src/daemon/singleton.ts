@@ -77,7 +77,7 @@ export const makeSingletonCompromiseController = (
         `cargo-conductor: singleton lock compromised: ${error.message}\n`,
       );
       dependencies.setExitCode(1);
-      Deferred.unsafeDone(fatalShutdown, Effect.succeed(error));
+      Deferred.doneUnsafe(fatalShutdown, Effect.succeed(error));
       cancelFallback = dependencies.scheduleForceExit(
         () => {
           dependencies.forceExit(1);
@@ -98,8 +98,8 @@ export const acquireSingletonLock: Effect.Effect<
   DaemonConfig | Scope.Scope
 > = Effect.gen(function* () {
   const config = yield* DaemonConfig;
-  let daemonFiber: Fiber.RuntimeFiber<void, never> | undefined;
-  yield* Effect.withFiberRuntime<void>((fiber) =>
+  let daemonFiber: Fiber.Fiber<unknown, unknown> | undefined;
+  yield* Effect.withFiber((fiber) =>
     Effect.sync(() => {
       daemonFiber = fiber;
     }),
@@ -111,14 +111,15 @@ export const acquireSingletonLock: Effect.Effect<
   const compromise = makeSingletonCompromiseController(fatalShutdown);
   const fatalWatcher = Effect.runFork(
     Deferred.await(fatalShutdown).pipe(
-      Effect.zipRight(Fiber.interrupt(daemonFiber)),
+      Effect.andThen(Fiber.interrupt(daemonFiber)),
       Effect.asVoid,
     ),
   );
   yield* Effect.addFinalizer(() =>
-    Fiber.interruptFork(fatalWatcher).pipe(
-      Effect.zipRight(Effect.sync(compromise.cancelFallback)),
-    ),
+    Effect.sync(() => {
+      fatalWatcher.interruptUnsafe();
+      compromise.cancelFallback();
+    }),
   );
 
   yield* Effect.tryPromise({

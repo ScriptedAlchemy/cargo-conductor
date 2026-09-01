@@ -1,10 +1,10 @@
-import * as Socket from '@effect/platform/Socket';
 import * as NodeSocket from '@effect/platform-node/NodeSocket';
 import * as Data from 'effect/Data';
 import * as Deferred from 'effect/Deferred';
 import * as Effect from 'effect/Effect';
 import * as Fiber from 'effect/Fiber';
 import type { Scope } from 'effect/Scope';
+import * as Socket from 'effect/unstable/socket/Socket';
 
 import { shortId } from '../lib/id.js';
 
@@ -44,16 +44,15 @@ export const mapSocketFailure = (
   socketPath: string,
   received: readonly ServerMessage[] = [],
 ): DaemonUnreachableError | ConnectionClosedError => {
-  switch (error.reason) {
-    case 'Open':
-    case 'OpenTimeout':
+  switch (error.reason._tag) {
+    case 'SocketOpenError':
       return new DaemonUnreachableError({ socketPath, cause: error });
-    case 'Write':
-    case 'Read':
-    case 'Close':
+    case 'SocketWriteError':
+    case 'SocketReadError':
+    case 'SocketCloseError':
       return new ConnectionClosedError({ socketPath, received: snapshot(received) });
     default: {
-      const _exhaustive: never = error;
+      const _exhaustive: never = error.reason;
       return _exhaustive;
     }
   }
@@ -105,10 +104,12 @@ const runRequest = (
       }
     };
 
+    // v4 sockets connect lazily: open failures surface through the pump's
+    // `socket.run`, which routes them via mapSocketFailure below.
     const socket = yield* NodeSocket.makeNet({
       path: options.socketPath,
       openTimeout: 2000,
-    }).pipe(Effect.mapError((error) => mapSocketFailure(error, options.socketPath, received)));
+    });
 
     const write = yield* socket.writer;
 
@@ -148,14 +149,16 @@ const runRequest = (
 
     return yield* Deferred.await(terminal).pipe(
       Effect.raceFirst(Fiber.join(pumpFiber)),
-      Effect.timeoutFail({
+      Effect.timeoutOrElse({
         duration: timeoutMs,
-        onTimeout: () =>
-          new ControlTimeoutError({
-            socketPath: options.socketPath,
-            timeoutMs,
-            received: snapshot(received),
-          }),
+        orElse: () =>
+          Effect.fail(
+            new ControlTimeoutError({
+              socketPath: options.socketPath,
+              timeoutMs,
+              received: snapshot(received),
+            }),
+          ),
       }),
     );
   });

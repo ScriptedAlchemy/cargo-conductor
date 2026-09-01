@@ -69,7 +69,7 @@ export const waitForDaemon = (
     Effect.retry(
       Schedule.spaced('150 millis').pipe(
         Schedule.jittered,
-        Schedule.upTo('10 seconds'),
+        Schedule.upTo({ duration: '10 seconds' }),
       ),
     ),
   );

@@ -124,7 +124,7 @@ const emptyStopped = (config: DaemonConfigShape): ConductorSnapshot =>
 const acquireSnapshotDb = (databasePath: string): Effect.Effect<DatabaseSync, never, Scope.Scope> =>
   Effect.acquireRelease(
     Effect.try(() => openLedgerDatabaseReadOnly(databasePath)).pipe(
-      Effect.orElse(() => Effect.sync(() => openLedgerDatabase(databasePath))),
+      Effect.catch(() => Effect.sync(() => openLedgerDatabase(databasePath))),
     ),
     (db) => Effect.sync(() => db.close()),
   );

@@ -89,7 +89,7 @@ const runExecCommand = async (argv: readonly string[], options: CliOptions): Pro
         ...(parsed.session === undefined ? {} : { session: parsed.session }),
       }).pipe(
         Effect.map((result) => result.exitCode),
-        Effect.catchAllCause((cause) =>
+        Effect.catchCause((cause) =>
           Effect.sync(() => io.writeStderr(`${Cause.pretty(cause)}\n`)).pipe(Effect.as(1)),
         ),
       ),

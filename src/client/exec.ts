@@ -2,7 +2,7 @@ import { randomBytes } from 'node:crypto';
 import { appendFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 
-import * as NodeContext from '@effect/platform-node/NodeContext';
+import * as NodeServices from '@effect/platform-node/NodeServices';
 import * as NodeSocket from '@effect/platform-node/NodeSocket';
 import * as Cause from 'effect/Cause';
 import * as Deferred from 'effect/Deferred';
@@ -11,6 +11,7 @@ import * as Fiber from 'effect/Fiber';
 import * as Ref from 'effect/Ref';
 import * as Schedule from 'effect/Schedule';
 import type { Scope } from 'effect/Scope';
+import * as Socket from 'effect/unstable/socket/Socket';
 
 import { executeCargo } from '../daemon/executor.js';
 import { resolveDaemonConfig } from '../daemon/config.js';
@@ -116,7 +117,7 @@ const passthrough = (
       exitCode: result.exitCode ?? 1,
       mode: 'passthrough' as const,
     };
-  }).pipe(Effect.provide(NodeContext.layer));
+  }).pipe(Effect.provide(NodeServices.layer));
 
 const handleServerMessage = (
   options: RunExecOptions,
@@ -231,10 +232,12 @@ const streamBrokered = (
     const submittedAtMs = Date.now();
     const id = shortId();
 
+    // v4 sockets connect lazily: open failures surface through the pump's
+    // `socket.run`, which routes them via mapOpenError below.
     const socket = yield* NodeSocket.makeNet({
       openTimeout: 2_000,
       path: config.socketPath,
-    }).pipe(Effect.mapError((error) => mapOpenError(error, config.socketPath)));
+    });
 
     const write = yield* socket.writer;
 
@@ -373,7 +376,7 @@ export const runExecClient = (
         }
         const ensure = options.ensureDaemon ?? (() => ensureDaemonRunning(config).pipe(Effect.asVoid));
         yield* ensure().pipe(
-          Effect.tapErrorCause((cause) =>
+          Effect.tapCause((cause) =>
             Effect.sync(() => {
               const reason = Cause.pretty(cause).split('\n')[0] ?? 'unknown error';
               options.io.writeStderr(

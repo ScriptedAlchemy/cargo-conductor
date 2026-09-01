@@ -13,14 +13,14 @@ describe('lane scheduler', () => {
           isTerminal: (message) => message.type === 'started',
           sleep: '0.35',
         });
-        const buildFiber = yield* Effect.fork(
+        const buildFiber = yield* Effect.forkChild(
           execRequest(fixture, {
             argv: ['cargo', 'build', '--workspace'],
             cwd: fixture.ws1,
           }),
         );
         yield* Effect.sleep('40 millis');
-        const fmtFiber = yield* Effect.fork(
+        const fmtFiber = yield* Effect.forkChild(
           execRequest(fixture, {
             argv: ['cargo', 'fmt'],
             cwd: fixture.ws1,

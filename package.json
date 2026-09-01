@@ -21,13 +21,15 @@
   },
   "dependencies": {
     "@agent-bundle/rsc-runtime": "https://pkg.pr.new/ScriptedAlchemy/agent-bundle/@agent-bundle/rsc-runtime@560124af",
-    "@effect/platform": "^0.97.1",
-    "@effect/platform-node": "^0.108.1",
+    "@effect/atom-react": "4.0.0-rc.112",
+    "@effect/platform-node": "4.0.0-rc.112",
     "@modelcontextprotocol/server": "2.0.0",
     "bashjsast": "github:woolkingx/bashjsast#131f4b677d1906774fc49cfceab0ccb7b370b2e6",
-    "effect": "^3.22.1",
+    "effect": "4.0.0-rc.112",
     "proper-lockfile": "^4.1.2",
     "react": "^19.2.8",
+    "react-dom": "^19.2.8",
+    "scheduler": "^0.27.0",
     "zod": "4.4.3"
   },
   "devDependencies": {
@@ -36,6 +38,7 @@
     "@types/node": "^22.18.0",
     "@types/proper-lockfile": "^4.1.4",
     "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.5",
     "@typescript/native-preview": "^7.0.0-dev.20260707.2",
     "agent-bundle": "https://pkg.pr.new/ScriptedAlchemy/agent-bundle/agent-bundle@560124af",
     "typescript": "7.0.2"

@@ -24,10 +24,9 @@ export interface CostModelApi {
   readonly recordOutcome: (intentKey: string, runMs: number) => Effect.Effect<void>;
 }
 
-export class CostModel extends Context.Tag('cargo-conductor/CostModel')<
-  CostModel,
-  CostModelApi
->() {}
+export class CostModel extends Context.Service<CostModel, CostModelApi>()(
+  'cargo-conductor/CostModel',
+) {}
 
 /** Cold-start priors per subcommand, from the mined tracedecay p50s. */
 const defaultEstimates: Readonly<Record<string, number>> = {
@@ -428,7 +427,7 @@ const lruSetMutable = <K, V>(map: Map<K, V>, key: K, value: V): void => {
 
 export const createCostModel = (options: CreateCostModelOptions): CostModelWithPrewarm => {
   /** intentKey -> EWMA of observed run durations; null marks "seeded, empty". */
-  const ewma = SynchronizedRef.unsafeMake<ReadonlyMap<string, number | null>>(new Map());
+  const ewma = SynchronizedRef.makeUnsafe<ReadonlyMap<string, number | null>>(new Map());
   const crateObservations = new Map<string, number>();
   const intentContexts = new Map<string, IntentObservationContext>();
   const now = options.now ?? Date.now;
@@ -457,7 +456,7 @@ export const createCostModel = (options: CreateCostModelOptions): CostModelWithP
         return Effect.succeed([value, lruSet(current, intentKey, value)] as const);
       }
       return options.seedDurations(intentKey, ewmaSeedLimit).pipe(
-        Effect.catchAllCause(() => Effect.succeed([])),
+        Effect.catchCause(() => Effect.succeed([])),
         Effect.map((durations) => {
           let value: number | null = null;
           // Seed oldest-first so the newest observation weighs the most.
@@ -491,7 +490,7 @@ export const createCostModel = (options: CreateCostModelOptions): CostModelWithP
             refreshingIndex = false;
           }),
         ),
-        Effect.catchAllCause(() => Effect.void),
+        Effect.catchCause(() => Effect.void),
       );
     });
 
@@ -500,7 +499,7 @@ export const createCostModel = (options: CreateCostModelOptions): CostModelWithP
       const cached = indexCache;
       const fresh = cached !== undefined && now() - cached.atMs < indexTtlMs;
       if (!fresh) {
-        yield* Effect.forkDaemon(refreshIndexPriors());
+        yield* Effect.forkDetach(refreshIndexPriors());
       }
       return cached?.priors ?? emptyIndexPriors;
     });
@@ -527,9 +526,9 @@ export const createCostModel = (options: CreateCostModelOptions): CostModelWithP
               refreshingEvents = false;
             }),
           ),
-          Effect.catchAllCause(() => Effect.void),
+          Effect.catchCause(() => Effect.void),
         );
-        yield* Effect.forkDaemon(refresh);
+        yield* Effect.forkDetach(refresh);
       }
       return cached?.priors ?? emptyEventPriors;
     });
@@ -634,7 +633,7 @@ export const createCostModel = (options: CreateCostModelOptions): CostModelWithP
   };
 };
 
-export const CostModelLive: Layer.Layer<CostModel, never, DaemonConfig | Ledger> = Layer.scoped(
+export const CostModelLive: Layer.Layer<CostModel, never, DaemonConfig | Ledger> = Layer.effect(
   CostModel,
   Effect.gen(function* () {
     const config = yield* DaemonConfig;

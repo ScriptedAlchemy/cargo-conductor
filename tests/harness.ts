@@ -99,7 +99,7 @@ export const withDaemon = <A>(
         );
         yield* Effect.forkScoped(runDaemon(fixture.config));
         yield* pingDaemon(fixture.config.socketPath, 500).pipe(
-          Effect.retry(Schedule.spaced('50 millis').pipe(Schedule.intersect(Schedule.recurs(100)))),
+          Effect.retry(Schedule.spaced('50 millis').pipe(Schedule.upTo({ times: 100 }))),
         );
         return yield* use(fixture);
       }),
@@ -183,7 +183,7 @@ export const pollReport = (
       return report;
     }
     if (attempts <= 0) {
-      return yield* Effect.dieMessage('polled condition never became true');
+      return yield* Effect.die(new Error('polled condition never became true'));
     }
     yield* Effect.sleep('100 millis');
     return yield* pollReport(fixture, predicate, attempts - 1);

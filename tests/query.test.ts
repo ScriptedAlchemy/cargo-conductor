@@ -101,7 +101,7 @@ describe('loadConductorSnapshot', () => {
           );
           yield* Effect.forkScoped(runDaemon(config));
           yield* pingDaemon(config.socketPath, 500).pipe(
-            Effect.retry(Schedule.spaced('50 millis').pipe(Schedule.intersect(Schedule.recurs(100)))),
+            Effect.retry(Schedule.spaced('50 millis').pipe(Schedule.upTo({ times: 100 }))),
           );
           yield* requestOverSocket({
             isTerminal: (message) => message.type === 'status-result',
