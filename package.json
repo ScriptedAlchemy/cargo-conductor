@@ -1,8 +1,22 @@
 {
   "name": "cargo-conductor",
-  "version": "0.1.13",
+  "version": "0.1.14",
   "private": true,
   "description": "Orchestrate cargo across Claude, Codex, and Cursor so concurrent agent sessions share work instead of fighting locks.",
+  "keywords": [
+    "cargo",
+    "rust",
+    "agent",
+    "mcp",
+    "claude-code",
+    "codex",
+    "cursor",
+    "build-orchestration"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ScriptedAlchemy/cargo-conductor.git"
+  },
   "type": "module",
   "engines": {
     "node": ">=22.19.0"

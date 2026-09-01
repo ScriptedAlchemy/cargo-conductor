@@ -21,6 +21,18 @@ describe('cpuSomeAvg10', () => {
     expect(cpuSomeAvg10(() => 'not psi output')).toBeNull();
   });
 
+  it('reports null on restricted /proc (EACCES) instead of throwing', () => {
+    const eacces = Object.assign(new Error('EACCES: permission denied'), {
+      code: 'EACCES',
+      errno: -13,
+    });
+    expect(
+      cpuSomeAvg10(() => {
+        throw eacces;
+      }),
+    ).toBeNull();
+  });
+
   it('does not mistake the full line for the some line', () => {
     expect(cpuSomeAvg10(() => 'full avg10=99.9 avg60=0 avg300=0 total=0\n')).toBeNull();
   });

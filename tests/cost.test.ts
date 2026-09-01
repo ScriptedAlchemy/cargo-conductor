@@ -66,6 +66,101 @@ describe('openKacheReader', () => {
       rmSync(root, { recursive: true, force: true });
     }
   });
+
+  it('returns null when the index is explicitly disabled via an empty path', () => {
+    expect(openKacheReader('')).toBeNull();
+  });
+
+  it('returns null for a missing index file on a fresh machine', () => {
+    const root = mkdtempSync(join(tmpdir(), 'cc-kache-reader-missing-'));
+    try {
+      expect(openKacheReader(join(root, 'index.db'))).toBeNull();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('returns null when the index file is not a SQLite database', () => {
+    const root = mkdtempSync(join(tmpdir(), 'cc-kache-reader-corrupt-'));
+    const indexPath = join(root, 'index.db');
+    try {
+      writeFileSync(indexPath, 'not a sqlite database at all');
+      expect(openKacheReader(indexPath)).toBeNull();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('returns null when the schema lacks the expected columns (kache version drift)', () => {
+    const root = mkdtempSync(join(tmpdir(), 'cc-kache-reader-schema-'));
+    const indexPath = join(root, 'index.db');
+    try {
+      const database = new DatabaseSync(indexPath);
+      database.exec('CREATE TABLE entries (crate_name TEXT)');
+      database.close();
+      expect(openKacheReader(indexPath)).toBeNull();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('degrades load() to empty priors when the index is corrupted after open', () => {
+    const root = mkdtempSync(join(tmpdir(), 'cc-kache-reader-midrun-'));
+    const indexPath = join(root, 'index.db');
+    try {
+      const database = new DatabaseSync(indexPath);
+      database.exec(
+        'CREATE TABLE entries (crate_name TEXT, profile TEXT, compile_time_ms INTEGER)',
+      );
+      const insert = database.prepare(
+        'INSERT INTO entries (crate_name, profile, compile_time_ms) VALUES (?, ?, ?)',
+      );
+      // Enough rows that the table spills past the first page, so the
+      // truncated overwrite below is guaranteed to invalidate reads.
+      for (let index = 0; index < 2_000; index += 1) {
+        insert.run(`crate-${index}`, 'debug', index + 1);
+      }
+      database.close();
+
+      const reader = openKacheReader(indexPath);
+      expect(reader).not.toBeNull();
+      expect(reader?.load().compileTimeMs('crate-0', ['debug'])).toBe(1);
+
+      writeFileSync(indexPath, 'kache re-initialized this file mid-run');
+
+      const degraded = reader?.load();
+      expect(degraded?.compileTimeMs('crate-0', ['debug'])).toBeNull();
+      expect(() => {
+        reader?.close();
+        reader?.close();
+      }).not.toThrow();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps estimates flowing on defaults when a reader throws mid-run', async () => {
+    // Belt and braces above the load() guard: even a reader that throws
+    // outright must leave the cost model on default priors, not defect.
+    const model = createCostModel({
+      kacheReader: {
+        close: () => {},
+        load: () => {
+          throw new Error('file is not a database');
+        },
+      },
+      seedDurations: () => Effect.succeed([]),
+    });
+    const scoped = intent(['cargo', 'check', '-p', 'alpha']);
+
+    const cold = await Effect.runPromise(model.estimate(scoped));
+    expect(cold).toEqual({ estimateMs: 120_000, source: 'default' });
+    await new Promise<void>((resolve) => {
+      setImmediate(resolve);
+    });
+    const afterFailedRefresh = await Effect.runPromise(model.estimate(scoped));
+    expect(afterFailedRefresh).toEqual({ estimateMs: 120_000, source: 'default' });
+  });
 });
 
 describe('readKacheEventPriors', () => {

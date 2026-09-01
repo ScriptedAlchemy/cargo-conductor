@@ -95,6 +95,27 @@ describe('portable kache index default', () => {
     ).toBe(join('/scratch/kache', 'index.db'));
   });
 
+  it('falls back to the portable sibling when the config is unreadable', () => {
+    const permissionDenied = (): string => {
+      const error = new Error('EACCES: permission denied') as NodeJS.ErrnoException;
+      error.code = 'EACCES';
+      throw error;
+    };
+    expect(defaultKacheIndexPath({}, 'linux', '/home/alice', permissionDenied)).toBe(
+      join('/home/alice', '.cache', 'kache', 'index.db'),
+    );
+  });
+
+  it('trusts a configured store path even if nothing exists there yet', () => {
+    // Resolution is pure: a config naming a missing/unmounted store still
+    // wins, and availability degrades at open time instead of silently
+    // rerouting reads to the portable sibling.
+    const read = (): string => 'local_store = "/mnt/unmounted/kache"\n';
+    expect(defaultKacheIndexPath({}, 'linux', '/home/alice', read)).toBe(
+      join('/mnt/unmounted/kache', 'index.db'),
+    );
+  });
+
   it('falls back to the portable sibling when the config is malformed or empty', () => {
     expect(
       defaultKacheIndexPath({}, 'linux', '/home/alice', () => 'not toml at all'),
