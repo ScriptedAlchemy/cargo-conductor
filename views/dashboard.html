@@ -104,19 +104,40 @@
       .down-cue { color: var(--bad); margin: 4px 0 0; font-size: 0.88rem; }
       .down-cue code { font-family: var(--mono); font-size: 0.8rem; color: var(--ink); }
       .stat b.gated { color: var(--muted); font-size: 1.05rem; }
-      /* Commands wrap instead of ellipsizing: the tail (test filter, feature
-         list) is usually the only distinguishing part, so cutting it made
-         similar rows unreadable. Full argv stays in the title. */
+      /* Three lines retain distinguishing command context without letting one
+         filter-heavy run resize every table. Full argv stays in the tooltip
+         and ticket drawer; measured truncation adds the subtle overlay hint. */
+      .cmd-wrap {
+        position: relative;
+        display: inline-block;
+        max-width: 520px;
+        vertical-align: bottom;
+      }
       .cmd {
         font-family: var(--mono);
         font-size: 0.8rem;
         line-height: 1.55;
-        display: inline-block;
+        display: -webkit-box;
+        -webkit-line-clamp: 3;
+        -webkit-box-orient: vertical;
         max-width: 520px;
+        overflow: hidden;
         overflow-wrap: anywhere;
-        vertical-align: bottom;
+      }
+      .cmd-truncated {
+        position: absolute;
+        right: 0;
+        bottom: 0;
+        padding-left: 14px;
+        background: linear-gradient(90deg, transparent, var(--panel) 22%);
+        color: var(--muted);
+        font-family: var(--mono);
+        font-size: 0.66rem;
+        line-height: 1.88;
+        pointer-events: none;
       }
       .ranas { color: var(--accent); font-size: 0.76rem; margin-top: 4px; }
+      .ranas .cmd-wrap { max-width: 460px; }
       .ranas .cmd { max-width: 460px; font-size: 0.76rem; }
       .pkgcount { color: var(--muted); }
       .ticket { font-family: var(--mono); font-size: 0.8rem; white-space: nowrap; }

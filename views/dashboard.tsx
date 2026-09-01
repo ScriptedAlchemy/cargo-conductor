@@ -8,6 +8,7 @@ import {
   argvText,
   argvTitle,
   attachSavings,
+  compactArgvText,
   defaultMetricsWindowId,
   dashboardVersion,
   DEMUX_FLAG,
@@ -36,6 +37,7 @@ import {
   sectionOrder,
   shortenPath,
   subcommandMetricsView,
+  summaryFirstLine,
   terminalStatuses,
   ticketDetailFrom,
   type RunHistogramShape,
@@ -476,6 +478,41 @@ const AttachChip = ({ row }: { readonly row: RequestRow }): ReactNode => {
   return <span className="chip">→ {row.attachedTo}{mode}</span>;
 };
 
+const CommandText = ({
+  text,
+  title,
+}: {
+  readonly text: string;
+  readonly title: string;
+}): ReactNode => {
+  const ref = useRef<HTMLSpanElement>(null);
+  const [truncated, setTruncated] = useState(false);
+  useEffect(() => {
+    const element = ref.current;
+    if (element === null) {
+      return;
+    }
+    const measure = (): void => {
+      setTruncated(element.scrollHeight > element.clientHeight);
+    };
+    const frame = requestAnimationFrame(measure);
+    const observer = new ResizeObserver(measure);
+    observer.observe(element);
+    return () => {
+      cancelAnimationFrame(frame);
+      observer.disconnect();
+    };
+  }, [text]);
+  return (
+    <span className="cmd-wrap">
+      <span className="cmd" ref={ref} title={title}>
+        {text}
+      </span>
+      {truncated ? <span aria-hidden="true" className="cmd-truncated">… more</span> : null}
+    </span>
+  );
+};
+
 const Command = ({ row }: { readonly row: RequestRow }): ReactNode => {
   const ranAs = ranAsFor(row.argv, row.execArgv);
   const execArgv = Array.isArray(row.execArgv)
@@ -483,15 +520,14 @@ const Command = ({ row }: { readonly row: RequestRow }): ReactNode => {
     : null;
   return (
     <>
-      <span className="cmd" title={argvTitle(row.argv)}>
-        {argvText(row.argv)}
-      </span>
+      <CommandText text={compactArgvText(row.argv)} title={argvTitle(row.argv)} />
       {ranAs === null ? null : (
         <div className="ranas">
           ran as:{' '}
-          <span className="cmd" title={execArgv === null ? ranAs.command : argvTitle(execArgv)}>
-            {ranAs.command}
-          </span>
+          <CommandText
+            text={execArgv === null ? ranAs.command : compactArgvText(execArgv)}
+            title={execArgv === null ? ranAs.command : argvTitle(execArgv)}
+          />
           {ranAs.extraPackages > 0 ? (
             <span className="pkgcount">
               {' '}(+{ranAs.extraPackages} pkg{ranAs.extraPackages === 1 ? '' : 's'})
@@ -1443,7 +1479,7 @@ const Dashboard = ({ pushed }: { readonly pushed: PushedStatus | null }) => {
     latest === null && result._tag === 'Initial'
       ? 'Loading…'
       : typeof latest?.summary === 'string'
-        ? latest.summary
+        ? summaryFirstLine(latest.summary)
         : 'Updated.';
 
   return (

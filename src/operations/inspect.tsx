@@ -127,6 +127,7 @@ export const statusSummary = (
   active: readonly RequestRecord[],
   recent: readonly RequestRecord[],
 ): string => {
+  const commandLimit = 160;
   const header =
     daemon === 'running'
       ? `cargo-conductor daemon is running; ${active.length} active, ${recent.length} recent`
@@ -137,7 +138,11 @@ export const statusSummary = (
   return [
     header,
     ...active.map((row) => {
-      const command = row.argv.join(' ');
+      const fullCommand = row.argv.join(' ');
+      const command =
+        fullCommand.length <= commandLimit
+          ? fullCommand
+          : `${fullCommand.slice(0, commandLimit - 1)}…`;
       const location = row.session ?? row.cwd;
       return `${row.ticket} ${row.status} ${command} (${location})`;
     }),

@@ -410,12 +410,198 @@ const displayJoin = (parts: readonly string[]): string => {
   return program === undefined ? '' : [displayProgram(program), ...args].join(' ');
 };
 
+const filterCompactionThreshold = 120;
+const filterExpressionFlags = new Set(['-E', '--filterset', '--filter-expr']);
+
+const topLevelFilterCount = (expression: string): number => {
+  let count = 1;
+  let depth = 0;
+  let quote: '"' | "'" | null = null;
+  let escaped = false;
+  for (const character of expression) {
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (character === '\\') {
+      escaped = true;
+      continue;
+    }
+    if (quote !== null) {
+      if (character === quote) {
+        quote = null;
+      }
+      continue;
+    }
+    if (character === '"' || character === "'") {
+      quote = character;
+      continue;
+    }
+    if (character === '(' || character === '[' || character === '{') {
+      depth += 1;
+      continue;
+    }
+    if (character === ')' || character === ']' || character === '}') {
+      depth = Math.max(0, depth - 1);
+      continue;
+    }
+    if (character === '|' && depth === 0) {
+      count += 1;
+    }
+  }
+  return count;
+};
+
+interface FilterSpan {
+  readonly flag: string | null;
+  readonly indexes: readonly number[];
+  readonly value: string;
+}
+
+const compactFilterSpans = (
+  parts: readonly string[],
+  spans: readonly FilterSpan[],
+): readonly string[] => {
+  const combinedLength = spans.reduce(
+    (length, span, index) => length + span.value.length + (index === 0 ? 0 : 1),
+    0,
+  );
+  if (combinedLength <= filterCompactionThreshold || spans.length === 0) {
+    return parts;
+  }
+  const count = spans.reduce((total, span) => total + topLevelFilterCount(span.value), 0);
+  const skipped = new Set(spans.flatMap((span) => span.indexes));
+  const firstIndex = spans[0]?.indexes[0];
+  const marker = `(${count} filter${count === 1 ? '' : 's'})`;
+  const compacted: string[] = [];
+  for (let index = 0; index < parts.length; index += 1) {
+    if (index === firstIndex) {
+      const flag = spans[0]?.flag;
+      if (flag !== null && flag !== undefined) {
+        compacted.push(flag);
+      }
+      compacted.push(marker);
+    }
+    if (!skipped.has(index)) {
+      compacted.push(parts[index] ?? '');
+    }
+  }
+  return compacted;
+};
+
+const compactNextestFiltersets = (parts: readonly string[]): readonly string[] => {
+  if (!parts.slice(1).includes('nextest')) {
+    return parts;
+  }
+  const spans: FilterSpan[] = [];
+  for (let index = 0; index < parts.length; index += 1) {
+    const token = parts[index];
+    if (token === undefined) {
+      continue;
+    }
+    if (filterExpressionFlags.has(token)) {
+      const value = parts[index + 1];
+      if (value !== undefined) {
+        spans.push({ flag: token, indexes: [index, index + 1], value });
+        index += 1;
+      }
+      continue;
+    }
+    const equals = token.indexOf('=');
+    if (equals > 0) {
+      const flag = token.slice(0, equals);
+      if (filterExpressionFlags.has(flag)) {
+        spans.push({ flag, indexes: [index], value: token.slice(equals + 1) });
+      }
+    }
+  }
+  return compactFilterSpans(parts, spans);
+};
+
+const cargoTestValueFlags = new Set([
+  '-F',
+  '-j',
+  '-p',
+  '-Z',
+  '--bench',
+  '--bin',
+  '--color',
+  '--config',
+  '--example',
+  '--exclude',
+  '--features',
+  '--jobs',
+  '--manifest-path',
+  '--message-format',
+  '--package',
+  '--profile',
+  '--target',
+  '--target-dir',
+  '--test',
+]);
+const libtestValueFlags = new Set([
+  '--color',
+  '--ensure-time',
+  '--format',
+  '--logfile',
+  '--report-time',
+  '--skip',
+  '--test-threads',
+]);
+
+const compactCargoTestFilters = (parts: readonly string[]): readonly string[] => {
+  const testIndex = parts.indexOf('test', 1);
+  if (testIndex === -1) {
+    return parts;
+  }
+  const spans: FilterSpan[] = [];
+  let passthrough = false;
+  for (let index = testIndex + 1; index < parts.length; index += 1) {
+    const token = parts[index];
+    if (token === undefined) {
+      continue;
+    }
+    if (token === '--') {
+      passthrough = true;
+      continue;
+    }
+    if (token.startsWith('-')) {
+      const flag = token.split('=', 1)[0] ?? token;
+      const consumesValue = passthrough
+        ? libtestValueFlags.has(flag)
+        : cargoTestValueFlags.has(flag);
+      if (consumesValue && !token.includes('=')) {
+        index += 1;
+      }
+      continue;
+    }
+    spans.push({ flag: null, indexes: [index], value: token });
+  }
+  return compactFilterSpans(parts, spans);
+};
+
+/**
+ * Compact semantic test-selection arguments for bounded dashboard cells.
+ * The original argv remains available through {@link argvTitle} and the
+ * ticket drawer; non-selection arguments retain their original order/text.
+ */
+export const compactArgvText = (argv: unknown): string => {
+  const parts = stringArrayOrNull(argv);
+  if (parts === null) {
+    return '';
+  }
+  return displayJoin(compactCargoTestFilters(compactNextestFiltersets(parts)));
+};
+
 export const argvText = (argv: unknown): string => {
   const parts = stringArrayOrNull(argv);
   return parts === null ? '' : displayJoin(parts);
 };
 
 export const argvTitle = (argv: unknown): string => stringArrayOrNull(argv)?.join(' ') ?? '';
+
+/** The dashboard header is a status headline, not the MCP run-detail surface. */
+export const summaryFirstLine = (summary: string): string => summary.split('\n', 1)[0] ?? '';
 
 interface RanAs {
   readonly command: string;

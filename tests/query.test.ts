@@ -112,6 +112,19 @@ describe('status scoping', () => {
       'cc-2 running cargo check (session-1)',
     );
   });
+
+  it('bounds active commands in MCP text while preserving ticket, status, and location', () => {
+    const longCommand = ['cargo', 'nextest', 'run', '-E', 'x'.repeat(220)].join(' ');
+    const summary = statusSummary(
+      'running',
+      [{ ...running, argv: ['cargo', 'nextest', 'run', '-E', 'x'.repeat(220)] }],
+      [],
+    );
+    const activeLine = summary.split('\n')[1];
+    const truncatedCommand = `${longCommand.slice(0, 159)}…`;
+    expect(truncatedCommand).toHaveLength(160);
+    expect(activeLine).toBe(`cc-2 running ${truncatedCommand} (session-1)`);
+  });
 });
 
 describe('display projection', () => {

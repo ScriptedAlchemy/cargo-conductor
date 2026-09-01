@@ -11,6 +11,7 @@ import {
   argvText,
   argvTitle,
   attachSavings,
+  compactArgvText,
   defaultMetricsWindowId,
   diagnosticBadges,
   formatCompactNumber,
@@ -38,6 +39,7 @@ import {
   shortenPath,
   subcommandMetricsView,
   subcommandTimings,
+  summaryFirstLine,
   terminalStatuses,
   ticketDetailFrom,
   waitMetricsView,
@@ -511,6 +513,73 @@ describe('argvText', () => {
     expect(argvText(['cargo', 'check'])).toBe('cargo check');
     expect(argvText([])).toBe('');
     expect(argvText(null)).toBe('');
+  });
+});
+
+describe('compactArgvText (bounded command cells)', () => {
+  it('compacts one long nextest filterset with its top-level filter count', () => {
+    const filterset = Array.from({ length: 21 }, (_, index) => `test(=case_${index})`).join(' | ');
+    const argv = [
+      'cargo',
+      'nextest',
+      'run',
+      '-p',
+      'tracedecay',
+      '--test',
+      'mcp_suite',
+      '--features',
+      'test-transport',
+      '-E',
+      filterset,
+      '--no-fail-fast',
+      '--test-threads=1',
+    ];
+    expect(compactArgvText(argv)).toBe(
+      'cargo nextest run -p tracedecay --test mcp_suite --features test-transport -E (21 filters) --no-fail-fast --test-threads=1',
+    );
+    // The cell is compact, but the native tooltip remains the lossless path.
+    expect(argvTitle(argv)).toBe(argv.join(' '));
+  });
+
+  it('leaves short commands and short filtersets untouched', () => {
+    expect(compactArgvText(['cargo', 'check', '-p', 'graph'])).toBe(
+      'cargo check -p graph',
+    );
+    expect(compactArgvText(['cargo', 'nextest', 'run', '-E', 'test(=one)'])).toBe(
+      'cargo nextest run -E test(=one)',
+    );
+  });
+
+  it('compacts long cargo test positional filter lists without hiding harness flags', () => {
+    const filters = Array.from(
+      { length: 21 },
+      (_, index) => `integration_case_with_descriptive_name_${index}`,
+    );
+    expect(
+      compactArgvText([
+        'cargo',
+        'test',
+        '-p',
+        'tracedecay',
+        '--test',
+        'mcp_suite',
+        '--',
+        ...filters,
+        '--test-threads=1',
+      ]),
+    ).toBe(
+      'cargo test -p tracedecay --test mcp_suite -- (21 filters) --test-threads=1',
+    );
+  });
+});
+
+describe('summaryFirstLine (bounded dashboard header)', () => {
+  it('keeps only the compact status header when active-run details follow', () => {
+    expect(
+      summaryFirstLine(
+        'cargo-conductor daemon is running; 1 active, 20 recent\ncc-2 running cargo test',
+      ),
+    ).toBe('cargo-conductor daemon is running; 1 active, 20 recent');
   });
 });
 
