@@ -145,6 +145,19 @@ interface Attachment {
   readonly pendingLive: ReplayChunk[];
 }
 
+/** A fresh, not-yet-live attachment; `mode` may be reassigned at registration. */
+const makeAttachment = (
+  fields: Pick<
+    Attachment,
+    'id' | 'ticket' | 'mode' | 'input' | 'intent' | 'callbacks' | 'createdAtMs' | 'attachedAtMs'
+  >,
+): Attachment => ({
+  ...fields,
+  live: false,
+  startNotified: false,
+  pendingLive: [],
+});
+
 /** Per-unit completion state accumulated from the cargo JSON message stream. */
 interface DemuxState {
   /** Package name -> target kinds with a completed compiler-artifact. */
@@ -177,8 +190,8 @@ interface Job {
   readonly estimateMs: number;
   /** Fail-fast signal captured at submission (topology stat, cached). */
   readonly editedRecently: boolean;
-  /** Packages folded in by the batch composer; appended as -p flags at spawn. */
-  readonly extraPackages: string[];
+  /** Workspace-internal transitive deps of this job's packages (topology, cached). */
+  readonly depClosure: ReadonlySet<string>;
 }
 
 const demuxSubcommands = new Set(['build', 'check', 'clippy']);
@@ -457,6 +470,26 @@ export const BrokerLive: Layer.Layer<
         );
       });
 
+    /** Deliver the at-most-once start notice plus one conductor stderr note, then finish. */
+    const finishAttachmentWithNote = (
+      attachment: Attachment,
+      atMs: number,
+      note: string,
+      exit: Omit<ExitInfo, 'ticket' | 'waitMs' | 'runMs'>,
+      outputTail: string | null,
+    ): Effect.Effect<void> =>
+      Effect.gen(function* () {
+        yield* notifyAttachmentStarted(attachment, atMs);
+        yield* guarded(
+          attachment.callbacks.onOutput({
+            ticket: attachment.ticket,
+            channel: 'stderr',
+            data: Buffer.from(note),
+          }),
+        );
+        yield* finishAttachment(attachment, atMs, exit, outputTail);
+      });
+
     /**
      * Atomically registers `attachment` on a compatible in-flight leader in
      * the lane. Runs in one sync frame: the gate check and the registration
@@ -511,6 +544,9 @@ export const BrokerLive: Layer.Layer<
         const editedRecently = yield* topology
           .editedRecently(intent.workspaceRoot, intent.packages)
           .pipe(Effect.catchAllCause(() => Effect.succeed(false)));
+        const depClosure = yield* topology
+          .dependencyClosure(intent.workspaceRoot, intent.packages)
+          .pipe(Effect.catchAllCause(() => Effect.succeed<ReadonlySet<string>>(new Set())));
         return {
           id,
           ticket,
@@ -529,7 +565,7 @@ export const BrokerLive: Layer.Layer<
           tail: new TailBuffer(config.outputTailBytes),
           estimateMs: estimate.estimateMs,
           editedRecently,
-          extraPackages: [],
+          depClosure,
         };
       });
 
@@ -544,18 +580,38 @@ export const BrokerLive: Layer.Layer<
         return position;
       });
 
-    /** Splices out the best-scored pending job under the scheduling policy. */
+    /**
+     * Splices out the best-scored pending job under the scheduling policy.
+     * `unblocks` counts the other pending requests (and their coalesced
+     * waiters) whose dependency closure this candidate compiles — running a
+     * leaf crate first releases the dependents queued above it and warms
+     * the artifacts they will reuse.
+     */
     const takeNextJob = (lane: Lane): Effect.Effect<Job | undefined> =>
       Effect.sync(() => {
         const nowMs = Date.now();
         const index = selectNextIndex(
-          lane.pending.map((candidate) => ({
-            id: candidate.id,
-            estimateMs: candidate.estimateMs,
-            waiters: candidate.attachments.size,
-            ageMs: nowMs - candidate.queuedAtMs,
-            editedRecently: candidate.editedRecently,
-          })),
+          lane.pending.map((candidate) => {
+            let unblocks = 0;
+            if (candidate.intent.packages.length > 0) {
+              for (const other of lane.pending) {
+                if (other === candidate || other.depClosure.size === 0) {
+                  continue;
+                }
+                if (candidate.intent.packages.some((name) => other.depClosure.has(name))) {
+                  unblocks += 1 + other.attachments.size;
+                }
+              }
+            }
+            return {
+              id: candidate.id,
+              estimateMs: candidate.estimateMs,
+              waiters: candidate.attachments.size,
+              unblocks,
+              ageMs: nowMs - candidate.queuedAtMs,
+              editedRecently: candidate.editedRecently,
+            };
+          }),
         );
         return index === -1 ? undefined : lane.pending.splice(index, 1)[0];
       });
@@ -596,7 +652,7 @@ export const BrokerLive: Layer.Layer<
           absorbed,
           (candidate) =>
             Effect.gen(function* () {
-              const attachment: Attachment = {
+              const attachment = makeAttachment({
                 id: candidate.id,
                 ticket: candidate.ticket,
                 mode: 'batch',
@@ -605,10 +661,7 @@ export const BrokerLive: Layer.Layer<
                 callbacks: candidate.callbacks,
                 createdAtMs: candidate.queuedAtMs,
                 attachedAtMs: atMs,
-                live: false,
-                startNotified: false,
-                pendingLive: [],
-              };
+              });
               yield* Effect.sync(() => {
                 leader.attachments.set(attachment.ticket, attachment);
                 inFlight.set(attachment.ticket, { kind: 'attachment', leader, attachment });
@@ -670,35 +723,49 @@ export const BrokerLive: Layer.Layer<
         yield* Effect.forEach(
           decided,
           ({ attachment, failed }) =>
-            Effect.gen(function* () {
-              yield* notifyAttachmentStarted(attachment, atMs);
-              yield* guarded(
-                attachment.callbacks.onOutput({
-                  ticket: attachment.ticket,
-                  channel: 'stderr',
-                  data: Buffer.from(
-                    failed === null
-                      ? `[cargo-conductor] released early: requested packages compiled cleanly under ${job.ticket}\n`
-                      : `[cargo-conductor] released early: ${failed} failed to compile under ${job.ticket}\n`,
-                  ),
-                }),
-              );
-              yield* finishAttachment(
-                attachment,
-                atMs,
-                failed === null
-                  ? { status: 'done', exitCode: 0, signal: null, error: null }
-                  : {
-                      status: 'failed',
-                      exitCode: 101,
-                      signal: null,
-                      error: `compile errors in ${failed}`,
-                    },
-                job.tail.toString(),
-              );
-            }),
+            finishAttachmentWithNote(
+              attachment,
+              atMs,
+              failed === null
+                ? `[cargo-conductor] released early: requested packages compiled cleanly under ${job.ticket}\n`
+                : `[cargo-conductor] released early: ${failed} failed to compile under ${job.ticket}\n`,
+              failed === null
+                ? { status: 'done', exitCode: 0, signal: null, error: null }
+                : {
+                    status: 'failed',
+                    exitCode: 101,
+                    signal: null,
+                    error: `compile errors in ${failed}`,
+                  },
+              job.tail.toString(),
+            ),
           { discard: true },
         );
+      });
+
+    /**
+     * Follow-up after tryRegisterAttachment wins: ledger the attach, and if
+     * the leader is already running, deliver the start notice and replay
+     * catch-up, then re-check early release — the demand may already be
+     * proven by units that finished before this attachment arrived.
+     */
+    const completeAttachRegistration = (
+      leader: Job,
+      attachment: Attachment,
+      mode: AttachMode,
+      atMs: number,
+    ): Effect.Effect<void> =>
+      Effect.gen(function* () {
+        yield* ledger.markAttached(attachment.id, { atMs, leaderTicket: leader.ticket, mode });
+        const leaderState = yield* Ref.get(leader.state);
+        if (leaderState !== 'running') {
+          return;
+        }
+        const won = yield* notifyAttachmentStarted(attachment, atMs);
+        if (won) {
+          yield* replayThenGoLive(leader, attachment);
+        }
+        yield* releaseSatisfiedAttachments(leader);
       });
 
     /** Routes one line of the leader's JSON stdout stream. */
@@ -793,7 +860,7 @@ export const BrokerLive: Layer.Layer<
         if (onRequeued !== undefined) {
           yield* guarded(onRequeued({ ticket: attachment.ticket, reason }));
         }
-        const revived: Attachment = {
+        const revived = makeAttachment({
           id: attachment.id,
           ticket: attachment.ticket,
           mode: attachment.mode,
@@ -802,25 +869,10 @@ export const BrokerLive: Layer.Layer<
           callbacks: attachment.callbacks,
           createdAtMs: attachment.createdAtMs,
           attachedAtMs: atMs,
-          live: false,
-          startNotified: false,
-          pendingLive: [],
-        };
+        });
         const reattached = yield* tryRegisterAttachment(lane.key, revived);
         if (reattached !== null) {
-          yield* ledger.markAttached(attachment.id, {
-            atMs,
-            leaderTicket: reattached.leader.ticket,
-            mode: reattached.mode,
-          });
-          const leaderState = yield* Ref.get(reattached.leader.state);
-          if (leaderState === 'running') {
-            const won = yield* notifyAttachmentStarted(revived, atMs);
-            if (won) {
-              yield* replayThenGoLive(reattached.leader, revived);
-            }
-            yield* releaseSatisfiedAttachments(reattached.leader);
-          }
+          yield* completeAttachRegistration(reattached.leader, revived, reattached.mode, atMs);
           return;
         }
         const job = yield* makeJob(
@@ -863,19 +915,10 @@ export const BrokerLive: Layer.Layer<
           const mirrors =
             status === 'done' || (status === 'failed' && attachment.mode === 'identity');
           if (provenDespiteFailure) {
-            yield* notifyAttachmentStarted(attachment, atMs);
-            yield* guarded(
-              attachment.callbacks.onOutput({
-                ticket: attachment.ticket,
-                channel: 'stderr',
-                data: Buffer.from(
-                  `[cargo-conductor] ${job.ticket} failed elsewhere, but your requested packages compiled cleanly\n`,
-                ),
-              }),
-            );
-            yield* finishAttachment(
+            yield* finishAttachmentWithNote(
               attachment,
               atMs,
+              `[cargo-conductor] ${job.ticket} failed elsewhere, but your requested packages compiled cleanly\n`,
               { status: 'done', exitCode: 0, signal: null, error: null },
               outputTail,
             );
@@ -945,7 +988,9 @@ export const BrokerLive: Layer.Layer<
         const runStartedAtMs = Date.now();
         yield* Ref.set(job.state, 'running');
         yield* Ref.set(lane.running, job.ticket);
-        yield* ledger.markRunning(job.id, runStartedAtMs);
+        // execArgv already carries the demux flag and any batch-folded -p
+        // packages: this is the invocation the ledger reports as "ran as".
+        yield* ledger.markRunning(job.id, runStartedAtMs, job.execArgv);
         const waitMs = runStartedAtMs - job.queuedAtMs;
         yield* guarded(job.callbacks.onStarted({ ticket: job.ticket, waitMs }));
         const queuedAttachments = yield* Effect.sync(() => [...job.attachments.values()]);
@@ -976,15 +1021,8 @@ export const BrokerLive: Layer.Layer<
         const execEnv = grantsJobs
           ? { ...job.input.env, CARGO_BUILD_JOBS: String(config.jobsGrant) }
           : job.input.env;
-        const finalArgv =
-          job.extraPackages.length === 0
-            ? job.execArgv
-            : [
-                ...job.execArgv,
-                ...job.extraPackages.flatMap((name) => ['-p', name]),
-              ];
         const result: ExecutionResult = yield* executeCargo({
-          argv: finalArgv,
+          argv: job.execArgv,
           cwd: job.input.cwd,
           env: execEnv,
           killSignal: job.killSignal,
@@ -1200,7 +1238,7 @@ export const BrokerLive: Layer.Layer<
               holdStop,
               estimateMs: estimate.estimateMs,
             });
-            const attachment: Attachment = {
+            const attachment = makeAttachment({
               id: created.id,
               ticket: created.ticket,
               mode: 'identity',
@@ -1209,34 +1247,21 @@ export const BrokerLive: Layer.Layer<
               callbacks,
               createdAtMs,
               attachedAtMs: createdAtMs,
-              live: false,
-              startNotified: false,
-              pendingLive: [],
-            };
+            });
             const registered = yield* tryRegisterAttachment(laneKey, attachment);
             if (registered !== null) {
-              const mode = registered.mode;
-              yield* ledger.markAttached(created.id, {
-                atMs: Date.now(),
-                leaderTicket: registered.leader.ticket,
-                mode,
-              });
-              const leaderState = yield* Ref.get(registered.leader.state);
-              if (leaderState === 'running') {
-                const won = yield* notifyAttachmentStarted(attachment, Date.now());
-                if (won) {
-                  yield* replayThenGoLive(registered.leader, attachment);
-                }
-                // The demand may already be proven by units that finished
-                // before this attachment arrived.
-                yield* releaseSatisfiedAttachments(registered.leader);
-              }
+              yield* completeAttachRegistration(
+                registered.leader,
+                attachment,
+                registered.mode,
+                Date.now(),
+              );
               return {
                 ticket: created.ticket,
                 laneKey,
                 position: 0,
                 attachedTo: registered.leader.ticket,
-                attachMode: mode,
+                attachMode: registered.mode,
               };
             }
             const job = yield* makeJob(

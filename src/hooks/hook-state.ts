@@ -2,14 +2,12 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { resolveHookStateDir } from './paths.js';
+import { isRecord } from './shared.js';
 
 interface HookStateFile {
   readonly cursors?: Readonly<Record<string, number>>;
   readonly denies?: Readonly<Record<string, number>>;
 }
-
-const isRecord = (value: unknown): value is Record<string, unknown> =>
-  typeof value === 'object' && value !== null && !Array.isArray(value);
 
 const statePath = (stateDir: string): string => join(stateDir, 'hook-state.json');
 

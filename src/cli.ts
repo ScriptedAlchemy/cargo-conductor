@@ -101,8 +101,8 @@ export const runCli = async (
     const destIndex = rest.indexOf('--dir');
     const destDir = destIndex === -1 ? defaultShimDir() : rest[destIndex + 1];
     const force = rest.includes('--force');
-    const realCargo =
-      rest.includes('--real-cargo') ? rest[rest.indexOf('--real-cargo') + 1] : 'cargo';
+    const realCargoIndex = rest.indexOf('--real-cargo');
+    const realCargo = realCargoIndex === -1 ? 'cargo' : rest[realCargoIndex + 1];
     if (destDir === undefined || realCargo === undefined) {
       write('Usage: conductor install-shim [--dir DIR] [--real-cargo PATH] [--force]\n');
       return 2;

@@ -1,6 +1,7 @@
 import { createConnection } from 'node:net';
 
 import { resolveHookSocketPath } from './paths.js';
+import { isRecord } from './shared.js';
 
 export interface PendingTicket {
   readonly createdAtMs: number;
@@ -17,9 +18,6 @@ export interface FinishedTicket {
   readonly status: 'done' | 'failed' | 'killed';
   readonly ticket: string;
 }
-
-const isRecord = (value: unknown): value is Record<string, unknown> =>
-  typeof value === 'object' && value !== null && !Array.isArray(value);
 
 const asPending = (value: unknown): PendingTicket | null => {
   if (!isRecord(value) || typeof value.ticket !== 'string') {
@@ -51,7 +49,8 @@ const asFinished = (value: unknown): FinishedTicket | null => {
   };
 };
 
-const requestJson = (
+/** One-shot NDJSON request/response over the daemon socket; null on any failure. */
+export const requestJson = (
   message: Record<string, unknown>,
   socketPath: string,
   timeoutMs: number,

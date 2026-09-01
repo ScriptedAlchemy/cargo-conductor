@@ -1,6 +1,9 @@
 import { parse, print } from 'bashjsast';
+import type { BashSimpleCommand, BashWord } from 'bashjsast';
 
 import { parseCargoArgv } from '../daemon/intent-normalizer.js';
+
+import { isRecord } from './shared.js';
 
 const cargoExecutable = /(?:^|[/\\])cargo(?:\.exe)?$/u;
 const conductorExecutable = /(?:^|[/\\])(?:cargo-conductor|conductor)(?:\.mjs)?$/u;
@@ -55,20 +58,6 @@ export interface InspectedCommand {
   readonly hasCargo: boolean;
 }
 
-interface BashWord {
-  text: string;
-  type: 'Word';
-}
-
-interface SimpleCommand {
-  args?: BashWord[];
-  name?: BashWord;
-  type: 'SimpleCommand';
-}
-
-const isRecord = (value: unknown): value is Record<string, unknown> =>
-  typeof value === 'object' && value !== null && !Array.isArray(value);
-
 const asWord = (text: string): BashWord => ({
   text: needsShellQuote(text) ? shellQuote(text) : text,
   type: 'Word',
@@ -81,7 +70,7 @@ const shellQuote = (text: string): string => `'${text.replaceAll("'", `'\\''`)}'
 
 const wordText = (word: BashWord | undefined): string => word?.text ?? '';
 
-const commandWords = (command: SimpleCommand): BashWord[] => {
+const commandWords = (command: BashSimpleCommand): BashWord[] => {
   const words: BashWord[] = [];
   if (command.name !== undefined) {
     words.push(command.name);
@@ -143,14 +132,19 @@ const isDestructiveArgv = (cargoArgv: readonly string[]): boolean => {
   }
 };
 
-const walkSimpleCommands = (node: unknown, visit: (command: SimpleCommand) => void): void => {
+const isSimpleCommand = (
+  node: Record<string, unknown>,
+): node is Record<string, unknown> & BashSimpleCommand => node.type === 'SimpleCommand';
+
+const walkSimpleCommands = (node: unknown, visit: (command: BashSimpleCommand) => void): void => {
   if (!isRecord(node) || typeof node.type !== 'string') {
     return;
   }
+  if (isSimpleCommand(node)) {
+    visit(node);
+    return;
+  }
   switch (node.type) {
-    case 'SimpleCommand':
-      visit(node as unknown as SimpleCommand);
-      return;
     case 'Script':
     case 'Pipeline':
       for (const child of Array.isArray(node.commands) ? node.commands : []) {
@@ -205,7 +199,7 @@ const wrapWords = (words: readonly BashWord[], cargoIndex: number, options: Rewr
   return [...words.slice(0, cargoIndex), ...inserted];
 };
 
-const rewriteSimpleCommand = (command: SimpleCommand, options: RewriteOptions): boolean => {
+const rewriteSimpleCommand = (command: BashSimpleCommand, options: RewriteOptions): boolean => {
   const words = commandWords(command);
   const argv = words.map(wordText);
   if (argv.length === 0 || isAlreadyWrapped(argv)) {

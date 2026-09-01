@@ -1,7 +1,7 @@
 import { incrementDenyCount, readDenyCount } from './hook-state.js';
 import { listSessionPending, waitForTickets } from './rpc.js';
 import type { FinishedTicket, PendingTicket } from './rpc.js';
-import { resolveHookHost, type HookContext } from './shared.js';
+import { formatFinishedTicket, type HookContext } from './shared.js';
 
 export type { FinishedTicket, PendingTicket };
 
@@ -29,6 +29,10 @@ export interface StopHoldServices {
   ) => Promise<readonly FinishedTicket[]>;
 }
 
+// 30s per hold is deliberately far below the 900s stop-hook budget: Codex's
+// per-hook timeout honoring is unverified, and the re-deny loop already makes
+// the total wait unbounded. Raise via CARGO_CONDUCTOR_STOP_WAIT_MS on hosts
+// known to honor long hook timeouts.
 const defaultMaxWaitMs = (() => {
   const parsed = Number.parseInt(process.env.CARGO_CONDUCTOR_STOP_WAIT_MS ?? '', 10);
   return Number.isInteger(parsed) && parsed > 0 ? parsed : 30_000;
@@ -39,21 +43,6 @@ const remainingEtaMs = (ticket: PendingTicket, nowMs: number): number => {
   const estimate = ticket.estimateMs ?? 90_000;
   const started = ticket.startedAtMs ?? ticket.createdAtMs;
   return Math.max(1_000, estimate - Math.max(0, nowMs - started));
-};
-
-const formatFinished = (ticket: FinishedTicket): string => {
-  switch (ticket.status) {
-    case 'done':
-      return `ticket ${ticket.ticket} finished: success, ${ticket.exitCode === 0 ? '0 errors' : `exit ${ticket.exitCode}`} — call conductor_result ${ticket.ticket}`;
-    case 'failed':
-      return `ticket ${ticket.ticket} finished: failed${ticket.error === null ? '' : ` (${ticket.error})`} — call conductor_result ${ticket.ticket}`;
-    case 'killed':
-      return `ticket ${ticket.ticket} finished: killed — call conductor_result ${ticket.ticket}`;
-    default: {
-      const exhaustive: never = ticket.status;
-      return exhaustive;
-    }
-  }
 };
 
 const formatPending = (ticket: PendingTicket, nowMs: number): string => {
@@ -107,7 +96,7 @@ const decideStopHold = async (
   if (finished.length > 0) {
     return {
       outcome: 'deny',
-      reason: `${finished.map(formatFinished).join('; ')}; agent should restart holding these results`,
+      reason: `${finished.map(formatFinishedTicket).join('; ')}; agent should restart holding these results`,
     };
   }
 
@@ -138,10 +127,5 @@ export const handleStopHold = async (
   }
 };
 
-export default async (
-  event: StopHoldEvent,
-  context: HookContext = {},
-): Promise<StopHoldResult> => {
-  void resolveHookHost(context);
-  return handleStopHold(event, {}, context);
-};
+export default (event: StopHoldEvent, context: HookContext = {}): Promise<StopHoldResult> =>
+  handleStopHold(event, {}, context);

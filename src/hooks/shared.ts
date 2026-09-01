@@ -17,8 +17,29 @@ export interface HookServices {
   readonly writeCursor?: (session: string, atMs: number) => void;
 }
 
-const isRecord = (value: unknown): value is Record<string, unknown> =>
+export const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
+
+export const formatFinishedTicket = (ticket: FinishedTicket): string => {
+  switch (ticket.status) {
+    case 'done': {
+      const summary =
+        ticket.exitCode === null || ticket.exitCode === 0 ? '0 errors' : `exit ${ticket.exitCode}`;
+      return `ticket ${ticket.ticket} finished: success, ${summary} — call conductor_result ${ticket.ticket}`;
+    }
+    case 'failed': {
+      const detail =
+        ticket.error === null || ticket.error.length === 0 ? '' : ` (${ticket.error})`;
+      return `ticket ${ticket.ticket} finished: failed${detail} — call conductor_result ${ticket.ticket}`;
+    }
+    case 'killed':
+      return `ticket ${ticket.ticket} finished: killed — call conductor_result ${ticket.ticket}`;
+    default: {
+      const exhaustive: never = ticket.status;
+      return exhaustive;
+    }
+  }
+};
 
 export const extractShellCommand = (toolInput: unknown): string | undefined => {
   if (!isRecord(toolInput) || typeof toolInput.command !== 'string') {

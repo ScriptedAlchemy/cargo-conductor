@@ -17,6 +17,15 @@ export interface TopologyApi {
     workspaceRoot: string,
     packages: readonly string[],
   ) => Effect.Effect<boolean>;
+  /**
+   * Transitive workspace-internal dependencies of `packages` (the packages
+   * themselves excluded). Unknown workspaces/packages report empty: the
+   * scheduler treats the closure as an optimization signal only.
+   */
+  readonly dependencyClosure: (
+    workspaceRoot: string,
+    packages: readonly string[],
+  ) => Effect.Effect<ReadonlySet<string>>;
 }
 
 export class Topology extends Context.Tag('cargo-conductor/Topology')<Topology, TopologyApi>() {}
@@ -26,9 +35,20 @@ const editStatTtlMs = 10_000;
 const editWindowMs = 5 * 60_000;
 const metadataTimeoutMs = 5_000;
 
+export interface WorkspaceMetadata {
+  readonly packageDirs: ReadonlyMap<string, string>;
+  /** Direct dependencies per package, filtered to workspace members. */
+  readonly directDeps: ReadonlyMap<string, ReadonlySet<string>>;
+}
+
+const emptyMetadata: WorkspaceMetadata = {
+  packageDirs: new Map(),
+  directDeps: new Map(),
+};
+
 interface MetadataCacheEntry {
   readonly atMs: number;
-  readonly packageDirs: ReadonlyMap<string, string>;
+  readonly metadata: WorkspaceMetadata;
 }
 
 interface EditCacheEntry {
@@ -39,27 +59,73 @@ interface EditCacheEntry {
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
 
-const parsePackageDirs = (stdout: string): ReadonlyMap<string, string> => {
-  const dirs = new Map<string, string>();
+/**
+ * Parses `cargo metadata --no-deps` output into the workspace-internal
+ * dependency graph: `--no-deps` still lists each member's manifest-declared
+ * `dependencies`, which is exactly the intra-workspace edge set once
+ * filtered to member names. Exported for unit tests.
+ */
+export const parseWorkspaceMetadata = (stdout: string): WorkspaceMetadata => {
   let parsed: unknown;
   try {
     parsed = JSON.parse(stdout);
   } catch {
-    return dirs;
+    return emptyMetadata;
   }
   if (!isRecord(parsed) || !Array.isArray(parsed.packages)) {
-    return dirs;
+    return emptyMetadata;
   }
+  const dirs = new Map<string, string>();
+  const declaredDeps = new Map<string, string[]>();
   for (const entry of parsed.packages) {
     if (
-      isRecord(entry) &&
-      typeof entry.name === 'string' &&
-      typeof entry.manifest_path === 'string'
+      !isRecord(entry) ||
+      typeof entry.name !== 'string' ||
+      typeof entry.manifest_path !== 'string'
     ) {
-      dirs.set(entry.name, dirname(entry.manifest_path));
+      continue;
+    }
+    dirs.set(entry.name, dirname(entry.manifest_path));
+    const names: string[] = [];
+    if (Array.isArray(entry.dependencies)) {
+      for (const dependency of entry.dependencies) {
+        if (isRecord(dependency) && typeof dependency.name === 'string') {
+          names.push(dependency.name);
+        }
+      }
+    }
+    declaredDeps.set(entry.name, names);
+  }
+  const directDeps = new Map<string, ReadonlySet<string>>();
+  for (const [name, names] of declaredDeps) {
+    directDeps.set(name, new Set(names.filter((dependency) => dirs.has(dependency))));
+  }
+  return { packageDirs: dirs, directDeps };
+};
+
+/** Transitive workspace deps of `packages` (themselves excluded). Exported for unit tests. */
+export const workspaceClosure = (
+  metadata: WorkspaceMetadata,
+  packages: readonly string[],
+): ReadonlySet<string> => {
+  const closure = new Set<string>();
+  const queue = [...packages];
+  while (queue.length > 0) {
+    const name = queue.pop();
+    if (name === undefined) {
+      break;
+    }
+    for (const dependency of metadata.directDeps.get(name) ?? []) {
+      if (!closure.has(dependency)) {
+        closure.add(dependency);
+        queue.push(dependency);
+      }
     }
   }
-  return dirs;
+  for (const name of packages) {
+    closure.delete(name);
+  }
+  return closure;
 };
 
 const newestMtimeMs = (packageDir: string): number | null => {
@@ -109,7 +175,7 @@ export const TopologyLive: Layer.Layer<Topology, never, CommandExecutor.CommandE
           yield* Effect.sync(() => {
             metadataCache.set(workspaceRoot, {
               atMs: Date.now(),
-              packageDirs: parsePackageDirs(stdout),
+              metadata: parseWorkspaceMetadata(stdout),
             });
             refreshing.delete(workspaceRoot);
           });
@@ -120,7 +186,7 @@ export const TopologyLive: Layer.Layer<Topology, never, CommandExecutor.CommandE
        * in a background fiber. Cold workspaces simply report no packages
        * until the first refresh lands — the boost is best-effort.
        */
-      const packageDirs = (workspaceRoot: string): Effect.Effect<ReadonlyMap<string, string>> =>
+      const workspaceMetadata = (workspaceRoot: string): Effect.Effect<WorkspaceMetadata> =>
         Effect.gen(function* () {
           const cached = metadataCache.get(workspaceRoot);
           const fresh = cached !== undefined && Date.now() - cached.atMs < metadataTtlMs;
@@ -136,7 +202,7 @@ export const TopologyLive: Layer.Layer<Topology, never, CommandExecutor.CommandE
               yield* Effect.forkIn(refreshMetadata(workspaceRoot), scope);
             }
           }
-          return cached?.packageDirs ?? new Map<string, string>();
+          return cached?.metadata ?? emptyMetadata;
         });
 
       const editedRecently = (
@@ -147,7 +213,7 @@ export const TopologyLive: Layer.Layer<Topology, never, CommandExecutor.CommandE
           if (packages.length === 0) {
             return false;
           }
-          const dirs = yield* packageDirs(workspaceRoot);
+          const dirs = (yield* workspaceMetadata(workspaceRoot)).packageDirs;
           const nowMs = Date.now();
           for (const name of packages) {
             const packageDir = dirs.get(name);
@@ -171,6 +237,18 @@ export const TopologyLive: Layer.Layer<Topology, never, CommandExecutor.CommandE
           return false;
         });
 
-      return { editedRecently } satisfies TopologyApi;
+      const dependencyClosure = (
+        workspaceRoot: string,
+        packages: readonly string[],
+      ): Effect.Effect<ReadonlySet<string>> =>
+        Effect.gen(function* () {
+          if (packages.length === 0) {
+            return new Set<string>();
+          }
+          const metadata = yield* workspaceMetadata(workspaceRoot);
+          return workspaceClosure(metadata, packages);
+        });
+
+      return { editedRecently, dependencyClosure } satisfies TopologyApi;
     }),
   );

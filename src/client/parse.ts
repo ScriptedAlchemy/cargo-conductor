@@ -15,7 +15,11 @@ export interface ParsedExecArgv {
   readonly session?: string;
 }
 
-const valuedFlags = new Set(['--cwd', '--host', '--session']);
+const valuedFlags = ['--cwd', '--host', '--session'] as const;
+type ValuedFlag = (typeof valuedFlags)[number];
+
+const isValuedFlag = (argument: string): argument is ValuedFlag =>
+  (valuedFlags as readonly string[]).includes(argument);
 
 const takeValue = (argv: readonly string[], index: number, option: string): string => {
   const value = argv[index + 1];
@@ -46,7 +50,7 @@ export const parseExecArgv = (argv: readonly string[]): ParsedExecArgv => {
       background = true;
       continue;
     }
-    if (valuedFlags.has(argument)) {
+    if (isValuedFlag(argument)) {
       const value = takeValue(argv, index, argument);
       index += 1;
       switch (argument) {
@@ -60,7 +64,7 @@ export const parseExecArgv = (argv: readonly string[]): ParsedExecArgv => {
           session = value;
           break;
         default: {
-          const exhaustive: never = argument as never;
+          const exhaustive: never = argument;
           throw new ExecUsageError(`Unhandled option: ${String(exhaustive)}`);
         }
       }

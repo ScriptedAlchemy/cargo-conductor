@@ -52,7 +52,12 @@ export interface LedgerApi {
     input: CreateRequestInput,
   ) => Effect.Effect<{ readonly id: number; readonly ticket: string }>;
   readonly markQueued: (id: number, atMs: number) => Effect.Effect<void>;
-  readonly markRunning: (id: number, atMs: number) => Effect.Effect<void>;
+  /** `execArgv` records the invocation actually spawned (demux flag, batch -p folds). */
+  readonly markRunning: (
+    id: number,
+    atMs: number,
+    execArgv?: readonly string[],
+  ) => Effect.Effect<void>;
   readonly markAttached: (id: number, input: AttachRequestInput) => Effect.Effect<void>;
   readonly markRequeued: (id: number, atMs: number) => Effect.Effect<void>;
   readonly markFinished: (id: number, input: FinishRequestInput) => Effect.Effect<void>;
@@ -119,6 +124,7 @@ const columnMigrations: readonly (readonly [column: string, ddl: string])[] = [
   ['background', 'ALTER TABLE requests ADD COLUMN background INTEGER NOT NULL DEFAULT 0'],
   ['hold_stop', 'ALTER TABLE requests ADD COLUMN hold_stop INTEGER NOT NULL DEFAULT 0'],
   ['estimate_ms', 'ALTER TABLE requests ADD COLUMN estimate_ms INTEGER'],
+  ['exec_argv_json', 'ALTER TABLE requests ADD COLUMN exec_argv_json TEXT'],
 ];
 
 const activeStatusFilter = "status IN ('requested', 'queued', 'running')";
@@ -266,15 +272,16 @@ export const createLedgerApi = (db: DatabaseSync): LedgerApi => ({
       recordTransition(db, id, atMs, 'requested', 'queued');
     }),
 
-  markRunning: (id, atMs) =>
+  markRunning: (id, atMs, execArgv) =>
     Effect.sync(() => {
       db.prepare(
         `UPDATE requests
          SET status = ?,
              started_at_ms = ?,
-             wait_ms = CASE WHEN queued_at_ms IS NULL THEN NULL ELSE ? - queued_at_ms END
+             wait_ms = CASE WHEN queued_at_ms IS NULL THEN NULL ELSE ? - queued_at_ms END,
+             exec_argv_json = ?
          WHERE id = ?`,
-      ).run('running', atMs, atMs, id);
+      ).run('running', atMs, atMs, execArgv === undefined ? null : JSON.stringify(execArgv), id);
       recordTransition(db, id, atMs, 'queued', 'running');
     }),
 

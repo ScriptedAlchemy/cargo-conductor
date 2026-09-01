@@ -2,7 +2,7 @@ import { z } from 'zod';
 
 import type { LaneStatus, RequestRecord, StatusReport } from '../daemon/protocol.js';
 
-export const requestStatusSchema = z.enum([
+const requestStatusSchema = z.enum([
   'requested',
   'queued',
   'running',
@@ -11,9 +11,9 @@ export const requestStatusSchema = z.enum([
   'killed',
 ]);
 
-export const attachModeSchema = z.enum(['identity', 'coverage', 'batch']);
+const attachModeSchema = z.enum(['identity', 'coverage', 'batch']);
 
-export const requestRecordSchema = z
+const requestRecordSchema = z
   .object({
     argv: z.array(z.string()),
     attachMode: attachModeSchema.nullable(),
@@ -45,7 +45,7 @@ export const requestRecordSchema = z
   })
   .strict() as z.ZodType<RequestRecord>;
 
-export const laneStatusSchema = z
+const laneStatusSchema = z
   .object({
     key: z.string(),
     queued: z.number().int(),
@@ -55,7 +55,7 @@ export const laneStatusSchema = z
   })
   .strict() as z.ZodType<LaneStatus>;
 
-export const statusReportSchema = z
+const statusReportSchema = z
   .object({
     active: z.array(requestRecordSchema),
     lanes: z.array(laneStatusSchema),
@@ -145,7 +145,7 @@ export const lastResultSchema = z
   })
   .strict() as z.ZodType<LastResult>;
 
-export const daemonSubcommandSchema = z.enum(['run', 'start', 'stop', 'status']);
+const daemonSubcommandSchema = z.enum(['run', 'start', 'stop', 'status']);
 
 export const daemonInputSchema = z
   .object({

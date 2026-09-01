@@ -11,12 +11,19 @@ npm install
 npm run check
 ```
 
-Host adapters pick up `artifact/plugin`. Point each host at that directory
-(or `npm run dev` and open the portable target in the workbench playground).
+`artifact/plugin` is the installable multi-host bundle (or `npm run dev` and
+open the portable target in the workbench playground).
 
 ## Per-host notes
 
 ### Claude Code
+
+- Install:
+
+  ```sh
+  claude plugin marketplace add ./artifact/plugin
+  claude plugin install cargo-conductor@cargo-conductor-marketplace
+  ```
 
 - Hook events: `PreToolUse`, `PostToolUse`, `Stop`.
 - Per-hook timeouts in `hooks.json` are honored. `beforeTool`/`afterTool` are
@@ -27,12 +34,25 @@ Host adapters pick up `artifact/plugin`. Point each host at that directory
 
 ### Cursor
 
+- Install by symlinking the bundle into the local plugins directory:
+
+  ```sh
+  ln -s "$(pwd)/artifact/plugin" ~/.cursor/plugins/local/cargo-conductor
+  ```
+
 - Hook events: `preToolUse`, `postToolUse`. Cursor drops `beforeTool`
   additionalContext but honors `afterTool` context injection.
 - The plugin target's Cursor wrappers live next to the Claude/Codex ones
   (`*.cursor.mjs`).
 
 ### Codex CLI
+
+- Install:
+
+  ```sh
+  codex plugin marketplace add ./artifact/plugin
+  codex plugin add cargo-conductor@cargo-conductor-marketplace
+  ```
 
 - Hook schema mirrors Claude (`PreToolUse` / `PostToolUse` / `Stop`).
 - Whether Codex 0.147 honors per-hook `timeout` is **unverified** in this

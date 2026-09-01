@@ -6,6 +6,7 @@ const candidate = (overrides: Partial<ScheduleCandidate> & Pick<ScheduleCandidat
   ageMs: 0,
   editedRecently: false,
   estimateMs: 120_000,
+  unblocks: 0,
   waiters: 0,
   ...overrides,
 });
@@ -22,6 +23,14 @@ describe('scheduleScore', () => {
     const popular = scheduleScore(candidate({ id: 2, waiters: 3 }));
     expect(popular).toBeLessThan(lonely);
     expect(popular).toBeCloseTo(lonely / 4, 5);
+  });
+
+  it('counts topological unblocks like waiters, so leaves run before dependents', () => {
+    // A 90s leaf check that two queued dependents are waiting on beats a
+    // 60s solo job: 90s / (1 + 2) = 30s effective.
+    const solo = scheduleScore(candidate({ estimateMs: 60_000, id: 1 }));
+    const leaf = scheduleScore(candidate({ estimateMs: 90_000, id: 2, unblocks: 2 }));
+    expect(leaf).toBeLessThan(solo);
   });
 
   it('halves the score when a requested package was edited recently (fail-fast)', () => {

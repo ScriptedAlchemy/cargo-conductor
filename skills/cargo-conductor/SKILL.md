@@ -14,6 +14,9 @@ clippy, fmt, nextest) or is waiting on someone else's cargo.
   a single crate answers the question.
 - Prefer `conductor status`, `conductor last`, and the `conductor_status` MCP
   tool over `ps`/`pgrep` probes.
+- Do not hand-roll `CARGO_TARGET_DIR` isolation or scratch clones to dodge
+  locks. The daemon already serializes per (workspace, target dir); a private
+  target dir only defeats attach/coverage sharing and multiplies compiles.
 - Long builds: `conductor exec --bg -- cargo …` or `conductor_request`. Retrieve
   with `conductor_await` / `conductor_result` (or the afterTool notify).
 - If the daemon is unreachable, fail open: run the original cargo command.

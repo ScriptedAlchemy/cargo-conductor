@@ -12,6 +12,9 @@ import { defineConfig } from 'agent-bundle/config';
  *   `/fast/cache/cargo-conductor/`.
  */
 export default defineConfig({
+  // Claude Code and Codex install via `<cli> plugin marketplace add`; this
+  // emits the marketplace manifests those commands read.
+  marketplace: true,
   hooks: {
     afterTool: { handler: './src/hooks/after-shell.ts', timeout: 10, tools: ['shell'] },
     beforeTool: { handler: './src/hooks/before-shell.ts', timeout: 10, tools: ['shell'] },

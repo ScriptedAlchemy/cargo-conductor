@@ -3,13 +3,12 @@ interface JsonRpcMessage {
   readonly id?: unknown;
   readonly method?: unknown;
   readonly params?: unknown;
-  readonly result?: unknown;
+  readonly result?: ToolCallResult;
   readonly error?: { readonly message?: unknown } | null;
 }
 
 interface ToolCallResult {
   readonly structuredContent?: StructuredContent | null;
-  readonly content?: readonly { readonly type?: unknown; readonly text?: unknown }[];
 }
 
 interface StructuredContent {
@@ -168,18 +167,17 @@ window.addEventListener('message', (event: MessageEvent) => {
   if (message === null || message.jsonrpc !== '2.0') {
     return;
   }
-  if (message.id !== undefined && pending.has(message.id as number)) {
-    const waiter = pending.get(message.id as number);
-    if (waiter === undefined) {
+  if (typeof message.id === 'number') {
+    const waiter = pending.get(message.id);
+    if (waiter !== undefined) {
+      pending.delete(message.id);
+      if (message.error) {
+        waiter.reject(message.error);
+      } else {
+        waiter.resolve(message.result ?? {});
+      }
       return;
     }
-    pending.delete(message.id as number);
-    if (message.error) {
-      waiter.reject(message.error);
-      return;
-    }
-    waiter.resolve(message.result as ToolCallResult);
-    return;
   }
   if (message.method === 'ui/notifications/tool-result') {
     applyResult(message.params);

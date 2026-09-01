@@ -26,7 +26,7 @@ export const batchLeaderEligible = (intent: NormalizedCargoIntent): boolean =>
  * argv plus the candidate's `-p` flags, so everything outside the package
  * set must be byte-equivalent.
  */
-export const batchableWith = (
+export const batchCompatible = (
   leader: NormalizedCargoIntent,
   candidate: NormalizedCargoIntent,
 ): boolean =>
@@ -35,9 +35,6 @@ export const batchableWith = (
   batchLeaderEligible(candidate) &&
   sameCompileSurface(leader, candidate) &&
   stringArraysEqual(leader.targets, candidate.targets);
-
-/** Alias used by the broker and unit tests. */
-export const batchCompatible = batchableWith;
 
 /** Packages on `candidate` that the leader invocation does not already name. */
 export const extraPackagesFor = (

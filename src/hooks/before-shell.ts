@@ -4,13 +4,13 @@ import { probeActiveBuilds } from './probe.js';
 import { appendHookRecord, type HookRecord } from './record.js';
 import {
   extractShellCommand,
+  isRecord,
   resolveHookHost,
   type HookContext,
   type HookServices,
 } from './shared.js';
 
 export type { HookContext, HookServices };
-export { extractShellCommand, resolveHookHost };
 
 export interface BeforeShellEvent {
   readonly cwd?: string;
@@ -28,9 +28,6 @@ export interface BeforeShellResult {
 }
 
 const continueResult = (): BeforeShellResult => ({ outcome: 'continue' });
-
-const isRecord = (value: unknown): value is Record<string, unknown> =>
-  typeof value === 'object' && value !== null && !Array.isArray(value);
 
 const denyCleanReason =
   'cargo clean is blocked while cargo-conductor has in-flight builds; wait for them to finish or run conductor status';

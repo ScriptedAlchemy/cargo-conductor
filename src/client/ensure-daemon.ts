@@ -37,7 +37,6 @@ export const ensureDaemonRunning = (
 ): Effect.Effect<PongMessage, unknown> =>
   Effect.gen(function* () {
     const already = yield* pingDaemon(config.socketPath, 500).pipe(
-      Effect.map((pong) => pong),
       Effect.catchAll(() => Effect.succeed(null)),
     );
     if (already !== null) {
