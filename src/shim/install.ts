@@ -29,10 +29,12 @@ const shellQuote = (value: string): string => {
 export const renderCargoShim = (options: RenderShimOptions): string => {
   const conductor = options.conductorArgv.map(shellQuote).join(' ');
   const cargo = shellQuote(options.realCargo);
+  // --host shim: unlike hook rewrites, the shim has no agent identity, but the
+  // ledger should still say where a request entered.
   return `#!/bin/sh
 # cargo-conductor PATH shim — forwards cargo to the broker.
 # Installed by \`conductor install-shim\`. Hooks cannot see cargo inside scripts.
-exec ${conductor} exec -- ${cargo} "$@"
+exec ${conductor} exec --host shim -- ${cargo} "$@"
 `;
 };
 

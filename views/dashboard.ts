@@ -1,5 +1,6 @@
 import {
   argvText,
+  argvTitle,
   escapeHtml,
   formatMs,
   ranAsFor,
@@ -152,7 +153,7 @@ const attachChip = (row: RequestRow): string => {
 
 const commandCell = (row: RequestRow): string => {
   const requested = argvText(row.argv);
-  const main = `<span class="cmd" title="${escapeHtml(requested)}">${escapeHtml(requested)}</span>`;
+  const main = `<span class="cmd" title="${escapeHtml(argvTitle(row.argv))}">${escapeHtml(requested)}</span>`;
   const ranAs = ranAsFor(row.argv, row.execArgv);
   if (ranAs === null) {
     return main;

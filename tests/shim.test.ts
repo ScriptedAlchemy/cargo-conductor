@@ -13,7 +13,9 @@ describe('PATH cargo shim', () => {
       realCargo: '/usr/bin/cargo',
     });
     expect(script).toContain('#!/bin/sh');
-    expect(script).toContain('exec /usr/bin/node /opt/plugin/scripts/conductor.mjs exec -- /usr/bin/cargo "$@"');
+    expect(script).toContain(
+      'exec /usr/bin/node /opt/plugin/scripts/conductor.mjs exec --host shim -- /usr/bin/cargo "$@"',
+    );
   });
 
   it('installs an executable shim and refuses to clobber a foreign cargo by default', () => {
@@ -41,7 +43,9 @@ describe('PATH cargo shim', () => {
       });
       expect(forced.path).toBe(foreign);
       expect(existsSync(foreign)).toBe(true);
-      expect(readFileSync(foreign, 'utf8')).toContain('conductor exec -- /usr/bin/cargo');
+      expect(readFileSync(foreign, 'utf8')).toContain(
+        'conductor exec --host shim -- /usr/bin/cargo',
+      );
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -85,7 +89,7 @@ describe('PATH cargo shim', () => {
           force: true,
           realCargo: 'cargo',
         });
-        expect(readFileSync(installed.path, 'utf8')).toContain(`exec -- ${realCargo}`);
+        expect(readFileSync(installed.path, 'utf8')).toContain(`--host shim -- ${realCargo}`);
       } finally {
         process.env.PATH = previousPath;
       }

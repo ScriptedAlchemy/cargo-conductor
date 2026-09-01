@@ -10,7 +10,22 @@ const asStrings = (value: unknown): readonly string[] | null =>
     ? (value as readonly string[])
     : null;
 
-export const argvText = (argv: unknown): string => asStrings(argv)?.join(' ') ?? '';
+/** `/home/…/bin/cargo` reads as noise in a table; show just the program name. */
+const displayProgram = (part: string): string => {
+  const slash = part.lastIndexOf('/');
+  return slash === -1 ? part : part.slice(slash + 1);
+};
+
+const displayJoin = (parts: readonly string[]): string =>
+  parts.length === 0 ? '' : [displayProgram(parts[0]!), ...parts.slice(1)].join(' ');
+
+export const argvText = (argv: unknown): string => {
+  const parts = asStrings(argv);
+  return parts === null ? '' : displayJoin(parts);
+};
+
+/** Untrimmed join for tooltips, so the real binary path stays discoverable. */
+export const argvTitle = (argv: unknown): string => asStrings(argv)?.join(' ') ?? '';
 
 export const escapeHtml = (value: string): string =>
   value
@@ -65,7 +80,7 @@ export const ranAsFor = (argvValue: unknown, execArgvValue: unknown): RanAs | nu
       extraPackages += 1;
     }
   }
-  return { command: cleaned.join(' '), extraPackages };
+  return { command: displayJoin(cleaned), extraPackages };
 };
 
 export const relativeTime = (thenMs: number, nowMs: number): string => {

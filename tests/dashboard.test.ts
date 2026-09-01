@@ -7,6 +7,8 @@ import { describe, expect, it } from '@rstest/core';
 import { APP_RESOURCE_URI } from '../src/constants.js';
 import {
   DEMUX_FLAG,
+  argvText,
+  argvTitle,
   formatMs,
   ranAsFor,
   relativeTime,
@@ -66,6 +68,28 @@ describe('ranAsFor', () => {
       command: 'cargo check -p aa --all-features',
       extraPackages: 0,
     });
+  });
+
+  it('shows the bare program name even when the exec argv used an absolute path', () => {
+    const absolute = ['/home/zack/.cargo/bin/cargo', 'test', '-p', 'aa'];
+    expect(ranAsFor(argv, absolute)).toEqual({
+      command: 'cargo test -p aa',
+      extraPackages: 0,
+    });
+  });
+});
+
+describe('argvText', () => {
+  it('strips the directory from the program while the title keeps it', () => {
+    const argv = ['/home/zack/.cargo/bin/cargo', 'test', '-p', 'tracedecay-graph-db'];
+    expect(argvText(argv)).toBe('cargo test -p tracedecay-graph-db');
+    expect(argvTitle(argv)).toBe('/home/zack/.cargo/bin/cargo test -p tracedecay-graph-db');
+  });
+
+  it('passes plain commands through untouched', () => {
+    expect(argvText(['cargo', 'check'])).toBe('cargo check');
+    expect(argvText([])).toBe('');
+    expect(argvText(null)).toBe('');
   });
 });
 
