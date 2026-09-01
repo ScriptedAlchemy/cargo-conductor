@@ -3,7 +3,12 @@ import * as React from 'react';
 import * as Effect from 'effect/Effect';
 
 import { APP_RESOURCE_URI } from '../constants.js';
-import { loadConductorSnapshot } from '../query.js';
+import {
+  consumerRendersColor,
+  displayRequestRecord,
+  displayRequestRecords,
+  loadConductorSnapshot,
+} from '../query.js';
 import { ConductorResult } from '../result.js';
 
 import {
@@ -53,7 +58,7 @@ export const defaultInspectOperations: InspectOperations = {
     return {
       daemon: snapshot.daemon,
       operation: 'last',
-      request,
+      request: request === null ? null : displayRequestRecord(request, consumerRendersColor()),
       summary: request === null ? 'no conductor requests recorded' : `${request.ticket} ${request.status}`,
     };
   },
@@ -64,7 +69,7 @@ export const defaultInspectOperations: InspectOperations = {
     return {
       daemon: snapshot.daemon,
       operation: 'log',
-      requests: snapshot.recent,
+      requests: displayRequestRecords(snapshot.recent, consumerRendersColor()),
       summary:
         snapshot.recent.length === 0
           ? 'no conductor requests recorded'
@@ -75,9 +80,12 @@ export const defaultInspectOperations: InspectOperations = {
     const snapshot = await Effect.runPromise(loadSnapshot(input.limit ?? 20), {
       signal: context.signal,
     });
+    const color = consumerRendersColor();
     return {
       ...snapshot,
+      active: displayRequestRecords(snapshot.active, color),
       operation: 'status',
+      recent: displayRequestRecords(snapshot.recent, color),
     };
   },
 };

@@ -7,8 +7,6 @@ import * as Stream from 'effect/Stream';
 import * as ChildProcess from 'effect/unstable/process/ChildProcess';
 import type * as ChildProcessSpawner from 'effect/unstable/process/ChildProcessSpawner';
 
-import { stripAnsi } from '../lib/ansi.js';
-
 import { cargoExecutablePattern } from './intent-normalizer.js';
 import { sharedJobserverDelta } from './jobserver.js';
 import { realCargoBin } from './real-cargo.js';
@@ -84,14 +82,10 @@ export class TailBuffer {
   }
 
   toString(): string {
-    // The tail only feeds text surfaces (ledger rows, await/status JSON,
-    // MCP structured content) that would JSON-escape a raw ESC into a
-    // literal `\u001b[…`, so color is stripped here rather than at every
-    // consumer. A trimmed leading partial multi-byte UTF-8 character is
-    // acceptable (lossy head).
-    return stripAnsi(
-      Buffer.concat(this.#chunks.slice(this.#head), this.#bytes).toString('utf8'),
-    );
+    // Captured verbatim, ANSI included: whether color survives is decided
+    // per consumer at display time, not at capture time. A trimmed leading
+    // partial multi-byte UTF-8 character is acceptable (lossy head).
+    return Buffer.concat(this.#chunks.slice(this.#head), this.#bytes).toString('utf8');
   }
 }
 
@@ -172,13 +166,18 @@ const buildCommand = (options: ExecuteCargoOptions): ChildProcess.StandardComman
   const jobserver = cargoExecutablePattern.test(executable)
     ? (sharedJobserverDelta({ ...process.env, ...options.env }) ?? {})
     : {};
-  // The child's stdout/stderr are captured pipes headed for ledgers and
-  // JSON surfaces, never a TTY, so cargo/rustc color defaults to off (a
-  // stray `always` in the daemon's own environment must not paint into the
-  // capture). A caller's explicit CARGO_TERM_COLOR (`always` for a consumer
-  // that renders color, or their own `never`) stays authoritative.
+  // The child's stdout/stderr are captured pipes, so cargo's `auto` would
+  // mean never and every consumer — including a live TTY — would lose
+  // color. Capture color instead (`always`), and let each consumer decide
+  // at display time whether to keep or strip it. A caller's explicit
+  // CARGO_TERM_COLOR stays authoritative, and a caller NO_COLOR (when
+  // present without an explicit color choice) means never per its contract.
   const color =
-    options.env?.CARGO_TERM_COLOR === undefined ? { CARGO_TERM_COLOR: 'never' } : {};
+    options.env?.CARGO_TERM_COLOR !== undefined
+      ? {}
+      : options.env?.NO_COLOR !== undefined && options.env.NO_COLOR !== ''
+        ? { CARGO_TERM_COLOR: 'never' }
+        : { CARGO_TERM_COLOR: 'always' };
   // `env` is a delta on top of the caller environment; extendEnv keeps the
   // inherited PATH/HOME etc. (v4 replaces the environment by default).
   return ChildProcess.make(resolved, options.argv.slice(1), {
