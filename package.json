@@ -16,7 +16,8 @@
     "dev": "agent-bundle dev",
     "test": "rstest",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "validate": "agent-bundle validate"
+    "validate": "agent-bundle validate",
+    "prepare": "effect-tsgo patch --typescript --no-oxlint"
   },
   "dependencies": {
     "@agent-bundle/rsc-runtime": "https://pkg.pr.new/ScriptedAlchemy/agent-bundle/@agent-bundle/rsc-runtime@560124af",
@@ -32,12 +33,14 @@
     "zod": "4.4.3"
   },
   "devDependencies": {
+    "@effect/tsgo": "0.38.0",
     "@rstest/core": "0.11.10",
     "@types/node": "^22.18.0",
     "@types/proper-lockfile": "^4.1.4",
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.5",
+    "@typescript/native-preview": "^7.0.0-dev.20260707.2",
     "agent-bundle": "https://pkg.pr.new/ScriptedAlchemy/agent-bundle/agent-bundle@560124af",
-    "typescript": "^5.9.0"
+    "typescript": "7.0.2"
   }
 }
