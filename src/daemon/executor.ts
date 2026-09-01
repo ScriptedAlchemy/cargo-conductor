@@ -7,6 +7,8 @@ import * as Stream from 'effect/Stream';
 import * as ChildProcess from 'effect/unstable/process/ChildProcess';
 import type * as ChildProcessSpawner from 'effect/unstable/process/ChildProcessSpawner';
 
+import { cargoExecutablePattern } from './intent-normalizer.js';
+import { sharedJobserverDelta } from './jobserver.js';
 import { realCargoBin } from './real-cargo.js';
 
 export interface ExecuteCargoOptions {
@@ -153,11 +155,20 @@ const buildCommand = (options: ExecuteCargoOptions): ChildProcess.StandardComman
   // to itself. CARGO_CONDUCTOR_INSIDE lets the shim pass nested invocations
   // straight through to the real binary.
   const resolved = executable === 'cargo' ? realCargoBin(options.env ?? process.env) : executable;
+  // A daemon-spawned cargo joins the machine-wide jobserver pool, so
+  // concurrent lanes share one global rustc parallelism budget instead of
+  // each sizing a private machine-width pool. The delta is null when this
+  // process holds no armed pool (client passthroughs) or the invocation
+  // pins its own parallelism; the spread order keeps caller-provided
+  // MAKEFLAGS authoritative.
+  const jobserver = cargoExecutablePattern.test(executable)
+    ? (sharedJobserverDelta({ ...process.env, ...options.env }) ?? {})
+    : {};
   // `env` is a delta on top of the caller environment; extendEnv keeps the
   // inherited PATH/HOME etc. (v4 replaces the environment by default).
   return ChildProcess.make(resolved, options.argv.slice(1), {
     cwd: options.cwd,
-    env: { ...options.env, CARGO_CONDUCTOR_INSIDE: '1' },
+    env: { ...jobserver, ...options.env, CARGO_CONDUCTOR_INSIDE: '1' },
     extendEnv: true,
     stdin: 'pipe',
   });
