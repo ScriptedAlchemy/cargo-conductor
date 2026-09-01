@@ -9,15 +9,19 @@ import * as Layer from 'effect/Layer';
 import { Broker, BrokerLive } from './broker.js';
 import { DaemonConfig, resolveDaemonConfig } from './config.js';
 import type { DaemonConfigShape } from './config.js';
+import { CostModelLive } from './cost.js';
 import { Ledger, LedgerLive } from './ledger.js';
 import { makeConnectionHandler } from './server.js';
 import type { SingletonLockError } from './singleton.js';
 import { acquireSingletonLock } from './singleton.js';
+import { TopologyLive } from './topology.js';
 
 export const daemonVersion = '0.1.0';
 
 const appLayer = (config: DaemonConfigShape) =>
   BrokerLive.pipe(
+    Layer.provideMerge(CostModelLive),
+    Layer.provideMerge(TopologyLive),
     Layer.provideMerge(LedgerLive),
     Layer.provideMerge(Layer.succeed(DaemonConfig, config)),
     Layer.provideMerge(NodeContext.layer),

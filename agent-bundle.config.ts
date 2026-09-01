@@ -15,10 +15,19 @@ export default defineConfig({
   hooks: {
     afterTool: { handler: './src/hooks/after-shell.ts', timeout: 10, tools: ['shell'] },
     beforeTool: { handler: './src/hooks/before-shell.ts', timeout: 10, tools: ['shell'] },
+    stop: { handler: './src/hooks/stop-hold.ts', timeout: 900 },
   },
   mcp: {
     servers: {
-      conductor: {},
+      conductor: {
+        apps: {
+          dashboard: {
+            entry: './views/dashboard.ts',
+            resourceUri: 'ui://cargo-conductor/dashboard.html',
+            template: './views/dashboard.html',
+          },
+        },
+      },
     },
   },
   plugin: {

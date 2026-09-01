@@ -22,6 +22,13 @@ const stoppedSnapshot = {
 };
 
 const operations = (): ConductorOperations => ({
+  await: async (input) => ({
+    operation: 'await',
+    request: null,
+    summary: `${input.ticket} not found`,
+    ticket: input.ticket,
+    timedOut: false,
+  }),
   daemon: async (input) => ({
     message: input.subcommand === 'status' ? 'cargo-conductor daemon is not running' : `${input.subcommand} ok`,
     operation: 'daemon',
@@ -42,6 +49,17 @@ const operations = (): ConductorOperations => ({
     operation: 'log',
     requests: [],
     summary: 'no conductor requests recorded',
+  }),
+  request: async () => ({
+    operation: 'request',
+    summary: 'cc-1 submitted',
+    ticket: 'cc-1',
+  }),
+  result: async (input) => ({
+    operation: 'result',
+    request: null,
+    summary: `${input.ticket} not found`,
+    ticket: input.ticket,
   }),
   status: async () => ({
     ...stoppedSnapshot,

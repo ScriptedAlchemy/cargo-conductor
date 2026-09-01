@@ -8,7 +8,7 @@ describe('conductor application', () => {
     const cliNames = application.operations.flatMap((operation) =>
       operation.cli === undefined ? [] : [operation.cli.name],
     );
-    expect(cliNames).toEqual(['status', 'log', 'last', 'daemon']);
+    expect(cliNames).toEqual(['status', 'log', 'last', 'await', 'result', 'request', 'daemon']);
     expect(application.name).toBe('cargo-conductor');
   });
 });

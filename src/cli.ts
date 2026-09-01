@@ -4,6 +4,8 @@ import * as Effect from 'effect/Effect';
 import { createConductorApplication, type ConductorOperations } from './application.js';
 import { runExecClient, type RunExecOptions, type RunExecResult } from './client/exec.js';
 import { ExecUsageError, parseExecArgv } from './client/parse.js';
+import { resolveConductorArgv } from './hooks/paths.js';
+import { defaultShimDir, installCargoShim } from './shim/install.js';
 
 export type { ConductorOperations };
 
@@ -15,6 +17,9 @@ Commands:
   status [--limit N]            Show queue and in-flight cargo work
   log [--limit N]               Show recent conductor requests
   last                          Show the most recent request
+  await <ticket> [--max-wait-ms N]
+  result <ticket>
+  request [--session ID] -- <cargo command>
   daemon <run|start|stop|status>
       Control the conductor daemon
   install-shim                  Install an optional PATH cargo shim
@@ -55,6 +60,7 @@ const runExecCommand = async (argv: readonly string[], options: CliOptions): Pro
         argv: parsed.cargoArgv,
         cwd: parsed.cwd ?? process.cwd(),
         io,
+        ...(parsed.background ? { background: true } : {}),
         ...(parsed.host === undefined ? {} : { host: parsed.host }),
         ...(parsed.session === undefined ? {} : { session: parsed.session }),
       }),
@@ -92,8 +98,28 @@ export const runCli = async (
     return runExecCommand(rest, options);
   }
   if (command === 'install-shim') {
-    write('cargo-conductor: install-shim is not implemented yet.\n');
-    return 1;
+    const destIndex = rest.indexOf('--dir');
+    const destDir = destIndex === -1 ? defaultShimDir() : rest[destIndex + 1];
+    const force = rest.includes('--force');
+    const realCargo =
+      rest.includes('--real-cargo') ? rest[rest.indexOf('--real-cargo') + 1] : 'cargo';
+    if (destDir === undefined || realCargo === undefined) {
+      write('Usage: conductor install-shim [--dir DIR] [--real-cargo PATH] [--force]\n');
+      return 2;
+    }
+    try {
+      const installed = installCargoShim({
+        conductorArgv: resolveConductorArgv(),
+        destDir,
+        force,
+        realCargo,
+      });
+      write(`Installed cargo shim at ${installed.path}\nPrepend ${destDir} to PATH to catch cargo inside scripts.\n`);
+      return 0;
+    } catch (error) {
+      write(`${error instanceof Error ? error.message : String(error)}\n`);
+      return 1;
+    }
   }
   try {
     return await runRscCli(

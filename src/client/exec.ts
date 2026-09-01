@@ -25,6 +25,7 @@ import {
 import type { ExitMessage, ServerMessage } from '../daemon/protocol.js';
 
 import { ensureDaemonRunning } from './ensure-daemon.js';
+import { shouldAutoBackground } from './host-cap.js';
 import { formatProgressLine } from './progress.js';
 
 export interface ExecIo {
@@ -35,6 +36,7 @@ export interface ExecIo {
 export interface RunExecOptions {
   readonly argv: readonly string[];
   readonly autoSpawn?: boolean;
+  readonly background?: boolean;
   readonly config?: DaemonConfigShape;
   readonly cwd: string;
   readonly env?: Readonly<Record<string, string>>;
@@ -115,6 +117,7 @@ const handleServerMessage = (
   ticket: Ref.Ref<string | null>,
   phase: Ref.Ref<'queued' | 'running'>,
   finished: Deferred.Deferred<RunExecResult>,
+  detach: (ticket: string) => Effect.Effect<void>,
 ): Effect.Effect<void> =>
   Effect.gen(function* () {
     switch (message.type) {
@@ -134,8 +137,42 @@ const handleServerMessage = (
                 laneKey: message.laneKey,
                 position: message.position,
                 ticket: message.ticket,
+                ...(message.etaMs === undefined ? {} : { etaMs: message.etaMs }),
               }),
         );
+        if (options.background === true) {
+          writeProgress(
+            options.io,
+            formatProgressLine({
+              estimateMs: message.etaMs ?? null,
+              kind: 'background',
+              ticket: message.ticket,
+            }),
+          );
+          yield* Deferred.succeed(finished, {
+            exitCode: 0,
+            mode: 'brokered' as const,
+            ticket: message.ticket,
+          });
+        } else if (
+          message.etaMs !== undefined &&
+          shouldAutoBackground(message.etaMs, options.host)
+        ) {
+          writeProgress(
+            options.io,
+            formatProgressLine({
+              estimateMs: message.etaMs,
+              kind: 'background',
+              ticket: message.ticket,
+            }),
+          );
+          yield* detach(message.ticket);
+          yield* Deferred.succeed(finished, {
+            exitCode: 0,
+            mode: 'brokered' as const,
+            ticket: message.ticket,
+          });
+        }
         return;
       case 'requeued':
         yield* Ref.set(phase, 'queued');
@@ -174,6 +211,11 @@ const handleServerMessage = (
       case 'pong':
       case 'status-result':
       case 'shutting-down':
+      case 'detach-result':
+      case 'await-result':
+      case 'result-result':
+      case 'session-pending-result':
+      case 'session-completed-result':
         return;
       default: {
         const exhaustive: never = message;
@@ -194,6 +236,7 @@ const streamBrokered = (
     const ticket = yield* Ref.make<string | null>(null);
     const phase = yield* Ref.make<'queued' | 'running'>('queued');
     const submittedAtMs = Date.now();
+    const id = shortId();
 
     const socket = yield* NodeSocket.makeNet({
       openTimeout: 2_000,
@@ -226,7 +269,11 @@ const streamBrokered = (
             for (const line of lines.push(data)) {
               const message = parseServerMessageLine(line);
               received.push(message);
-              yield* handleServerMessage(options, message, ticket, phase, finished);
+              yield* handleServerMessage(options, message, ticket, phase, finished, (target) =>
+                write(encodeClientMessage({ type: 'detach', id: `${id}-detach`, ticket: target })).pipe(
+                  Effect.ignore,
+                ),
+              );
             }
           }),
         { onOpen: Deferred.succeed(opened, undefined).pipe(Effect.asVoid) },
@@ -255,7 +302,6 @@ const streamBrokered = (
     const pumpFiber = yield* Effect.forkScoped(pump);
     yield* Deferred.await(opened).pipe(Effect.raceFirst(Fiber.join(pumpFiber)));
 
-    const id = shortId();
     yield* write(
       encodeClientMessage({
         type: 'exec',
@@ -266,6 +312,7 @@ const streamBrokered = (
         ...(options.host === undefined ? {} : { host: options.host }),
         ...(options.session === undefined ? {} : { session: options.session }),
         ...(options.workspaceRoot === undefined ? {} : { workspaceRoot: options.workspaceRoot }),
+        ...(options.background === true ? { background: true } : {}),
       }),
     ).pipe(Effect.mapError((error) => mapOpenError(error, config.socketPath)));
 

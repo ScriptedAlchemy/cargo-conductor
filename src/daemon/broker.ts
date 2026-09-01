@@ -8,18 +8,27 @@ import * as Layer from 'effect/Layer';
 import * as Queue from 'effect/Queue';
 import * as Ref from 'effect/Ref';
 
+import { batchCompatible, extraPackagesFor, withExtraPackages } from './batch.js';
 import { hasLibKind, parseCargoJsonLine } from './cargo-json.js';
 import { DaemonConfig } from './config.js';
+import { CostModel } from './cost.js';
 import { attachModeFor } from './coverage.js';
 import { executeCargo, TailBuffer } from './executor.js';
 import type { ExecutionResult } from './executor.js';
 import { normalizeCargoIntent } from './intent-normalizer.js';
 import type { NormalizedCargoIntent } from './intent-normalizer.js';
 import { Ledger } from './ledger.js';
-import type { LedgerApi } from './ledger.js';
-import type { AttachMode, FinishedStatus, LaneStatus, StatusReport } from './protocol.js';
+import type {
+  AttachMode,
+  FinishedStatus,
+  LaneStatus,
+  RequestRecord,
+  StatusReport,
+} from './protocol.js';
 import { ReplayBuffer } from './replay.js';
 import type { ReplayChunk } from './replay.js';
+import { selectNextIndex } from './scheduler.js';
+import { Topology } from './topology.js';
 import { findConfiguredTargetDir, locateWorkspaceRoot } from './workspace.js';
 
 export interface SubmitInput {
@@ -29,6 +38,8 @@ export interface SubmitInput {
   readonly env?: Readonly<Record<string, string>> | undefined;
   readonly session?: string | undefined;
   readonly host?: string | undefined;
+  readonly background?: boolean | undefined;
+  readonly holdStop?: boolean | undefined;
 }
 
 export interface StartedInfo {
@@ -75,6 +86,8 @@ export interface SubmitResult {
   readonly position: number;
   readonly attachedTo?: string;
   readonly attachMode?: AttachMode;
+  /** Cost-model estimate for queued (non-attached) requests. */
+  readonly etaMs?: number;
 }
 
 export interface KillOptions {
@@ -85,6 +98,11 @@ export class CargoIntentError extends Data.TaggedError('CargoIntentError')<{
   readonly message: string;
 }> {}
 
+export interface AwaitTicketResult {
+  readonly record: RequestRecord | null;
+  readonly timedOut: boolean;
+}
+
 export interface BrokerApi {
   readonly submit: (
     input: SubmitInput,
@@ -92,6 +110,13 @@ export interface BrokerApi {
   ) => Effect.Effect<SubmitResult, CargoIntentError>;
   readonly kill: (ticket: string, options?: KillOptions) => Effect.Effect<boolean>;
   readonly report: (recentLimit?: number) => Effect.Effect<StatusReport>;
+  readonly getTicket: (ticket: string) => Effect.Effect<RequestRecord | null>;
+  readonly awaitTicket: (ticket: string, maxWaitMs: number) => Effect.Effect<AwaitTicketResult>;
+  readonly sessionPending: (session: string) => Effect.Effect<readonly RequestRecord[]>;
+  readonly sessionCompleted: (
+    session: string,
+    sinceMs: number,
+  ) => Effect.Effect<readonly RequestRecord[]>;
 }
 
 export class Broker extends Context.Tag('cargo-conductor/Broker')<Broker, BrokerApi>() {}
@@ -136,12 +161,16 @@ interface Job {
   readonly attachments: Map<string, Attachment>;
   /** Closed (in the same sync frame as settlement) before exit fan-out begins. */
   readonly attachGate: { open: boolean };
-  /** Argv actually executed (demux appends --message-format). */
-  readonly execArgv: readonly string[];
+  /** Argv actually executed (demux appends --message-format; batching may add -p). */
+  execArgv: readonly string[];
   /** Non-null when the run is demultiplexed through cargo's JSON stream. */
   readonly demux: DemuxState | null;
   /** Leader-view output tail; authoritative for the ledger row. */
   readonly tail: TailBuffer;
+  /** Cost-model estimate at submission; feeds lane scheduling. */
+  readonly estimateMs: number;
+  /** Fail-fast signal captured at submission (topology stat, cached). */
+  readonly editedRecently: boolean;
 }
 
 const demuxSubcommands = new Set(['build', 'check', 'clippy']);
@@ -197,7 +226,10 @@ interface Lane {
   readonly key: string;
   readonly workspaceRoot: string;
   readonly targetDir: string;
-  readonly queue: Queue.Queue<Job>;
+  /** Pending jobs; the worker picks by schedule score, not arrival order. */
+  readonly pending: Job[];
+  /** One token per pending job; wakes the lane worker. */
+  readonly wake: Queue.Queue<void>;
   readonly running: Ref.Ref<string | null>;
 }
 
@@ -206,6 +238,9 @@ export const laneKeyFor = (workspaceRoot: string, targetDir: string): string =>
   JSON.stringify([workspaceRoot, targetDir]);
 
 const invalidLaneKey = 'invalid';
+
+const isTerminalStatus = (status: string): boolean =>
+  status === 'done' || status === 'failed' || status === 'killed';
 
 const guarded = (effect: Effect.Effect<void>): Effect.Effect<void> =>
   Effect.catchAllCause(effect, () => Effect.void);
@@ -218,12 +253,14 @@ const requeueReasonFor = (mode: AttachMode, status: FinishedStatus): string =>
 export const BrokerLive: Layer.Layer<
   Broker,
   never,
-  DaemonConfig | Ledger | CommandExecutor.CommandExecutor
+  DaemonConfig | Ledger | CostModel | Topology | CommandExecutor.CommandExecutor
 > = Layer.scoped(
   Broker,
   Effect.gen(function* () {
     const config = yield* DaemonConfig;
     const ledger = yield* Ledger;
+    const costModel = yield* CostModel;
+    const topology = yield* Topology;
     const commandExecutor = yield* CommandExecutor.CommandExecutor;
     const daemonScope = yield* Effect.scope;
     const startedAtMs = Date.now();
@@ -232,6 +269,23 @@ export const BrokerLive: Layer.Layer<
     const laneCreation = yield* Effect.makeSemaphore(1);
     const lanes = new Map<string, Lane>();
     const inFlight = new Map<string, InFlightEntry>();
+    const ticketWaiters = new Map<string, Deferred.Deferred<RequestRecord>[]>();
+
+    const notifyWaiters = (ticket: string): Effect.Effect<void> =>
+      Effect.gen(function* () {
+        const waiters = ticketWaiters.get(ticket) ?? [];
+        if (waiters.length === 0) {
+          return;
+        }
+        ticketWaiters.delete(ticket);
+        const record = yield* ledger.getRequestByTicket(ticket);
+        if (record === null) {
+          return;
+        }
+        yield* Effect.forEach(waiters, (waiter) => Deferred.succeed(waiter, record), {
+          discard: true,
+        });
+      });
 
     /**
      * Fans one output chunk to the leader, the replay buffer, the leader-view
@@ -370,6 +424,7 @@ export const BrokerLive: Layer.Layer<
           outputTail,
           error: exit.error,
         });
+        yield* notifyWaiters(attachment.ticket);
         const pending = yield* Effect.sync(() => {
           const batch = [...attachment.pendingLive];
           attachment.pendingLive.length = 0;
@@ -439,6 +494,10 @@ export const BrokerLive: Layer.Layer<
         const killSignal = yield* Deferred.make<void>();
         const state = yield* Ref.make<JobState>('queued');
         const plan = planDemux(intent, input.argv);
+        const estimate = yield* costModel.estimate(intent);
+        const editedRecently = yield* topology
+          .editedRecently(intent.workspaceRoot, intent.packages)
+          .pipe(Effect.catchAllCause(() => Effect.succeed(false)));
         return {
           id,
           ticket,
@@ -455,7 +514,96 @@ export const BrokerLive: Layer.Layer<
           execArgv: plan.execArgv,
           demux: plan.demux,
           tail: new TailBuffer(config.outputTailBytes),
+          estimateMs: estimate.estimateMs,
+          editedRecently,
         };
+      });
+
+    /** Push to the lane's pending set and wake the worker (one token per job). */
+    const enqueueJob = (lane: Lane, job: Job): Effect.Effect<number> =>
+      Effect.gen(function* () {
+        const position = yield* Effect.sync(() => {
+          lane.pending.push(job);
+          return lane.pending.length - 1;
+        });
+        yield* Queue.offer(lane.wake, undefined);
+        return position;
+      });
+
+    /** Splices out the best-scored pending job under the scheduling policy. */
+    const takeNextJob = (lane: Lane): Effect.Effect<Job | undefined> =>
+      Effect.sync(() => {
+        const nowMs = Date.now();
+        const index = selectNextIndex(
+          lane.pending.map((candidate) => ({
+            id: candidate.id,
+            estimateMs: candidate.estimateMs,
+            waiters: candidate.attachments.size,
+            ageMs: nowMs - candidate.queuedAtMs,
+            editedRecently: candidate.editedRecently,
+          })),
+        );
+        return index === -1 ? undefined : lane.pending.splice(index, 1)[0];
+      });
+
+    /**
+     * Absorbs other queued compatible check/build/clippy jobs onto `leader`
+     * as coverage attachments and expands the leader argv with their `-p`s.
+     */
+    const foldBatch = (lane: Lane, leader: Job): Effect.Effect<void> =>
+      Effect.gen(function* () {
+        if (!config.batchEnabled) {
+          return;
+        }
+        const extras: string[] = [];
+        const absorbed: Job[] = [];
+        yield* Effect.sync(() => {
+          for (let index = lane.pending.length - 1; index >= 0; index -= 1) {
+            const candidate = lane.pending[index];
+            if (candidate === undefined || !batchCompatible(leader.intent, candidate.intent)) {
+              continue;
+            }
+            extras.push(...extraPackagesFor(leader.intent, candidate.intent));
+            absorbed.push(candidate);
+            lane.pending.splice(index, 1);
+            inFlight.delete(candidate.ticket);
+          }
+        });
+        const atMs = Date.now();
+        yield* Effect.forEach(
+          absorbed,
+          (candidate) =>
+            Effect.gen(function* () {
+              const attachment: Attachment = {
+                id: candidate.id,
+                ticket: candidate.ticket,
+                mode: 'coverage',
+                input: candidate.input,
+                intent: candidate.intent,
+                callbacks: candidate.callbacks,
+                createdAtMs: candidate.queuedAtMs,
+                attachedAtMs: atMs,
+                live: false,
+                startNotified: false,
+                pendingLive: [],
+              };
+              yield* Effect.sync(() => {
+                leader.attachments.set(attachment.ticket, attachment);
+                inFlight.set(attachment.ticket, { kind: 'attachment', leader, attachment });
+              });
+              yield* ledger.markAttached(candidate.id, {
+                atMs,
+                leaderTicket: leader.ticket,
+                mode: 'coverage',
+              });
+            }),
+          { discard: true },
+        );
+        if (extras.length > 0) {
+          yield* Effect.sync(() => {
+            leader.execArgv = withExtraPackages(leader.execArgv, extras);
+          });
+        }
       });
 
     /** Sync-removes one attachment from its leader; returns false if already gone. */
@@ -663,7 +811,7 @@ export const BrokerLive: Layer.Layer<
           atMs,
         );
         yield* Effect.sync(() => inFlight.set(job.ticket, { kind: 'leader', job }));
-        yield* Queue.offer(lane.queue, job);
+        yield* enqueueJob(lane, job);
       });
 
     /** Mirrors or requeues every attachment after the leader reached `status`. */
@@ -747,6 +895,7 @@ export const BrokerLive: Layer.Layer<
           atMs,
           error: 'killed while queued',
         });
+        yield* notifyWaiters(job.ticket);
         yield* finishExit(lane, job);
         yield* guarded(
           job.callbacks.onExit({
@@ -793,10 +942,22 @@ export const BrokerLive: Layer.Layer<
             }),
           { discard: true },
         );
+        // Split the machine between admitted builds unless the caller chose
+        // its own parallelism (flag or env). Uniform for all callers, so it
+        // never fragments intent identity.
+        const grantsJobs =
+          config.jobsGrant > 0 &&
+          job.input.env?.CARGO_BUILD_JOBS === undefined &&
+          !job.input.argv.some(
+            (argument) => argument === '-j' || argument.startsWith('--jobs') || /^-j\d+$/u.test(argument),
+          );
+        const execEnv = grantsJobs
+          ? { ...job.input.env, CARGO_BUILD_JOBS: String(config.jobsGrant) }
+          : job.input.env;
         const result: ExecutionResult = yield* executeCargo({
           argv: job.execArgv,
           cwd: job.input.cwd,
-          env: job.input.env,
+          env: execEnv,
           killSignal: job.killSignal,
           // The broker-side tail (fed by emitChunk) is authoritative: in
           // demux mode the executor's own tail would capture raw JSON.
@@ -826,6 +987,9 @@ export const BrokerLive: Layer.Layer<
         );
         const finishedAtMs = Date.now();
         const outputTail = job.tail.toString();
+        if (result.outcome === 'done') {
+          yield* costModel.recordOutcome(job.intent.key, finishedAtMs - runStartedAtMs);
+        }
         yield* ledger.markFinished(job.id, {
           status: result.outcome,
           atMs: finishedAtMs,
@@ -834,6 +998,7 @@ export const BrokerLive: Layer.Layer<
           outputTail,
           error: result.error,
         });
+        yield* notifyWaiters(job.ticket);
         yield* finishExit(lane, job);
         yield* guarded(
           job.callbacks.onExit({
@@ -870,7 +1035,12 @@ export const BrokerLive: Layer.Layer<
     const laneWorker = (lane: Lane): Effect.Effect<never> =>
       Effect.forever(
         Effect.gen(function* () {
-          const job = yield* Queue.take(lane.queue);
+          yield* Queue.take(lane.wake);
+          const job = yield* takeNextJob(lane);
+          if (job === undefined) {
+            return;
+          }
+          yield* foldBatch(lane, job);
           yield* processJob(lane, job).pipe(
             Effect.catchAllCause((cause) =>
               Effect.gen(function* () {
@@ -904,9 +1074,9 @@ export const BrokerLive: Layer.Layer<
           if (existing !== undefined) {
             return existing;
           }
-          const queue = yield* Queue.unbounded<Job>();
+          const wake = yield* Queue.unbounded<void>();
           const running = yield* Ref.make<string | null>(null);
-          const lane: Lane = { key, workspaceRoot, targetDir, queue, running };
+          const lane: Lane = { key, workspaceRoot, targetDir, pending: [], wake, running };
           lanes.set(key, lane);
           yield* Effect.forkIn(laneWorker(lane), daemonScope);
           return lane;
@@ -983,6 +1153,9 @@ export const BrokerLive: Layer.Layer<
         );
         return yield* Effect.uninterruptible(
           Effect.gen(function* () {
+            const holdStop =
+              input.holdStop ?? (input.session !== undefined && input.background !== true);
+            const estimate = yield* costModel.estimate(normalized);
             const created = yield* ledger.createRequest({
               createdAtMs,
               session: input.session ?? null,
@@ -994,6 +1167,9 @@ export const BrokerLive: Layer.Layer<
               argv: input.argv,
               intentKey: normalized.key,
               intentJson: JSON.stringify(normalized),
+              background: input.background === true,
+              holdStop,
+              estimateMs: estimate.estimateMs,
             });
             const attachment: Attachment = {
               id: created.id,
@@ -1045,10 +1221,71 @@ export const BrokerLive: Layer.Layer<
             );
             yield* Effect.sync(() => inFlight.set(job.ticket, { kind: 'leader', job }));
             yield* ledger.markQueued(created.id, createdAtMs);
-            const position = yield* Queue.size(lane.queue);
-            yield* Queue.offer(lane.queue, job);
-            return { ticket: created.ticket, laneKey, position };
+            const position = yield* enqueueJob(lane, job);
+            return { ticket: created.ticket, laneKey, position, etaMs: job.estimateMs };
           }),
+        );
+      });
+
+    const getTicket = (ticket: string): Effect.Effect<RequestRecord | null> =>
+      ledger.getRequestByTicket(ticket);
+
+    const awaitTicket = (ticket: string, maxWaitMs: number): Effect.Effect<AwaitTicketResult> =>
+      Effect.gen(function* () {
+        const current = yield* ledger.getRequestByTicket(ticket);
+        if (current === null) {
+          return { record: null, timedOut: false };
+        }
+        if (isTerminalStatus(current.status)) {
+          return { record: current, timedOut: false };
+        }
+        const waiter = yield* Deferred.make<RequestRecord>();
+        yield* Effect.sync(() => {
+          const existing = ticketWaiters.get(ticket) ?? [];
+          existing.push(waiter);
+          ticketWaiters.set(ticket, existing);
+        });
+        return yield* Deferred.await(waiter).pipe(
+          Effect.timeout(`${Math.max(0, maxWaitMs)} millis`),
+          Effect.map((record) => ({ record, timedOut: false })),
+          Effect.catchTag('TimeoutException', () =>
+            Effect.gen(function* () {
+              yield* Effect.sync(() => {
+                const remaining = (ticketWaiters.get(ticket) ?? []).filter((item) => item !== waiter);
+                if (remaining.length === 0) {
+                  ticketWaiters.delete(ticket);
+                } else {
+                  ticketWaiters.set(ticket, remaining);
+                }
+              });
+              const record = yield* ledger.getRequestByTicket(ticket);
+              return {
+                record,
+                timedOut: record === null || !isTerminalStatus(record.status),
+              };
+            }),
+          ),
+        );
+      });
+
+    const sessionPending = (session: string): Effect.Effect<readonly RequestRecord[]> =>
+      Effect.gen(function* () {
+        const active = yield* ledger.activeRequests();
+        return active.filter((record) => record.session === session && record.holdStop);
+      });
+
+    const sessionCompleted = (
+      session: string,
+      sinceMs: number,
+    ): Effect.Effect<readonly RequestRecord[]> =>
+      Effect.gen(function* () {
+        const recent = yield* ledger.recentRequests(200);
+        return recent.filter(
+          (record) =>
+            record.session === session &&
+            record.finishedAtMs !== null &&
+            record.finishedAtMs >= sinceMs &&
+            isTerminalStatus(record.status),
         );
       });
 
@@ -1100,9 +1337,7 @@ export const BrokerLive: Layer.Layer<
       Effect.gen(function* () {
         const laneStatuses: LaneStatus[] = [];
         for (const lane of lanes.values()) {
-          // Queue.size is negative while the lane worker is parked in
-          // Queue.take (suspended takers), which is not queued work.
-          const queued = Math.max(0, yield* Queue.size(lane.queue));
+          const queued = lane.pending.length;
           const runningTicket = yield* Ref.get(lane.running);
           laneStatuses.push({
             key: lane.key,
@@ -1125,6 +1360,14 @@ export const BrokerLive: Layer.Layer<
         };
       });
 
-    return { submit, kill, report } satisfies BrokerApi;
+    return {
+      submit,
+      kill,
+      report,
+      getTicket,
+      awaitTicket,
+      sessionPending,
+      sessionCompleted,
+    } satisfies BrokerApi;
   }),
 );

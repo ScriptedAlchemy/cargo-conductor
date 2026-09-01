@@ -137,8 +137,11 @@ describe('agent-bundle hooks simulate', () => {
         const hooks = await listHooks({ artifact: artifactRoot, root: repoRoot, target: 'plugin' });
         const before = hooks.find((hook) => hook.event === 'beforeTool');
         const after = hooks.find((hook) => hook.event === 'afterTool');
+        const stop = hooks.find((hook) => hook.event === 'stop');
         expect(before).toBeDefined();
         expect(after).toBeDefined();
+        expect(stop).toBeDefined();
+        expect(stop?.timeout).toBe(900);
 
         const rewritten = await simulateHook({
           artifact: artifactRoot,
@@ -171,6 +174,16 @@ describe('agent-bundle hooks simulate', () => {
         );
         expect(events).toContain('"phase":"afterTool"');
         expect(events).toContain('cargo test -p foo');
+
+        const stopped = await simulateHook({
+          artifact: artifactRoot,
+          hook: stop!.name,
+          input: loadJson('canonical-stop.json'),
+          root: repoRoot,
+          target: 'plugin',
+        });
+        // Daemon is down: stop-hold fails open.
+        expect(stopped).toEqual({ outcome: 'continue' });
       } finally {
         if (previousHost === undefined) {
           delete process.env.AGENT_BUNDLE_HOOK_HOST;

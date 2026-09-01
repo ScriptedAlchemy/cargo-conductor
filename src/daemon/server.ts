@@ -73,6 +73,8 @@ export const makeConnectionHandler =
                   env: message.env,
                   session: message.session,
                   host: message.host,
+                  background: message.background,
+                  holdStop: message.holdStop,
                 },
                 {
                   onStarted: (info) =>
@@ -119,7 +121,9 @@ export const makeConnectionHandler =
               });
               return;
             }
-            yield* Effect.sync(() => ownTickets.add(submitted.right.ticket));
+            if (message.background !== true) {
+              yield* Effect.sync(() => ownTickets.add(submitted.right.ticket));
+            }
             yield* send({
               type: 'ack',
               id: message.id,
@@ -132,6 +136,7 @@ export const makeConnectionHandler =
               ...(submitted.right.attachMode === undefined
                 ? {}
                 : { attachMode: submitted.right.attachMode }),
+              ...(submitted.right.etaMs === undefined ? {} : { etaMs: submitted.right.etaMs }),
             });
           });
 
@@ -156,6 +161,47 @@ export const makeConnectionHandler =
                 pid: process.pid,
                 startedAtMs: options.startedAtMs,
                 version: options.version,
+              });
+            case 'detach':
+              return Effect.gen(function* () {
+                const detached = ownTickets.delete(message.ticket);
+                yield* send({
+                  type: 'detach-result',
+                  id: message.id,
+                  ticket: message.ticket,
+                  detached,
+                });
+              });
+            case 'await':
+              return Effect.gen(function* () {
+                const waited = yield* options.broker.awaitTicket(
+                  message.ticket,
+                  message.maxWaitMs ?? 30_000,
+                );
+                yield* send({
+                  type: 'await-result',
+                  id: message.id,
+                  request: waited.record,
+                  timedOut: waited.timedOut,
+                });
+              });
+            case 'result':
+              return Effect.gen(function* () {
+                const request = yield* options.broker.getTicket(message.ticket);
+                yield* send({ type: 'result-result', id: message.id, request });
+              });
+            case 'session-pending':
+              return Effect.gen(function* () {
+                const requests = yield* options.broker.sessionPending(message.session);
+                yield* send({ type: 'session-pending-result', id: message.id, requests });
+              });
+            case 'session-completed':
+              return Effect.gen(function* () {
+                const requests = yield* options.broker.sessionCompleted(
+                  message.session,
+                  message.sinceMs,
+                );
+                yield* send({ type: 'session-completed-result', id: message.id, requests });
               });
             case 'shutdown':
               // Written directly (not via the queue) so the ack is flushed

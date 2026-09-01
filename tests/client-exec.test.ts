@@ -112,7 +112,7 @@ describe('runExecClient', () => {
         expect(result.ticket).toMatch(/^cc-\d+$/u);
         expect(collected.stdout()).toContain('fake-out:check');
         expect(collected.stderr()).toContain('fake-err:check');
-        expect(collected.stderr()).toMatch(/ticket cc-\d+ queued \(0 ahead\)/u);
+        expect(collected.stderr()).toMatch(/ticket cc-\d+ queued \(0 ahead/u);
         expect(collected.stderr()).toMatch(/ticket cc-\d+ started \(waited \d+ms\)/u);
       }),
     ));

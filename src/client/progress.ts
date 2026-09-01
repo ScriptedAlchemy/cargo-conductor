@@ -4,6 +4,7 @@ export type ProgressEvent =
       readonly laneKey: string;
       readonly position: number;
       readonly ticket: string;
+      readonly etaMs?: number;
     }
   | {
       readonly kind: 'attached';
@@ -30,6 +31,11 @@ export type ProgressEvent =
   | {
       readonly kind: 'passthrough';
       readonly reason: string;
+    }
+  | {
+      readonly kind: 'background';
+      readonly estimateMs: number | null;
+      readonly ticket: string;
     };
 
 const prefix = '[cargo-conductor]';
@@ -38,8 +44,11 @@ const formatElapsed = (elapsedMs: number): string => `${Math.floor(elapsedMs / 1
 
 export const formatProgressLine = (event: ProgressEvent): string => {
   switch (event.kind) {
-    case 'queued':
-      return `${prefix} ticket ${event.ticket} queued (${event.position} ahead)\n`;
+    case 'queued': {
+      const eta =
+        event.etaMs === undefined ? '' : `, eta ~${Math.max(1, Math.round(event.etaMs / 1000))}s`;
+      return `${prefix} ticket ${event.ticket} queued (${event.position} ahead${eta})\n`;
+    }
     case 'attached':
       return event.mode === 'identity'
         ? `${prefix} ticket ${event.ticket} attached to ${event.leaderTicket} (identical run in flight; replaying its output)\n`
@@ -52,6 +61,13 @@ export const formatProgressLine = (event: ProgressEvent): string => {
       return `${prefix} ticket ${event.ticket} still ${event.phase} (${formatElapsed(event.elapsedMs)})\n`;
     case 'passthrough':
       return `${prefix} ${event.reason}; running cargo directly\n`;
+    case 'background': {
+      const eta =
+        event.estimateMs === null
+          ? ''
+          : ` (ETA ${Math.max(1, Math.round(event.estimateMs / 1000))}s)`;
+      return `${prefix} ticket ${event.ticket} submitted in background${eta}\nRetrieve with: conductor result ${event.ticket}\nAwait with: conductor await ${event.ticket}\n`;
+    }
     default: {
       const exhaustive: never = event;
       return exhaustive;

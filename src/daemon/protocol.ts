@@ -42,6 +42,9 @@ export interface RequestRecord {
   /** Leader ticket when this request was served by attaching to another run. */
   readonly attachedTo: string | null;
   readonly attachMode: AttachMode | null;
+  readonly background: boolean;
+  readonly holdStop: boolean;
+  readonly estimateMs: number | null;
 }
 
 export interface TransitionRecord {
@@ -60,6 +63,40 @@ export const execRequestSchema = z.object({
   env: z.record(z.string(), z.string()).optional(),
   session: z.string().optional(),
   host: z.string().optional(),
+  background: z.boolean().optional(),
+  holdStop: z.boolean().optional(),
+});
+
+export const detachRequestSchema = z.object({
+  type: z.literal('detach'),
+  id: z.string().min(1),
+  ticket: z.string().min(1),
+});
+
+export const awaitRequestSchema = z.object({
+  type: z.literal('await'),
+  id: z.string().min(1),
+  ticket: z.string().min(1),
+  maxWaitMs: z.number().int().min(0).max(900_000).optional(),
+});
+
+export const resultRequestSchema = z.object({
+  type: z.literal('result'),
+  id: z.string().min(1),
+  ticket: z.string().min(1),
+});
+
+export const sessionPendingRequestSchema = z.object({
+  type: z.literal('session-pending'),
+  id: z.string().min(1),
+  session: z.string().min(1),
+});
+
+export const sessionCompletedRequestSchema = z.object({
+  type: z.literal('session-completed'),
+  id: z.string().min(1),
+  session: z.string().min(1),
+  sinceMs: z.number().int().min(0),
 });
 
 export const killRequestSchema = z.object({
@@ -86,6 +123,11 @@ export const shutdownRequestSchema = z.object({
 
 export const clientMessageSchema = z.discriminatedUnion('type', [
   execRequestSchema,
+  detachRequestSchema,
+  awaitRequestSchema,
+  resultRequestSchema,
+  sessionPendingRequestSchema,
+  sessionCompletedRequestSchema,
   killRequestSchema,
   statusRequestSchema,
   pingRequestSchema,
@@ -93,6 +135,11 @@ export const clientMessageSchema = z.discriminatedUnion('type', [
 ]);
 
 export type ExecRequest = z.infer<typeof execRequestSchema>;
+export type DetachRequest = z.infer<typeof detachRequestSchema>;
+export type AwaitRequest = z.infer<typeof awaitRequestSchema>;
+export type ResultRequest = z.infer<typeof resultRequestSchema>;
+export type SessionPendingRequest = z.infer<typeof sessionPendingRequestSchema>;
+export type SessionCompletedRequest = z.infer<typeof sessionCompletedRequestSchema>;
 export type KillRequest = z.infer<typeof killRequestSchema>;
 export type StatusRequest = z.infer<typeof statusRequestSchema>;
 export type PingRequest = z.infer<typeof pingRequestSchema>;
@@ -132,6 +179,8 @@ export interface AckMessage {
   /** Present when the request attached to an in-flight leader instead of queueing. */
   readonly attachedTo?: string;
   readonly attachMode?: AttachMode;
+  /** Cost-model runtime estimate for queued requests. */
+  readonly etaMs?: number;
 }
 
 /**
@@ -206,6 +255,38 @@ export interface ErrorMessage {
   readonly message: string;
 }
 
+export interface DetachResultMessage {
+  readonly type: 'detach-result';
+  readonly id: string;
+  readonly ticket: string;
+  readonly detached: boolean;
+}
+
+export interface AwaitResultMessage {
+  readonly type: 'await-result';
+  readonly id: string;
+  readonly request: RequestRecord | null;
+  readonly timedOut: boolean;
+}
+
+export interface ResultResultMessage {
+  readonly type: 'result-result';
+  readonly id: string;
+  readonly request: RequestRecord | null;
+}
+
+export interface SessionPendingResultMessage {
+  readonly type: 'session-pending-result';
+  readonly id: string;
+  readonly requests: readonly RequestRecord[];
+}
+
+export interface SessionCompletedResultMessage {
+  readonly type: 'session-completed-result';
+  readonly id: string;
+  readonly requests: readonly RequestRecord[];
+}
+
 export type ServerMessage =
   | AckMessage
   | RequeuedMessage
@@ -216,7 +297,12 @@ export type ServerMessage =
   | PongMessage
   | StatusResultMessage
   | ShuttingDownMessage
-  | ErrorMessage;
+  | ErrorMessage
+  | DetachResultMessage
+  | AwaitResultMessage
+  | ResultResultMessage
+  | SessionPendingResultMessage
+  | SessionCompletedResultMessage;
 
 export const encodeServerMessage = (message: ServerMessage): string =>
   `${JSON.stringify(message)}\n`;

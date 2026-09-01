@@ -1,6 +1,7 @@
 import { defineOperation, type RscOperationContext } from '@agent-bundle/rsc-runtime/plugin';
 import * as Effect from 'effect/Effect';
 
+import { APP_RESOURCE_URI } from '../constants.js';
 import { loadConductorSnapshot } from '../query.js';
 import { ConductorResult } from '../result.js';
 
@@ -90,6 +91,7 @@ export const inspectOperations = (operations: InspectOperations) => [
     id: 'status',
     inputSchema: limitInputSchema,
     mcp: {
+      _meta: { ui: { resourceUri: APP_RESOURCE_URI } },
       description: 'Show the cargo-conductor daemon queue and in-flight cargo work.',
       name: 'conductor_status',
       readOnly: true,

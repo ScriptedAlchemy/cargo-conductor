@@ -1,0 +1,7 @@
+{
+  "cwd": "/tmp/ws",
+  "lastAssistantMessage": "stopping",
+  "sessionId": "sess-canonical",
+  "stopHookActive": false,
+  "transcriptPath": "/tmp/transcript.json"
+}

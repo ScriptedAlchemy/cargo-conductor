@@ -39,6 +39,9 @@ export const requestRecordSchema = z
     ticket: z.string(),
     waitMs: z.number().nullable(),
     workspaceRoot: z.string(),
+    background: z.boolean(),
+    holdStop: z.boolean(),
+    estimateMs: z.number().nullable(),
   })
   .strict() as z.ZodType<RequestRecord>;
 
@@ -162,5 +165,71 @@ export const daemonResultSchema = z
   })
   .strict() as z.ZodType<DaemonResult>;
 
+export const ticketInputSchema = z
+  .object({
+    ticket: z.string().min(1),
+    maxWaitMs: z.number().int().min(0).max(900_000).optional(),
+  })
+  .strict();
+
+export const awaitResultSchema = z
+  .object({
+    operation: z.literal('await'),
+    request: requestRecordSchema.nullable(),
+    summary: z.string(),
+    ticket: z.string(),
+    timedOut: z.boolean(),
+  })
+  .strict();
+
+export const resultFetchResultSchema = z
+  .object({
+    operation: z.literal('result'),
+    request: requestRecordSchema.nullable(),
+    summary: z.string(),
+    ticket: z.string(),
+  })
+  .strict();
+
+export const requestInputSchema = z
+  .object({
+    argv: z.array(z.string()).min(1),
+    cwd: z.string().min(1),
+    session: z.string().optional(),
+    host: z.string().optional(),
+  })
+  .strict();
+
+export const requestResultSchema = z
+  .object({
+    operation: z.literal('request'),
+    summary: z.string(),
+    ticket: z.string().nullable(),
+  })
+  .strict();
+
+export interface AwaitResult {
+  readonly operation: 'await';
+  readonly request: RequestRecord | null;
+  readonly summary: string;
+  readonly ticket: string;
+  readonly timedOut: boolean;
+}
+
+export interface ResultFetchResult {
+  readonly operation: 'result';
+  readonly request: RequestRecord | null;
+  readonly summary: string;
+  readonly ticket: string;
+}
+
+export interface RequestSubmitResult {
+  readonly operation: 'request';
+  readonly summary: string;
+  readonly ticket: string | null;
+}
+
 export type LimitInput = z.infer<typeof limitInputSchema>;
 export type DaemonInput = z.infer<typeof daemonInputSchema>;
+export type TicketInput = z.infer<typeof ticketInputSchema>;
+export type RequestInput = z.infer<typeof requestInputSchema>;

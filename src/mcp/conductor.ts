@@ -1,11 +1,10 @@
-import { createRscMcpServer } from '@agent-bundle/rsc-runtime/plugin';
+import mcpApps from 'agent-bundle/mcp-apps';
 
-import { conductorApplication } from '../application.js';
-
-export const createConductorServer = () => createRscMcpServer(conductorApplication, 'conductor');
+import { createConductorServer, selectDashboardResource } from '../server.js';
 
 /**
- * Default-exported server factory at the conventional `src/mcp/conductor.ts`
- * entry: `agent-bundle build` wraps it in the framework stdio lifecycle shell.
+ * Conventional stdio entry: `agent-bundle build` wraps the default-exported
+ * factory in the framework lifecycle shell. The compiled MCP-app registry is
+ * injected only in the artifact bundle.
  */
-export default createConductorServer;
+export default () => createConductorServer(selectDashboardResource(mcpApps));

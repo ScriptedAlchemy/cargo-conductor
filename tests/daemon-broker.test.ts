@@ -57,6 +57,9 @@ const makeFixture = (maxConcurrent: number): Fixture => {
   const config = resolveDaemonConfig({
     CARGO_CONDUCTOR_STATE_DIR: stateDir,
     CARGO_CONDUCTOR_MAX_CONCURRENT: String(maxConcurrent),
+    // Hermetic: no live kache priors (a cold scan of the real index once
+    // delayed a submit ack past this suite's timing assumptions).
+    CARGO_CONDUCTOR_KACHE_INDEX: '',
   });
   return { config, root, binDir, ws1: makeWorkspace('ws1'), ws2: makeWorkspace('ws2') };
 };
@@ -352,7 +355,7 @@ describe('conductor daemon', () => {
       Effect.gen(function* () {
         const holderMessages = yield* execRequest(fixture, {
           cwd: fixture.ws1,
-          sleep: '0.6',
+          sleep: '1.5',
           isTerminal: (message) => message.type === 'started',
         });
         const holderTicket =

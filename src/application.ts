@@ -6,12 +6,18 @@ import {
   inspectOperations,
   type InspectOperations,
 } from './operations/inspect.js';
+import {
+  defaultTicketOperations,
+  ticketOperations,
+  type TicketOperations,
+} from './operations/tickets.js';
 
-export type ConductorOperations = DaemonOperations & InspectOperations;
+export type ConductorOperations = DaemonOperations & InspectOperations & TicketOperations;
 
 const operationDefinitions = (operations: ConductorOperations) =>
   Object.freeze([
     ...inspectOperations(operations),
+    ...ticketOperations(operations),
     ...daemonOperations(operations),
   ]);
 
@@ -25,6 +31,7 @@ export const createConductorApplication = (
     operations: operationDefinitions({
       ...defaultDaemonOperations,
       ...defaultInspectOperations,
+      ...defaultTicketOperations,
       ...options.operations,
     }),
     version: '0.1.0',

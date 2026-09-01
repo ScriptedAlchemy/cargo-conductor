@@ -14,7 +14,10 @@ clippy, fmt, nextest) or is waiting on someone else's cargo.
   a single crate answers the question.
 - Prefer `conductor status`, `conductor last`, and the `conductor_status` MCP
   tool over `ps`/`pgrep` probes.
+- Long builds: `conductor exec --bg -- cargo …` or `conductor_request`. Retrieve
+  with `conductor_await` / `conductor_result` (or the afterTool notify).
 - If the daemon is unreachable, fail open: run the original cargo command.
+- Optional PATH shim (`conductor install-shim`) catches cargo inside scripts.
 
 ## Workflow
 
@@ -22,3 +25,5 @@ clippy, fmt, nextest) or is waiting on someone else's cargo.
 2. Reuse an in-flight identical or covering run instead of launching another.
 3. After a scoped change, wait on that ticket rather than re-running the same
    command in another subagent.
+4. If Stop is denied because a ticket is pending, wait or call `conductor_await`
+   — do not kill cargo. Stop again to keep waiting.

@@ -16,11 +16,14 @@ npm run check      # validate + build + typecheck + test
 ## Layout
 
 - `agent-bundle.config.ts` — plugin meta, hosts, hooks, MCP, and the CLI script.
-- `src/hooks/` — `beforeTool` / `afterTool` shell interception (fail-open).
-- `src/cli.ts` — package bin and the `conductor` artifact script.
-- `src/mcp/conductor.ts` — conventional stdio MCP entry.
+- `src/hooks/` — `beforeTool` rewrite, `afterTool` notify, `stop` hold (fail-open).
+- `src/cli.ts` — package bin and the `conductor` artifact script (`exec`,
+  `status`/`log`/`last`/`await`/`result`/`request`, `daemon`, `install-shim`).
+- `src/mcp/conductor.ts` — conventional stdio MCP entry + dashboard widget.
+- `views/` — MCP App dashboard (queue, in-flight, history, contention).
 - `skills/cargo-conductor/SKILL.md` — agent guidance (do not kill cargo, scope
   with `-p`, await tickets).
+- `docs/install.md` — per-host install notes, including Codex timeout fallbacks.
 
 The compile target is `plugin` (one bundle for Claude, Codex, and Cursor).
 Listing `claude`, `cursor`, and `plugin` together currently fails artifact

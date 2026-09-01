@@ -1,4 +1,5 @@
 import type { HookRecord } from './record.js';
+import type { FinishedTicket } from './rpc.js';
 
 export interface HookContext {
   readonly nativeEvent?: string;
@@ -7,10 +8,13 @@ export interface HookContext {
 }
 
 export interface HookServices {
+  readonly completedSince?: (session: string, sinceMs: number) => Promise<readonly FinishedTicket[]>;
   readonly conductorArgv?: readonly string[];
   readonly hasActiveBuilds?: () => boolean | null | Promise<boolean | null>;
   readonly nowMs?: () => number;
+  readonly readCursor?: (session: string) => number;
   readonly record?: (event: HookRecord) => void | Promise<void>;
+  readonly writeCursor?: (session: string, atMs: number) => void;
 }
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>

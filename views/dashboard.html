@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>cargo-conductor</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --ink: #e8e4d9;
+        --muted: #9a9384;
+        --line: rgba(232, 228, 217, 0.12);
+        --panel: rgba(18, 16, 14, 0.88);
+        --accent: #e3b341;
+        --good: #7dce9a;
+        --bad: #e07a5f;
+        --run: #7eb6ff;
+      }
+      html, body {
+        margin: 0;
+        min-height: 100%;
+        background:
+          radial-gradient(circle at 12% 0%, rgba(227, 179, 65, 0.14), transparent 32%),
+          linear-gradient(180deg, #14110e 0%, #0c0b09 100%);
+        color: var(--ink);
+        font-family: "Iowan Old Style", "Palatino Linotype", Palatino, serif;
+      }
+      body { padding: 22px 28px 32px; }
+      main { max-width: 1120px; margin: 0 auto; }
+      header { display: flex; justify-content: space-between; align-items: baseline; gap: 16px; }
+      h1 { margin: 0; font-size: 1.35rem; letter-spacing: 0.03em; }
+      #status { color: var(--muted); }
+      .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 20px; }
+      .span { grid-column: 1 / -1; }
+      section {
+        border: 1px solid var(--line);
+        background: var(--panel);
+        border-radius: 4px;
+        padding: 14px 16px 16px;
+      }
+      h2 { margin: 0 0 10px; font-size: 0.78rem; letter-spacing: 0.14em; text-transform: uppercase; color: var(--accent); }
+      table { width: 100%; border-collapse: collapse; font-size: 0.92rem; }
+      th, td { text-align: left; padding: 6px 8px 6px 0; border-bottom: 1px solid var(--line); vertical-align: top; }
+      th { color: var(--muted); font-weight: 500; }
+      .empty { color: var(--muted); margin: 8px 0 0; }
+      .pill { display: inline-block; padding: 1px 7px; border-radius: 999px; font-size: 0.75rem; }
+      .running { background: rgba(126, 182, 255, 0.16); color: var(--run); }
+      .queued { background: rgba(227, 179, 65, 0.14); color: var(--accent); }
+      .done { background: rgba(125, 206, 154, 0.14); color: var(--good); }
+      .failed, .killed { background: rgba(224, 122, 95, 0.16); color: var(--bad); }
+      .stats { display: flex; gap: 18px; flex-wrap: wrap; }
+      .stat { min-width: 110px; }
+      .stat b { display: block; font-size: 1.4rem; }
+      .stat span { color: var(--muted); font-size: 0.8rem; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <header>
+        <h1>cargo-conductor</h1>
+        <div id="status">Connecting…</div>
+      </header>
+      <div class="grid">
+        <section class="span">
+          <h2>Contention</h2>
+          <div id="contention" class="stats"></div>
+        </section>
+        <section>
+          <h2>In flight</h2>
+          <div id="inflight"></div>
+        </section>
+        <section>
+          <h2>Queue</h2>
+          <div id="queue"></div>
+        </section>
+        <section class="span">
+          <h2>History</h2>
+          <div id="history"></div>
+        </section>
+      </div>
+    </main>
+  </body>
+</html>

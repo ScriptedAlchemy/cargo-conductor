@@ -21,6 +21,7 @@ import type {
 const fakeCargoScript = `#!/usr/bin/env bash
 echo "fake-out:$*"
 echo "fake-err:$*" >&2
+echo "fake-jobs:\${CARGO_BUILD_JOBS:-none}" >&2
 if [ -n "\${FAKE_SLEEP:-}" ]; then sleep "\$FAKE_SLEEP"; fi
 if [ -n "\${FAKE_LATE_OUT:-}" ]; then echo "\$FAKE_LATE_OUT"; fi
 exit "\${FAKE_EXIT:-0}"
@@ -51,6 +52,8 @@ export const makeFixture = (maxConcurrent: number): Fixture => {
   const config = resolveDaemonConfig({
     CARGO_CONDUCTOR_STATE_DIR: stateDir,
     CARGO_CONDUCTOR_MAX_CONCURRENT: String(maxConcurrent),
+    // Hermetic tests: no live kache priors.
+    CARGO_CONDUCTOR_KACHE_INDEX: '',
   });
   return { config, root, binDir, ws1: makeWorkspace('ws1'), ws2: makeWorkspace('ws2') };
 };

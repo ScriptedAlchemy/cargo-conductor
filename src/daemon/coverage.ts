@@ -52,7 +52,7 @@ const isSubset = (subset: readonly string[], superset: readonly string[]): boole
  * in feature resolution, profile, toolchain, target triple, or compilation
  * environment produces different artifacts and different diagnostics.
  */
-const sameCompileSurface = (
+export const sameCompileSurface = (
   left: NormalizedCargoIntent,
   right: NormalizedCargoIntent,
 ): boolean =>

@@ -27,6 +27,9 @@ export interface CreateRequestInput {
   readonly argv: readonly string[];
   readonly intentKey: string | null;
   readonly intentJson: string | null;
+  readonly background?: boolean;
+  readonly holdStop?: boolean;
+  readonly estimateMs?: number | null;
 }
 
 export interface FinishRequestInput {
@@ -55,6 +58,11 @@ export interface LedgerApi {
   readonly markFinished: (id: number, input: FinishRequestInput) => Effect.Effect<void>;
   readonly getRequest: (id: number) => Effect.Effect<RequestRecord | null>;
   readonly getRequestByTicket: (ticket: string) => Effect.Effect<RequestRecord | null>;
+  /** Newest-first run durations of completed non-attached runs of one intent. */
+  readonly recentDurations: (
+    intentKey: string,
+    limit: number,
+  ) => Effect.Effect<readonly number[]>;
   readonly recentRequests: (limit: number) => Effect.Effect<readonly RequestRecord[]>;
   readonly activeRequests: () => Effect.Effect<readonly RequestRecord[]>;
   readonly transitionsFor: (id: number) => Effect.Effect<readonly TransitionRecord[]>;
@@ -101,12 +109,16 @@ CREATE INDEX IF NOT EXISTS transitions_request_id_idx ON transitions (request_id
 
 const requestColumns = `id, created_at_ms, session, host, cwd, workspace_root, target_dir, lane_key,
   argv_json, intent_key, intent_json, status, queued_at_ms, started_at_ms, finished_at_ms, wait_ms,
-  run_ms, exit_code, signal, output_tail, error, attached_to, attach_mode`;
+  run_ms, exit_code, signal, output_tail, error, attached_to, attach_mode, background, hold_stop,
+  estimate_ms`;
 
 /** Additive column migrations for databases created by earlier builds. */
 const columnMigrations: readonly (readonly [column: string, ddl: string])[] = [
   ['attached_to', 'ALTER TABLE requests ADD COLUMN attached_to TEXT'],
   ['attach_mode', 'ALTER TABLE requests ADD COLUMN attach_mode TEXT'],
+  ['background', 'ALTER TABLE requests ADD COLUMN background INTEGER NOT NULL DEFAULT 0'],
+  ['hold_stop', 'ALTER TABLE requests ADD COLUMN hold_stop INTEGER NOT NULL DEFAULT 0'],
+  ['estimate_ms', 'ALTER TABLE requests ADD COLUMN estimate_ms INTEGER'],
 ];
 
 const activeStatusFilter = "status IN ('requested', 'queued', 'running')";
@@ -152,6 +164,9 @@ const toRequestRecord = (row: Row): RequestRecord => {
     error: toNullableText(row.error),
     attachedTo: toNullableText(row.attached_to),
     attachMode: toNullableText(row.attach_mode) as AttachMode | null,
+    background: toNumber(row.background ?? 0) !== 0,
+    holdStop: toNumber(row.hold_stop ?? 0) !== 0,
+    estimateMs: toNullableNumber(row.estimate_ms),
   };
 };
 
@@ -217,8 +232,8 @@ export const createLedgerApi = (db: DatabaseSync): LedgerApi => ({
       const result = db
         .prepare(
           `INSERT INTO requests (created_at_ms, session, host, cwd, workspace_root, target_dir,
-             lane_key, argv_json, intent_key, intent_json, status)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+             lane_key, argv_json, intent_key, intent_json, status, background, hold_stop, estimate_ms)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         )
         .run(
           input.createdAtMs,
@@ -232,6 +247,9 @@ export const createLedgerApi = (db: DatabaseSync): LedgerApi => ({
           input.intentKey,
           input.intentJson,
           'requested',
+          input.background === true ? 1 : 0,
+          input.holdStop === true ? 1 : 0,
+          input.estimateMs ?? null,
         );
       const id = Number(result.lastInsertRowid);
       recordTransition(db, id, input.createdAtMs, null, 'requested');
@@ -324,6 +342,19 @@ export const createLedgerApi = (db: DatabaseSync): LedgerApi => ({
       const id = parseTicket(ticket);
       return id === null ? null : selectRequestById(db, id);
     }),
+
+  recentDurations: (intentKey, limit) =>
+    Effect.sync(() =>
+      db
+        .prepare(
+          `SELECT run_ms FROM requests
+           WHERE intent_key = ? AND status = 'done' AND run_ms IS NOT NULL
+             AND attached_to IS NULL
+           ORDER BY id DESC LIMIT ?`,
+        )
+        .all(intentKey, limit)
+        .map((row) => toNumber(row.run_ms)),
+    ),
 
   recentRequests: (limit) =>
     Effect.sync(() =>

@@ -1,15 +1,33 @@
 import { Mcp } from '@agent-bundle/rsc-runtime';
 
-import type { DaemonResult, LastResult, LogResult, StatusResult } from './operations/schemas.js';
+import type {
+  AwaitResult,
+  DaemonResult,
+  LastResult,
+  LogResult,
+  RequestSubmitResult,
+  ResultFetchResult,
+  StatusResult,
+} from './operations/schemas.js';
 
-export type ConductorReceipt = DaemonResult | LastResult | LogResult | StatusResult;
+export type ConductorReceipt =
+  | AwaitResult
+  | DaemonResult
+  | LastResult
+  | LogResult
+  | RequestSubmitResult
+  | ResultFetchResult
+  | StatusResult;
 
 const summary = (receipt: ConductorReceipt): string => {
   switch (receipt.operation) {
     case 'daemon':
       return receipt.message;
+    case 'await':
     case 'last':
     case 'log':
+    case 'request':
+    case 'result':
     case 'status':
       return receipt.summary;
     default: {
