@@ -19,5 +19,15 @@ describe('formatProgressLine', () => {
     expect(formatProgressLine({ kind: 'passthrough', reason: 'daemon unreachable' })).toBe(
       '[cargo-conductor] daemon unreachable; running cargo directly\n',
     );
+    expect(
+      formatProgressLine({
+        kind: 'attached',
+        leaderTicket: 'cc-1',
+        mode: 'batch',
+        ticket: 'cc-2',
+      }),
+    ).toBe(
+      '[cargo-conductor] ticket cc-2 attached to cc-1 (batched into a merged multi-package run)\n',
+    );
   });
 });

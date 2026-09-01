@@ -1,4 +1,5 @@
 import { Mcp } from '@agent-bundle/rsc-runtime';
+import * as React from 'react';
 
 import type {
   AwaitResult,

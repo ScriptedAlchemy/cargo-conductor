@@ -8,7 +8,13 @@ import * as Layer from 'effect/Layer';
 import * as Queue from 'effect/Queue';
 import * as Ref from 'effect/Ref';
 
-import { batchCompatible, extraPackagesFor, withExtraPackages } from './batch.js';
+import {
+  batchCompatible,
+  batchLeaderEligible,
+  extraPackagesFor,
+  maxBatchPackages,
+  withExtraPackages,
+} from './batch.js';
 import { hasLibKind, parseCargoJsonLine } from './cargo-json.js';
 import { DaemonConfig } from './config.js';
 import { CostModel } from './cost.js';
@@ -171,6 +177,8 @@ interface Job {
   readonly estimateMs: number;
   /** Fail-fast signal captured at submission (topology stat, cached). */
   readonly editedRecently: boolean;
+  /** Packages folded in by the batch composer; appended as -p flags at spawn. */
+  readonly extraPackages: string[];
 }
 
 const demuxSubcommands = new Set(['build', 'check', 'clippy']);
@@ -246,9 +254,11 @@ const guarded = (effect: Effect.Effect<void>): Effect.Effect<void> =>
   Effect.catchAllCause(effect, () => Effect.void);
 
 const requeueReasonFor = (mode: AttachMode, status: FinishedStatus): string =>
-  mode === 'coverage'
-    ? `covering ${status === 'killed' ? 'run was killed' : 'run failed'}; running your request directly`
-    : 'coalesced run was killed; running your request directly';
+  mode === 'identity'
+    ? 'coalesced run was killed; running your request directly'
+    : `${mode === 'batch' ? 'batched' : 'covering'} ${
+        status === 'killed' ? 'run was killed' : 'run failed'
+      }; running your request directly`;
 
 export const BrokerLive: Layer.Layer<
   Broker,
@@ -305,7 +315,10 @@ export const BrokerLive: Layer.Layer<
           job.tail.push(data);
           const live: Attachment[] = [];
           for (const attachment of job.attachments.values()) {
-            if (attachment.mode === 'coverage' && !coverageFilter(attachment)) {
+            if (
+              (attachment.mode === 'coverage' || attachment.mode === 'batch') &&
+              !coverageFilter(attachment)
+            ) {
               continue;
             }
             if (attachment.live) {
@@ -516,6 +529,7 @@ export const BrokerLive: Layer.Layer<
           tail: new TailBuffer(config.outputTailBytes),
           estimateMs: estimate.estimateMs,
           editedRecently,
+          extraPackages: [],
         };
       });
 
@@ -552,18 +566,26 @@ export const BrokerLive: Layer.Layer<
      */
     const foldBatch = (lane: Lane, leader: Job): Effect.Effect<void> =>
       Effect.gen(function* () {
-        if (!config.batchEnabled) {
+        if (!config.batchEnabled || !batchLeaderEligible(leader.intent)) {
           return;
         }
         const extras: string[] = [];
         const absorbed: Job[] = [];
         yield* Effect.sync(() => {
+          const named = new Set(leader.intent.packages);
           for (let index = lane.pending.length - 1; index >= 0; index -= 1) {
             const candidate = lane.pending[index];
             if (candidate === undefined || !batchCompatible(leader.intent, candidate.intent)) {
               continue;
             }
-            extras.push(...extraPackagesFor(leader.intent, candidate.intent));
+            const extra = extraPackagesFor(leader.intent, candidate.intent);
+            if (named.size + extra.length > maxBatchPackages) {
+              continue;
+            }
+            for (const name of extra) {
+              named.add(name);
+            }
+            extras.push(...extra);
             absorbed.push(candidate);
             lane.pending.splice(index, 1);
             inFlight.delete(candidate.ticket);
@@ -577,7 +599,7 @@ export const BrokerLive: Layer.Layer<
               const attachment: Attachment = {
                 id: candidate.id,
                 ticket: candidate.ticket,
-                mode: 'coverage',
+                mode: 'batch',
                 input: candidate.input,
                 intent: candidate.intent,
                 callbacks: candidate.callbacks,
@@ -594,7 +616,7 @@ export const BrokerLive: Layer.Layer<
               yield* ledger.markAttached(candidate.id, {
                 atMs,
                 leaderTicket: leader.ticket,
-                mode: 'coverage',
+                mode: 'batch',
               });
             }),
           { discard: true },
@@ -626,7 +648,7 @@ export const BrokerLive: Layer.Layer<
         const decided = yield* Effect.sync(() => {
           const releases: { attachment: Attachment; failed: string | null }[] = [];
           for (const attachment of job.attachments.values()) {
-            if (attachment.mode !== 'coverage') {
+            if (attachment.mode === 'identity') {
               continue;
             }
             const errored = attachment.intent.packages.find((name) =>
@@ -835,7 +857,7 @@ export const BrokerLive: Layer.Layer<
           // units may have compiled cleanly before an unrelated unit failed.
           const provenDespiteFailure =
             status === 'failed' &&
-            attachment.mode === 'coverage' &&
+            attachment.mode !== 'identity' &&
             job.demux !== null &&
             demandSatisfied(attachment.intent, job.demux);
           const mirrors =
@@ -954,8 +976,15 @@ export const BrokerLive: Layer.Layer<
         const execEnv = grantsJobs
           ? { ...job.input.env, CARGO_BUILD_JOBS: String(config.jobsGrant) }
           : job.input.env;
+        const finalArgv =
+          job.extraPackages.length === 0
+            ? job.execArgv
+            : [
+                ...job.execArgv,
+                ...job.extraPackages.flatMap((name) => ['-p', name]),
+              ];
         const result: ExecutionResult = yield* executeCargo({
-          argv: job.execArgv,
+          argv: finalArgv,
           cwd: job.input.cwd,
           env: execEnv,
           killSignal: job.killSignal,

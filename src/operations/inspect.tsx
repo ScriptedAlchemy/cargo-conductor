@@ -1,4 +1,5 @@
 import { defineOperation, type RscOperationContext } from '@agent-bundle/rsc-runtime/plugin';
+import * as React from 'react';
 import * as Effect from 'effect/Effect';
 
 import { APP_RESOURCE_URI } from '../constants.js';

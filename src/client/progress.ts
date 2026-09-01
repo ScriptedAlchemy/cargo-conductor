@@ -1,3 +1,5 @@
+import type { AttachMode } from '../daemon/protocol.js';
+
 export type ProgressEvent =
   | {
       readonly kind: 'queued';
@@ -9,7 +11,7 @@ export type ProgressEvent =
   | {
       readonly kind: 'attached';
       readonly leaderTicket: string;
-      readonly mode: 'identity' | 'coverage';
+      readonly mode: AttachMode;
       readonly ticket: string;
     }
   | {
@@ -49,10 +51,20 @@ export const formatProgressLine = (event: ProgressEvent): string => {
         event.etaMs === undefined ? '' : `, eta ~${Math.max(1, Math.round(event.etaMs / 1000))}s`;
       return `${prefix} ticket ${event.ticket} queued (${event.position} ahead${eta})\n`;
     }
-    case 'attached':
-      return event.mode === 'identity'
-        ? `${prefix} ticket ${event.ticket} attached to ${event.leaderTicket} (identical run in flight; replaying its output)\n`
-        : `${prefix} ticket ${event.ticket} attached to ${event.leaderTicket} (covered by a larger run in flight)\n`;
+    case 'attached': {
+      switch (event.mode) {
+        case 'identity':
+          return `${prefix} ticket ${event.ticket} attached to ${event.leaderTicket} (identical run in flight; replaying its output)\n`;
+        case 'coverage':
+          return `${prefix} ticket ${event.ticket} attached to ${event.leaderTicket} (covered by a larger run in flight)\n`;
+        case 'batch':
+          return `${prefix} ticket ${event.ticket} attached to ${event.leaderTicket} (batched into a merged multi-package run)\n`;
+        default: {
+          const exhaustive: never = event.mode;
+          return exhaustive;
+        }
+      }
+    }
     case 'requeued':
       return `${prefix} ticket ${event.ticket} requeued: ${event.reason}\n`;
     case 'started':

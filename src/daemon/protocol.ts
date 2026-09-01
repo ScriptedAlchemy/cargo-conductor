@@ -12,8 +12,14 @@ export type RequestStatus = 'requested' | 'queued' | 'running' | 'done' | 'faile
 /** Terminal statuses a request can end in. */
 export type FinishedStatus = 'done' | 'failed' | 'killed';
 
-/** How an attached request rides its leader (see daemon/coverage.ts). */
-export type AttachMode = 'identity' | 'coverage';
+/**
+ * How an attached request rides its leader (see daemon/coverage.ts):
+ * 'identity' mirrors everything, 'coverage' rides a stronger in-flight run,
+ * 'batch' was composed into a merged multi-package invocation. Coverage and
+ * batch share failure semantics (a failed leader never fails them; they
+ * requeue unless their scope was proven).
+ */
+export type AttachMode = 'identity' | 'coverage' | 'batch';
 
 /** One ledgered cargo request, as stored in SQLite and reported over the socket. */
 export interface RequestRecord {

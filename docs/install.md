@@ -12,7 +12,7 @@ npm run check
 ```
 
 Host adapters pick up `artifact/plugin`. Point each host at that directory
-(or `npm run dev` for the workbench playground).
+(or `npm run dev` and open the portable target in the workbench playground).
 
 ## Per-host notes
 

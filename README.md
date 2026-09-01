@@ -24,11 +24,14 @@ npm run check      # validate + build + typecheck + test
 - `skills/cargo-conductor/SKILL.md` — agent guidance (do not kill cargo, scope
   with `-p`, await tickets).
 - `docs/install.md` — per-host install notes, including Codex timeout fallbacks.
+- `evals/fixture/` — tiny Rust workspace used by the deterministic coalesce eval
+  (`tests/orchestration.eval.ts`). Kept out of `evals/**/*.eval.ts` so the
+  workbench does not try to load rstest as an agent-bundle harness suite.
 
-The compile target is `plugin` (one bundle for Claude, Codex, and Cursor).
-Listing `claude`, `cursor`, and `plugin` together currently fails artifact
-validation (AB6017): those names are the same length, so MCP entries are
-mis-attributed across targets.
+Compile targets are `plugin` (one bundle for Claude, Codex, and Cursor, plus
+AGENTS.md) and `portable` (workbench playground). Listing `claude`, `cursor`,
+and `plugin` together currently fails artifact validation (AB6017): those
+names are the same length, so MCP entries are mis-attributed across targets.
 
 Daemon state lives under `/fast/cache/cargo-conductor/`.
 

@@ -39,6 +39,9 @@ describe('batch composer', () => {
         const attached =
           alphaRecord?.attachedTo === betaExit.ticket || betaRecord?.attachedTo === alphaExit.ticket;
         expect(attached).toBe(true);
+        expect(
+          alphaRecord?.attachMode === 'batch' || betaRecord?.attachMode === 'batch',
+        ).toBe(true);
         const leaderOutput = `${decodeOutput(alpha, 'stdout')}${decodeOutput(beta, 'stdout')}`;
         expect(leaderOutput.includes('-p') || attached).toBe(true);
       }),

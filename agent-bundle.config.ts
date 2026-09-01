@@ -44,5 +44,6 @@ export default defineConfig({
   // Listing `claude`/`cursor`/`plugin` together trips AB6017: those names are
   // all 6 chars, and pathInTargetOutputLayout slices by name length, so each
   // target's MCP entries are attributed to the others.
-  targets: ['plugin'],
+  // `portable` is the workbench playground target (different name length).
+  targets: ['plugin', 'portable'],
 });

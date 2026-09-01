@@ -3,6 +3,7 @@ import { describe, expect, it } from '@rstest/core';
 import {
   batchCompatible,
   extraPackagesFor,
+  maxBatchPackages,
   withExtraPackages,
 } from '../src/daemon/batch.js';
 import { normalizeCargoIntent } from '../src/daemon/intent-normalizer.js';
@@ -114,6 +115,12 @@ describe('withExtraPackages', () => {
       '-p',
       'beta',
     ]);
+  });
+});
+
+describe('maxBatchPackages', () => {
+  it('caps a composite invocation at 16 packages', () => {
+    expect(maxBatchPackages).toBe(16);
   });
 });
 

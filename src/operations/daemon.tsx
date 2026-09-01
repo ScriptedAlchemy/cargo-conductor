@@ -1,4 +1,5 @@
 import { defineOperation, type RscOperationContext } from '@agent-bundle/rsc-runtime/plugin';
+import * as React from 'react';
 
 import { parseDaemonSubcommand, runDaemonControl } from '../daemon/lifecycle.js';
 import { ConductorResult } from '../result.js';

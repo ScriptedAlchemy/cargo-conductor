@@ -3,11 +3,10 @@ import { fileURLToPath } from 'node:url';
 
 import { describe, expect, it } from '@rstest/core';
 import * as Effect from 'effect/Effect';
-import * as Fiber from 'effect/Fiber';
 
-import { execRequest, findExit, pollReport, withDaemon } from '../tests/harness.js';
+import { execRequest, findExit, pollReport, withDaemon } from './harness.js';
 
-const fixtureWorkspace = join(dirname(fileURLToPath(import.meta.url)), 'fixture');
+const fixtureWorkspace = join(dirname(fileURLToPath(import.meta.url)), '..', 'evals', 'fixture');
 
 describe('cargo-conductor evals', () => {
   it('coalesces identical checks against the fixture workspace into one execution', () =>

@@ -182,8 +182,9 @@ describe('agent-bundle hooks simulate', () => {
           root: repoRoot,
           target: 'plugin',
         });
-        // Daemon is down: stop-hold fails open.
-        expect(stopped).toEqual({ outcome: 'continue' });
+        // Daemon is down: stop-hold fails open. Continue without extra
+        // context encodes to empty host output (same as afterTool).
+        expect(stopped).toBeUndefined();
       } finally {
         if (previousHost === undefined) {
           delete process.env.AGENT_BUNDLE_HOOK_HOST;

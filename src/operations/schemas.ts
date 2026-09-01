@@ -11,7 +11,7 @@ export const requestStatusSchema = z.enum([
   'killed',
 ]);
 
-export const attachModeSchema = z.enum(['identity', 'coverage']);
+export const attachModeSchema = z.enum(['identity', 'coverage', 'batch']);
 
 export const requestRecordSchema = z
   .object({

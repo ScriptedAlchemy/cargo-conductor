@@ -1,4 +1,5 @@
 import { defineOperation, type RscOperationContext } from '@agent-bundle/rsc-runtime/plugin';
+import * as React from 'react';
 import * as Effect from 'effect/Effect';
 
 import { awaitTicket, fetchTicket, submitBackground } from '../client/tickets.js';
