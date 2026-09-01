@@ -2,11 +2,11 @@
 
 Status: **verified on Codex CLI 0.147.0** (live probe, 2026-09-01, Linux,
 Node v22.23.1, model gpt-5.6-sol, plugin 0.1.6/0.1.7 against a production
-conductor daemon).
+hauler daemon).
 
 Probe shape: a scratch crate whose `build.rs` sleeps 90s, submitted as a
 background ticket tagged with the real Codex session id
-(`conductor request --session <uuid> -- cargo build`), then the session
+(`hauler request --session <uuid> -- cargo build`), then the session
 resumed with `codex exec resume <uuid>` so its Stop event fired while the
 ticket was pending. Hook process lifetimes were sampled at 200ms; deny
 bookkeeping read from `hook-state.json`; delivery timing from the session
@@ -17,8 +17,8 @@ rollout log (`~/.codex/sessions/...`).
 | Scenario | Result |
 | --- | --- |
 | Stop with no pending tickets | hook lives ~0.05s, exits silently (continue) |
-| Stop hold, default `CARGO_CONDUCTOR_STOP_WAIT_MS` (30000) | hook lived ~29s, denied, not killed |
-| Stop hold, `CARGO_CONDUCTOR_STOP_WAIT_MS=120000` | hook lived **72.4s**, denied, not killed |
+| Stop hold, default `CARGO_HAULER_STOP_WAIT_MS` (30000) | hook lived ~29s, denied, not killed |
+| Stop hold, `CARGO_HAULER_STOP_WAIT_MS=120000` | hook lived **72.4s**, denied, not killed |
 | Deny handling | reason injected as a `<hook_prompt hook_run_id="stop:...">` user message; the model answers again inside the same `codex exec` run (`stop_hook_active` re-entry works) |
 | Release | session exited 3-4s after the ticket completed |
 | Standalone hook loop (no Codex, live daemon) | pending deny after 30.06s; "finished" deny 18.0s into the next hold, event-driven at ticket completion; no-pending continue 0.05s |
@@ -26,7 +26,7 @@ rollout log (`~/.codex/sessions/...`).
 ## Findings
 
 - Codex 0.147.0 runs plugin `hooks.json` hooks natively. PreToolUse rewrote
-  `cargo build` to a session-tagged `conductor exec`, PostToolUse and Stop
+  `cargo build` to a session-tagged `hauler exec`, PostToolUse and Stop
   both fired. Tickets tagged with the session uuid associate correctly with
   the Stop hold.
 - **No per-hook kill was observed.** Invocations of ~29s and 72.4s ran to
@@ -37,7 +37,7 @@ rollout log (`~/.codex/sessions/...`).
 - Deny decisions are respected: `{"decision":"block","reason":...}` keeps the
   session alive, re-prompts the model, and the run only ends once a Stop
   passes with no output.
-- `CARGO_CONDUCTOR_STOP_WAIT_MS` propagates from the Codex process
+- `CARGO_HAULER_STOP_WAIT_MS` propagates from the Codex process
   environment into hook processes (the 120000 override took effect).
 - **Hook trust gates everything.** This machine had no
   `[hooks.state]` trust entries for the plugin, and the probes only ran hooks
@@ -63,7 +63,7 @@ rollout log (`~/.codex/sessions/...`).
 ## Practical guidance
 
 - Keep the generated `stop.timeout = 900`; nothing shorter was enforced.
-- The default 30s `CARGO_CONDUCTOR_STOP_WAIT_MS` is safe on Codex and the
+- The default 30s `CARGO_HAULER_STOP_WAIT_MS` is safe on Codex and the
   re-deny loop works, so long waits are unnecessary. Values up to ~60s are
   also verified-safe (a 72.4s invocation survived), but with the current
   daemon await behavior anything above ~58s buys no extra hold fidelity.

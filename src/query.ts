@@ -22,7 +22,7 @@ import { stripAnsi } from './lib/ansi.js';
 import { shortId } from './lib/id.js';
 import { countWord } from './lib/text.js';
 
-export interface ConductorSnapshot {
+export interface HaulerSnapshot {
   readonly active: readonly RequestRecord[];
   readonly daemon: 'running' | 'stopped';
   readonly kache?: KacheStatusReport | null;
@@ -71,7 +71,7 @@ export const describeRequestRecord = (
  * render as literal `\u001b[…` noise. That holds regardless of process
  * stdout: a TTY still sees the escaped JSON form, and an inherited
  * FORCE_COLOR/CLICOLOR_FORCE cannot make JSON paint color. So the
- * projection strips unconditionally; only the live `conductor exec` stream
+ * projection strips unconditionally; only the live `hauler exec` stream
  * (which never passes through here) keeps color for TTY consumers.
  */
 export const displayRequestRecord = (record: RequestRecord): RequestRecord => ({
@@ -86,28 +86,28 @@ export const displayRequestRecords = (
 
 const stoppedSummary = (recentCount: number): string => {
   if (recentCount === 0) {
-    return 'cargo-conductor daemon is not running';
+    return 'cargo-hauler daemon is not running';
   }
-  return `cargo-conductor daemon is not running; ${countWord(recentCount, 'recorded request')}`;
+  return `cargo-hauler daemon is not running; ${countWord(recentCount, 'recorded request')}`;
 };
 
 const runningSummary = (report: StatusReport): string => {
   const queued = report.lanes.reduce((sum, lane) => sum + lane.queued, 0);
   const running = report.active.filter((record) => record.status === 'running').length;
-  return `cargo-conductor daemon is running (pid ${report.pid}); ${queued} queued, ${running} running`;
+  return `cargo-hauler daemon is running (pid ${report.pid}); ${queued} queued, ${running} running`;
 };
 
 /** Keep the internal raw report off the strict public status-result object spread. */
 const withReport = (
-  snapshot: Omit<ConductorSnapshot, 'report'>,
+  snapshot: Omit<HaulerSnapshot, 'report'>,
   report: StatusReport | null,
-): ConductorSnapshot =>
+): HaulerSnapshot =>
   Object.defineProperty(snapshot, 'report', {
     enumerable: false,
     value: report,
-  }) as ConductorSnapshot;
+  }) as HaulerSnapshot;
 
-const fromReport = (report: StatusReport, config: DaemonConfigShape): ConductorSnapshot =>
+const fromReport = (report: StatusReport, config: DaemonConfigShape): HaulerSnapshot =>
   withReport(
     {
       active: report.active,
@@ -128,7 +128,7 @@ const fromReport = (report: StatusReport, config: DaemonConfigShape): ConductorS
     report,
   );
 
-const emptyStopped = (config: DaemonConfigShape): ConductorSnapshot =>
+const emptyStopped = (config: DaemonConfigShape): HaulerSnapshot =>
   withReport(
     {
       active: [],
@@ -161,7 +161,7 @@ const acquireSnapshotDb = (databasePath: string): Effect.Effect<DatabaseSync, ne
 const fromLedger = (
   config: DaemonConfigShape,
   recentLimit: number,
-): Effect.Effect<ConductorSnapshot> => {
+): Effect.Effect<HaulerSnapshot> => {
   if (!existsSync(config.databasePath)) {
     return Effect.succeed(emptyStopped(config));
   }
@@ -192,9 +192,9 @@ const fromLedger = (
   );
 };
 
-export const loadConductorSnapshot = (
+export const loadHaulerSnapshot = (
   options: LoadSnapshotOptions = {},
-): Effect.Effect<ConductorSnapshot> => {
+): Effect.Effect<HaulerSnapshot> => {
   const config = options.config ?? resolveDaemonConfig();
   const recentLimit = options.recentLimit ?? defaultRecentLimit;
   return requestExpecting(
@@ -224,13 +224,13 @@ const unresponsiveSnapshot = (
   config: DaemonConfigShape,
   recentLimit: number,
   what: string,
-): Effect.Effect<ConductorSnapshot> =>
+): Effect.Effect<HaulerSnapshot> =>
   fromLedger(config, recentLimit).pipe(
     Effect.map((snapshot) =>
       withReport(
         {
           ...snapshot,
-          summary: `cargo-conductor daemon ${what}; showing ledger data (${snapshot.recent.length} recorded)`,
+          summary: `cargo-hauler daemon ${what}; showing ledger data (${snapshot.recent.length} recorded)`,
         },
         snapshot.report,
       ),

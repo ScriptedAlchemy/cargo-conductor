@@ -23,7 +23,7 @@ import {
   withDaemon,
 } from './harness.js';
 
-describe('conductor daemon', () => {
+describe('hauler daemon', () => {
   it('runs a cargo request end to end and ledgers the full lifecycle', () =>
     withDaemon(5, (fixture) =>
       Effect.gen(function* () {

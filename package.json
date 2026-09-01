@@ -1,5 +1,5 @@
 {
-  "name": "cargo-conductor",
+  "name": "cargo-hauler",
   "version": "0.1.22",
   "license": "MIT",
   "private": true,
@@ -23,7 +23,7 @@
     "node": ">=22.19.0"
   },
   "bin": {
-    "cargo-conductor": "./dist/bin/cargo-conductor.js"
+    "cargo-hauler": "./dist/bin/cargo-hauler.js"
   },
   "scripts": {
     "build": "agent-bundle build --output artifact",

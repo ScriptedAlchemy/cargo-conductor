@@ -19,35 +19,35 @@ describe('portable state root', () => {
     const stateDir = defaultStateDir({});
     expect(stateDir.startsWith(`/fast${sep}`)).toBe(false);
     expect(stateDir.startsWith(homedir())).toBe(true);
-    expect(stateDir.endsWith(`${sep}cargo-conductor`)).toBe(true);
+    expect(stateDir.endsWith(`${sep}cargo-hauler`)).toBe(true);
   });
 
   it('honors XDG_CACHE_HOME on every platform', () => {
     const env = { XDG_CACHE_HOME: '/tmp/xdg-cache' };
-    expect(defaultStateDir(env, 'linux', '/home/alice')).toBe('/tmp/xdg-cache/cargo-conductor');
-    expect(defaultStateDir(env, 'darwin', '/Users/alice')).toBe('/tmp/xdg-cache/cargo-conductor');
+    expect(defaultStateDir(env, 'linux', '/home/alice')).toBe('/tmp/xdg-cache/cargo-hauler');
+    expect(defaultStateDir(env, 'darwin', '/Users/alice')).toBe('/tmp/xdg-cache/cargo-hauler');
   });
 
   it('uses each platform cache convention when XDG_CACHE_HOME is unset', () => {
     expect(defaultStateDir({}, 'linux', '/home/alice')).toBe(
-      join('/home/alice', '.cache', 'cargo-conductor'),
+      join('/home/alice', '.cache', 'cargo-hauler'),
     );
     expect(defaultStateDir({}, 'darwin', '/Users/alice')).toBe(
-      join('/Users/alice', 'Library', 'Caches', 'cargo-conductor'),
+      join('/Users/alice', 'Library', 'Caches', 'cargo-hauler'),
     );
     expect(defaultStateDir({ LOCALAPPDATA: 'C:\\Users\\alice\\AppData\\Local' }, 'win32', 'C:\\Users\\alice')).toBe(
-      join('C:\\Users\\alice\\AppData\\Local', 'cargo-conductor'),
+      join('C:\\Users\\alice\\AppData\\Local', 'cargo-hauler'),
     );
     expect(defaultStateDir({}, 'win32', 'C:\\Users\\alice')).toBe(
-      join('C:\\Users\\alice', 'AppData', 'Local', 'cargo-conductor'),
+      join('C:\\Users\\alice', 'AppData', 'Local', 'cargo-hauler'),
     );
   });
 
-  it('lets CARGO_CONDUCTOR_STATE_DIR override everywhere the state dir is resolved', () => {
-    const env = { CARGO_CONDUCTOR_STATE_DIR: '/fast/cache/cargo-conductor' };
-    expect(resolveStateDir(env)).toBe('/fast/cache/cargo-conductor');
-    expect(resolveDaemonConfig(env).stateDir).toBe('/fast/cache/cargo-conductor');
-    expect(resolveHookStateDir(env)).toBe('/fast/cache/cargo-conductor');
+  it('lets CARGO_HAULER_STATE_DIR override everywhere the state dir is resolved', () => {
+    const env = { CARGO_HAULER_STATE_DIR: '/fast/cache/cargo-hauler' };
+    expect(resolveStateDir(env)).toBe('/fast/cache/cargo-hauler');
+    expect(resolveDaemonConfig(env).stateDir).toBe('/fast/cache/cargo-hauler');
+    expect(resolveHookStateDir(env)).toBe('/fast/cache/cargo-hauler');
   });
 
   it('keeps daemon config and hook clients on the same default', () => {
@@ -63,11 +63,11 @@ describe('daemon control endpoint per platform', () => {
   const winEnv = { LOCALAPPDATA: 'C:\\Users\\alice\\AppData\\Local' };
 
   it('keeps a unix socket file inside the state dir on darwin and linux', () => {
-    expect(daemonSocketPath('/home/alice/.cache/cargo-conductor', 'linux')).toBe(
-      join('/home/alice/.cache/cargo-conductor', 'daemon.sock'),
+    expect(daemonSocketPath('/home/alice/.cache/cargo-hauler', 'linux')).toBe(
+      join('/home/alice/.cache/cargo-hauler', 'daemon.sock'),
     );
-    expect(daemonSocketPath('/Users/alice/Library/Caches/cargo-conductor', 'darwin')).toBe(
-      join('/Users/alice/Library/Caches/cargo-conductor', 'daemon.sock'),
+    expect(daemonSocketPath('/Users/alice/Library/Caches/cargo-hauler', 'darwin')).toBe(
+      join('/Users/alice/Library/Caches/cargo-hauler', 'daemon.sock'),
     );
     expect(isNamedPipePath(daemonSocketPath('/tmp/state', 'linux'))).toBe(false);
   });
@@ -77,7 +77,7 @@ describe('daemon control endpoint per platform', () => {
     // Node net.Server.listen treats a path as Windows IPC only under the
     // named-pipe namespace; a %LOCALAPPDATA%\...\daemon.sock path cannot be
     // bound, so the daemon could never start on the documented default.
-    expect(config.socketPath).toMatch(/^\\\\\.\\pipe\\cargo-conductor-[0-9a-f]{16}$/u);
+    expect(config.socketPath).toMatch(/^\\\\\.\\pipe\\cargo-hauler-[0-9a-f]{16}$/u);
     expect(isNamedPipePath(config.socketPath)).toBe(true);
     expect(config.socketPath).not.toContain('daemon.sock');
     // Non-socket state files stay in the filesystem state dir.
@@ -91,21 +91,21 @@ describe('daemon control endpoint per platform', () => {
   });
 
   it('keeps the pipe stable per state dir and distinct across state dirs', () => {
-    const one = daemonSocketPath('C:\\Users\\alice\\AppData\\Local\\cargo-conductor', 'win32');
-    const other = daemonSocketPath('D:\\fastdisk\\cargo-conductor', 'win32');
+    const one = daemonSocketPath('C:\\Users\\alice\\AppData\\Local\\cargo-hauler', 'win32');
+    const other = daemonSocketPath('D:\\fastdisk\\cargo-hauler', 'win32');
     expect(one).not.toBe(other);
     // Windows paths are case-insensitive: casing drift between clients must
     // not split them onto different pipes.
-    expect(daemonSocketPath('C:\\USERS\\Alice\\AppData\\Local\\cargo-conductor', 'win32')).toBe(one);
+    expect(daemonSocketPath('C:\\USERS\\Alice\\AppData\\Local\\cargo-hauler', 'win32')).toBe(one);
   });
 
-  it('honors CARGO_CONDUCTOR_STATE_DIR in the win32 pipe identity', () => {
+  it('honors CARGO_HAULER_STATE_DIR in the win32 pipe identity', () => {
     const overridden = resolveDaemonConfig(
-      { CARGO_CONDUCTOR_STATE_DIR: 'D:\\fastdisk\\cargo-conductor' },
+      { CARGO_HAULER_STATE_DIR: 'D:\\fastdisk\\cargo-hauler' },
       'win32',
     );
-    expect(overridden.stateDir).toBe('D:\\fastdisk\\cargo-conductor');
-    expect(overridden.socketPath).toMatch(/^\\\\\.\\pipe\\cargo-conductor-/u);
+    expect(overridden.stateDir).toBe('D:\\fastdisk\\cargo-hauler');
+    expect(overridden.socketPath).toMatch(/^\\\\\.\\pipe\\cargo-hauler-/u);
     expect(overridden.socketPath).not.toBe(resolveDaemonConfig(winEnv, 'win32').socketPath);
   });
 });
@@ -178,11 +178,11 @@ describe('portable kache index default', () => {
     ).toBe(join('/home/alice', '.cache', 'kache', 'index.db'));
   });
 
-  it('prefers CARGO_CONDUCTOR_KACHE_INDEX and keeps empty string as disable', () => {
+  it('prefers CARGO_HAULER_KACHE_INDEX and keeps empty string as disable', () => {
     expect(
-      resolveDaemonConfig({ CARGO_CONDUCTOR_KACHE_INDEX: '/fast/cache/kache/index.db' })
+      resolveDaemonConfig({ CARGO_HAULER_KACHE_INDEX: '/fast/cache/kache/index.db' })
         .kacheIndexPath,
     ).toBe('/fast/cache/kache/index.db');
-    expect(resolveDaemonConfig({ CARGO_CONDUCTOR_KACHE_INDEX: '' }).kacheIndexPath).toBe('');
+    expect(resolveDaemonConfig({ CARGO_HAULER_KACHE_INDEX: '' }).kacheIndexPath).toBe('');
   });
 });

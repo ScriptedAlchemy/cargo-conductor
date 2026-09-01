@@ -4,7 +4,7 @@ import { parseCargoArgv } from '../daemon/intent-normalizer.js';
  * Cargo subcommands that never compile: pure metadata reads and registry
  * operations. Brokering them buys nothing — they hold a lane slot, receive a
  * generic multi-minute cost estimate, and pollute the job-outcome metrics
- * (observed: `cargo conductor --help` ticketed with a ~120s ETA and recorded
+ * (observed: `cargo hauler --help` ticketed with a ~120s ETA and recorded
  * as a failed job). Compile-shaped verbs (build/check/test/clippy/run/…) and
  * unknown third-party subcommands stay brokered: an unknown subcommand can
  * compile arbitrarily much, so only the closed known-query set bypasses.

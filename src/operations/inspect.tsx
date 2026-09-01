@@ -7,9 +7,9 @@ import type { RequestRecord } from '../daemon/protocol.js';
 import {
   displayRequestRecord,
   displayRequestRecords,
-  loadConductorSnapshot,
+  loadHaulerSnapshot,
 } from '../query.js';
-import { ConductorResult } from '../result.js';
+import { HaulerResult } from '../result.js';
 
 import {
   lastResultSchema,
@@ -102,7 +102,7 @@ const parseStatus = (args: readonly string[]): StatusInput => {
 };
 
 const loadSnapshot = (limit: number | undefined) =>
-  loadConductorSnapshot(limit === undefined ? {} : { recentLimit: limit });
+  loadHaulerSnapshot(limit === undefined ? {} : { recentLimit: limit });
 
 export const filterStatusRows = (
   rows: readonly RequestRecord[],
@@ -130,8 +130,8 @@ export const statusSummary = (
   const commandLimit = 160;
   const header =
     daemon === 'running'
-      ? `cargo-conductor daemon is running; ${active.length} active, ${recent.length} recent`
-      : `cargo-conductor daemon is not running; ${active.length} active, ${recent.length} recent`;
+      ? `cargo-hauler daemon is running; ${active.length} active, ${recent.length} recent`
+      : `cargo-hauler daemon is not running; ${active.length} active, ${recent.length} recent`;
   if (active.length === 0) {
     return header;
   }
@@ -157,7 +157,7 @@ export const defaultInspectOperations: InspectOperations = {
       daemon: snapshot.daemon,
       operation: 'last',
       request: request === null ? null : displayRequestRecord(request),
-      summary: request === null ? 'no conductor requests recorded' : `${request.ticket} ${request.status}`,
+      summary: request === null ? 'no hauler requests recorded' : `${request.ticket} ${request.status}`,
     };
   },
   log: async (input, context) => {
@@ -170,7 +170,7 @@ export const defaultInspectOperations: InspectOperations = {
       requests: displayRequestRecords(snapshot.recent),
       summary:
         snapshot.recent.length === 0
-          ? 'no conductor requests recorded'
+          ? 'no hauler requests recorded'
           : `${snapshot.recent.length} recent request${snapshot.recent.length === 1 ? '' : 's'}`,
     };
   },
@@ -213,50 +213,50 @@ export const inspectOperations = (operations: InspectOperations) => [
     mcp: {
       _meta: { ui: { resourceUri: APP_RESOURCE_URI } },
       description:
-        'Show cargo-conductor queue and in-flight work. Filter by cwd, session, laneKey, tickets, statuses, or commandContains instead of piping CLI JSON through jq.',
-      name: 'conductor_status',
+        'Show cargo-hauler queue and in-flight work. Filter by cwd, session, laneKey, tickets, statuses, or commandContains instead of piping CLI JSON through jq.',
+      name: 'hauler_status',
       readOnly: true,
-      server: 'conductor',
+      server: 'hauler',
     },
-    render: (receipt) => <ConductorResult receipt={receipt} />,
+    render: (receipt) => <HaulerResult receipt={receipt} />,
     resultSchema: statusResultSchema,
   }),
   defineOperation({
     cli: {
       name: 'log',
       parse: parseLimit,
-      summary: 'Show recent conductor requests.',
+      summary: 'Show recent hauler requests.',
       usage: 'log [--limit N]',
     },
     execute: operations.log,
     id: 'log',
     inputSchema: limitInputSchema,
     mcp: {
-      description: 'Show recent cargo-conductor requests from the durable ledger.',
-      name: 'conductor_log',
+      description: 'Show recent cargo-hauler requests from the durable ledger.',
+      name: 'hauler_log',
       readOnly: true,
-      server: 'conductor',
+      server: 'hauler',
     },
-    render: (receipt) => <ConductorResult receipt={receipt} />,
+    render: (receipt) => <HaulerResult receipt={receipt} />,
     resultSchema: logResultSchema,
   }),
   defineOperation({
     cli: {
       name: 'last',
       parse: () => ({}),
-      summary: 'Show the most recent conductor request.',
+      summary: 'Show the most recent hauler request.',
       usage: 'last',
     },
     execute: operations.last,
     id: 'last',
     inputSchema: limitInputSchema,
     mcp: {
-      description: 'Show the most recent cargo-conductor request.',
-      name: 'conductor_last',
+      description: 'Show the most recent cargo-hauler request.',
+      name: 'hauler_last',
       readOnly: true,
-      server: 'conductor',
+      server: 'hauler',
     },
-    render: (receipt) => <ConductorResult receipt={receipt} />,
+    render: (receipt) => <HaulerResult receipt={receipt} />,
     resultSchema: lastResultSchema,
   }),
 ];

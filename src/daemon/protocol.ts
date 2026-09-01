@@ -3,7 +3,7 @@ import { z } from 'zod';
 export { LineBuffer } from '../lib/ndjson.js';
 
 /**
- * Wire protocol for the conductor daemon: one JSON document per line
+ * Wire protocol for the hauler daemon: one JSON document per line
  * (NDJSON) in each direction over the daemon's unix socket. This module is
  * the shared vocabulary between the daemon, the control/exec clients, and
  * the ledger, so it must not import from the other daemon modules.

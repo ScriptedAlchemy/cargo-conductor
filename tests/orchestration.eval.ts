@@ -8,7 +8,7 @@ import { execRequest, findExit, pollReport, withDaemon } from './harness.js';
 
 const fixtureWorkspace = join(dirname(fileURLToPath(import.meta.url)), '..', 'evals', 'fixture');
 
-describe('cargo-conductor evals', () => {
+describe('cargo-hauler evals', () => {
   it('coalesces identical checks against the fixture workspace into one execution', () =>
     withDaemon(5, (fixture) =>
       Effect.gen(function* () {

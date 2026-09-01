@@ -149,7 +149,7 @@ export interface LedgerApi {
   readonly metricsWindows: (nowMs: number) => Effect.Effect<MetricsWindowsReport>;
 }
 
-export class Ledger extends Context.Service<Ledger, LedgerApi>()('cargo-conductor/Ledger') {}
+export class Ledger extends Context.Service<Ledger, LedgerApi>()('cargo-hauler/Ledger') {}
 
 const schemaStatements = `
 CREATE TABLE IF NOT EXISTS requests (

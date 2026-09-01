@@ -34,7 +34,7 @@ export interface DaemonConfigShape {
   readonly batchWindowMs: number;
   /**
    * Per-core 1-minute loadavg above which admission defers (opt-in via
-   * CARGO_CONDUCTOR_LOAD_THRESHOLD; null disables the clamp entirely).
+   * CARGO_HAULER_LOAD_THRESHOLD; null disables the clamp entirely).
    */
   readonly loadThresholdPerCore: number | null;
   /** Admissions the load clamp never throttles below (floor 1). */
@@ -43,14 +43,14 @@ export interface DaemonConfigShape {
    * PSI `some avg10` CPU stall percentage above which admission defers.
    * On by default where /proc/pressure exists because stall share, unlike
    * loadavg, reacts within seconds to the contention that makes concurrent
-   * test suites miss deadlines. CARGO_CONDUCTOR_CPU_PRESSURE_THRESHOLD
+   * test suites miss deadlines. CARGO_HAULER_CPU_PRESSURE_THRESHOLD
    * overrides; any value <= 0 disables the arm.
    */
   readonly cpuStallThreshold: number | null;
 }
 
 export class DaemonConfig extends Context.Service<DaemonConfig, DaemonConfigShape>()(
-  'cargo-conductor/DaemonConfig',
+  'cargo-hauler/DaemonConfig',
 ) {}
 
 const defaultMaxConcurrent = 5;
@@ -62,15 +62,15 @@ export const resolveDaemonConfig = (
   platform: NodeJS.Platform = process.platform,
 ): DaemonConfigShape => {
   const stateDir = resolveStateDir(env);
-  const parsedMax = Number.parseInt(env.CARGO_CONDUCTOR_MAX_CONCURRENT ?? '', 10);
-  const parsedReplay = Number.parseInt(env.CARGO_CONDUCTOR_REPLAY_BUFFER_BYTES ?? '', 10);
+  const parsedMax = Number.parseInt(env.CARGO_HAULER_MAX_CONCURRENT ?? '', 10);
+  const parsedReplay = Number.parseInt(env.CARGO_HAULER_REPLAY_BUFFER_BYTES ?? '', 10);
   const maxConcurrent =
     Number.isInteger(parsedMax) && parsedMax > 0 ? parsedMax : defaultMaxConcurrent;
-  const parsedJobs = Number.parseInt(env.CARGO_CONDUCTOR_JOBS_GRANT ?? '', 10);
-  const parsedLoadThreshold = Number.parseFloat(env.CARGO_CONDUCTOR_LOAD_THRESHOLD ?? '');
-  const parsedLoadMin = Number.parseInt(env.CARGO_CONDUCTOR_LOAD_MIN ?? '', 10);
-  const parsedCpuStall = Number.parseFloat(env.CARGO_CONDUCTOR_CPU_PRESSURE_THRESHOLD ?? '');
-  const parsedBatchWindow = Number.parseInt(env.CARGO_CONDUCTOR_BATCH_WINDOW_MS ?? '', 10);
+  const parsedJobs = Number.parseInt(env.CARGO_HAULER_JOBS_GRANT ?? '', 10);
+  const parsedLoadThreshold = Number.parseFloat(env.CARGO_HAULER_LOAD_THRESHOLD ?? '');
+  const parsedLoadMin = Number.parseInt(env.CARGO_HAULER_LOAD_MIN ?? '', 10);
+  const parsedCpuStall = Number.parseFloat(env.CARGO_HAULER_CPU_PRESSURE_THRESHOLD ?? '');
+  const parsedBatchWindow = Number.parseInt(env.CARGO_HAULER_BATCH_WINDOW_MS ?? '', 10);
   // Divide the cores between the admitted builds so N concurrent cargos do
   // not each assume they own the whole machine (rheo's grant idea).
   const defaultJobsGrant = Math.max(4, Math.floor(availableParallelism() / maxConcurrent));
@@ -86,9 +86,9 @@ export const resolveDaemonConfig = (
       Number.isInteger(parsedReplay) && parsedReplay >= 0 ? parsedReplay : 4 * 1024 * 1024,
     // '' (explicitly empty) disables kache; a missing default file merely
     // reports kache as unavailable, so no machine needs the path to exist.
-    kacheIndexPath: env.CARGO_CONDUCTOR_KACHE_INDEX ?? defaultKacheIndexPath(env),
+    kacheIndexPath: env.CARGO_HAULER_KACHE_INDEX ?? defaultKacheIndexPath(env),
     jobsGrant: Number.isInteger(parsedJobs) && parsedJobs >= 0 ? parsedJobs : defaultJobsGrant,
-    batchEnabled: env.CARGO_CONDUCTOR_BATCH !== '0',
+    batchEnabled: env.CARGO_HAULER_BATCH !== '0',
     batchWindowMs:
       Number.isInteger(parsedBatchWindow) && parsedBatchWindow >= 0
         ? parsedBatchWindow
@@ -98,7 +98,7 @@ export const resolveDaemonConfig = (
     loadMinConcurrent:
       Number.isInteger(parsedLoadMin) && parsedLoadMin >= 1 ? parsedLoadMin : 2,
     cpuStallThreshold:
-      env.CARGO_CONDUCTOR_CPU_PRESSURE_THRESHOLD === undefined
+      env.CARGO_HAULER_CPU_PRESSURE_THRESHOLD === undefined
         ? defaultCpuStallThreshold
         : Number.isFinite(parsedCpuStall) && parsedCpuStall > 0
           ? parsedCpuStall

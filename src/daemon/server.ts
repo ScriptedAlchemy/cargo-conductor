@@ -169,7 +169,7 @@ export class ConnectionOutputBuffer {
       ticket: message.ticket,
       channel: 'stderr',
       data: Buffer.from(
-        `[cargo-conductor] output truncated for slow client: ${this.#droppedPayloadBytes} bytes dropped\n`,
+        `[cargo-hauler] output truncated for slow client: ${this.#droppedPayloadBytes} bytes dropped\n`,
       ).toString('base64'),
     };
   }

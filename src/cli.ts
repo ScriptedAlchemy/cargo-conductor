@@ -5,11 +5,11 @@ import { runRscCli } from '@agent-bundle/rsc-runtime/plugin';
 import * as Cause from 'effect/Cause';
 import * as Effect from 'effect/Effect';
 
-import { createConductorApplication, type ConductorOperations } from './application.js';
+import { createHaulerApplication, type HaulerOperations } from './application.js';
 import { buildRelevantEnv } from './client/env.js';
 import { runExecClient, type RunExecOptions, type RunExecResult } from './client/exec.js';
 import { ExecUsageError, parseExecArgv } from './client/parse.js';
-import { resolveConductorArgv } from './hooks/paths.js';
+import { resolveHaulerArgv } from './hooks/paths.js';
 import {
   defaultShimDir,
   installCargoShim,
@@ -17,26 +17,26 @@ import {
   type ShimPathStatus,
 } from './shim/install.js';
 
-export type { ConductorOperations };
+export type { HaulerOperations };
 
-const usage = `Usage: conductor <command>
+const usage = `Usage: hauler <command>
 
 Commands:
   exec [--session ID] [--host HOST] [--cwd DIR] [--bg] -- <cargo command>
-      Run cargo through the conductor daemon
+      Run cargo through the hauler daemon
   status [--limit N]            Show queue and in-flight cargo work
-  log [--limit N]               Show recent conductor requests
+  log [--limit N]               Show recent hauler requests
   last                          Show the most recent request
   await <ticket> [--max-wait-ms N]
   result <ticket>
   request [--session ID] -- <cargo command>
   daemon <run|start|stop|status>
-      Control the conductor daemon
+      Control the hauler daemon
   install-shim                  Install an optional PATH cargo shim
 `;
 
 export interface CliOptions {
-  readonly operations?: ConductorOperations;
+  readonly operations?: HaulerOperations;
   readonly runExec?: (options: RunExecOptions) => Effect.Effect<RunExecResult>;
   readonly signal?: AbortSignal;
   readonly write?: (value: string) => void;
@@ -49,13 +49,13 @@ const defaultWrite = (value: string): void => {
 };
 
 /**
- * The shim must never depend on a PATH `conductor` that nothing installs
+ * The shim must never depend on a PATH `hauler` that nothing installs
  * (issue #2): embed the absolute node + script that is running right now.
  */
-const selfConductorArgv = (): readonly string[] => {
+const selfHaulerArgv = (): readonly string[] => {
   const script = process.argv[1];
   if (script === undefined || script.length === 0) {
-    return resolveConductorArgv();
+    return resolveHaulerArgv();
   }
   let absolute = resolve(script);
   try {
@@ -108,12 +108,12 @@ const runExecCommand = async (argv: readonly string[], options: CliOptions): Pro
         argv: parsed.cargoArgv,
         cwd: parsed.cwd ?? process.cwd(),
         env: buildRelevantEnv(process.env),
-        host: parsed.host ?? process.env['CARGO_CONDUCTOR_HOST'] ?? 'cli',
+        host: parsed.host ?? process.env['CARGO_HAULER_HOST'] ?? 'cli',
         io,
         ...(parsed.background ? { background: true } : {}),
-        ...((parsed.session ?? process.env['CARGO_CONDUCTOR_SESSION']) === undefined
+        ...((parsed.session ?? process.env['CARGO_HAULER_SESSION']) === undefined
           ? {}
-          : { session: parsed.session ?? process.env['CARGO_CONDUCTOR_SESSION'] }),
+          : { session: parsed.session ?? process.env['CARGO_HAULER_SESSION'] }),
       }).pipe(
         Effect.map((result) => result.exitCode),
         Effect.catchCause((cause) =>
@@ -155,12 +155,12 @@ export const runCli = async (
     const realCargoIndex = rest.indexOf('--real-cargo');
     const realCargo = realCargoIndex === -1 ? 'cargo' : rest[realCargoIndex + 1];
     if (destDir === undefined || realCargo === undefined) {
-      write('Usage: conductor install-shim [--dir DIR] [--real-cargo PATH] [--force]\n');
+      write('Usage: hauler install-shim [--dir DIR] [--real-cargo PATH] [--force]\n');
       return 2;
     }
     try {
       const installed = installCargoShim({
-        conductorArgv: selfConductorArgv(),
+        haulerArgv: selfHaulerArgv(),
         destDir,
         force,
         realCargo,
@@ -175,7 +175,7 @@ export const runCli = async (
   }
   try {
     return await runRscCli(
-      createConductorApplication({
+      createHaulerApplication({
         ...(options.operations === undefined ? {} : { operations: options.operations }),
       }),
       argv,
@@ -196,6 +196,6 @@ export const runCli = async (
 /**
  * `agent-bundle build` detects the `main` export and generates the process
  * envelope. The same module is the package bin (`src/cli.ts` convention →
- * `dist/bin/cargo-conductor.js`) and the `conductor` artifact script.
+ * `dist/bin/cargo-hauler.js`) and the `hauler` artifact script.
  */
 export const main = async (argv: readonly string[]): Promise<number> => runCli(argv);

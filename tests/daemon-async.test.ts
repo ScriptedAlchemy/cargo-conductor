@@ -50,7 +50,7 @@ describe('async tickets', () => {
                 argv: ['cargo', 'check'],
                 cwd: fixture.ws1,
                 env: {
-                  CARGO_CONDUCTOR_CARGO_BIN: join(fixture.binDir, 'cargo'),
+                  CARGO_HAULER_CARGO_BIN: join(fixture.binDir, 'cargo'),
                   FAKE_SLEEP: '10',
                 },
               },
@@ -109,7 +109,7 @@ describe('async tickets', () => {
                 argv: ['cargo', 'check', '-p', 'live-tail'],
                 cwd: fixture.ws1,
                 env: {
-                  CARGO_CONDUCTOR_CARGO_BIN: join(fixture.binDir, 'cargo'),
+                  CARGO_HAULER_CARGO_BIN: join(fixture.binDir, 'cargo'),
                   FAKE_SLEEP: '10',
                 },
               },
@@ -180,7 +180,7 @@ describe('async tickets', () => {
                 argv: ['cargo', 'check', '-p', 'running'],
                 cwd: fixture.ws1,
                 env: {
-                  CARGO_CONDUCTOR_CARGO_BIN: join(fixture.binDir, 'cargo'),
+                  CARGO_HAULER_CARGO_BIN: join(fixture.binDir, 'cargo'),
                   FAKE_SLEEP: '10',
                 },
               },
@@ -194,7 +194,7 @@ describe('async tickets', () => {
                 argv: ['cargo', 'check', '-p', 'queued'],
                 cwd: fixture.ws2,
                 env: {
-                  CARGO_CONDUCTOR_CARGO_BIN: join(fixture.binDir, 'cargo'),
+                  CARGO_HAULER_CARGO_BIN: join(fixture.binDir, 'cargo'),
                 },
               },
               callbacks,
@@ -205,7 +205,7 @@ describe('async tickets', () => {
                 argv: ['cargo', 'check', '-p', 'queued'],
                 cwd: fixture.ws2,
                 env: {
-                  CARGO_CONDUCTOR_CARGO_BIN: join(fixture.binDir, 'cargo'),
+                  CARGO_HAULER_CARGO_BIN: join(fixture.binDir, 'cargo'),
                 },
               },
               callbacks,
@@ -216,7 +216,7 @@ describe('async tickets', () => {
                 argv: ['cargo', 'check', '-p', 'another'],
                 cwd: fixture.ws2,
                 env: {
-                  CARGO_CONDUCTOR_CARGO_BIN: join(fixture.binDir, 'cargo'),
+                  CARGO_HAULER_CARGO_BIN: join(fixture.binDir, 'cargo'),
                 },
               },
               callbacks,
@@ -279,7 +279,7 @@ describe('async tickets', () => {
                 argv: ['cargo', 'check'],
                 cwd: fixture.ws1,
                 env: {
-                  CARGO_CONDUCTOR_CARGO_BIN: join(fixture.binDir, 'cargo'),
+                  CARGO_HAULER_CARGO_BIN: join(fixture.binDir, 'cargo'),
                 },
               },
               {
@@ -351,7 +351,7 @@ describe('async tickets', () => {
                 argv: ['cargo', 'check'],
                 cwd: fixture.ws1,
                 env: {
-                  CARGO_CONDUCTOR_CARGO_BIN: join(fixture.binDir, 'cargo'),
+                  CARGO_HAULER_CARGO_BIN: join(fixture.binDir, 'cargo'),
                   FAKE_SLEEP: '0.2',
                 },
               },
@@ -392,7 +392,7 @@ describe('async tickets', () => {
             env: {
               // Bare `cargo` no longer resolves through PATH (shim recursion
               // guard); pin the job at the fixture's fake cargo explicitly.
-              CARGO_CONDUCTOR_CARGO_BIN: join(fixture.binDir, 'cargo'),
+              CARGO_HAULER_CARGO_BIN: join(fixture.binDir, 'cargo'),
               FAKE_SLEEP: '0.2',
               PATH: `${fixture.binDir}:${process.env.PATH ?? ''}`,
             },

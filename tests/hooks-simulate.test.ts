@@ -27,7 +27,7 @@ const loadJson = (name: string): Record<string, unknown> =>
   JSON.parse(readFileSync(join(fixtureRoot, name), 'utf8')) as Record<string, unknown>;
 
 const services = {
-  conductorArgv: ['conductor'] as const,
+  haulerArgv: ['hauler'] as const,
   hasActiveBuilds: () => false,
 };
 
@@ -54,7 +54,7 @@ const runWrapper = (
       env: {
         ...process.env,
         AGENT_BUNDLE_HOOK_HOST: 'claude',
-        CARGO_CONDUCTOR_STATE_DIR: join(repoRoot, '.tmp-hook-simulate'),
+        CARGO_HAULER_STATE_DIR: join(repoRoot, '.tmp-hook-simulate'),
       },
       stdio: ['pipe', 'pipe', 'pipe'],
     });
@@ -179,9 +179,9 @@ describe('agent-bundle hooks simulate', () => {
     'simulates the plugin beforeTool and afterTool wrappers',
     async () => {
       const previousHost = process.env.AGENT_BUNDLE_HOOK_HOST;
-      const previousState = process.env.CARGO_CONDUCTOR_STATE_DIR;
+      const previousState = process.env.CARGO_HAULER_STATE_DIR;
       process.env.AGENT_BUNDLE_HOOK_HOST = 'claude';
-      process.env.CARGO_CONDUCTOR_STATE_DIR = join(repoRoot, '.tmp-hook-simulate');
+      process.env.CARGO_HAULER_STATE_DIR = join(repoRoot, '.tmp-hook-simulate');
       try {
         const hooks = await listHooks({ artifact: artifactRoot, root: repoRoot, target: 'plugin' });
         const before = hooks.find((hook) => hook.event === 'beforeTool');
@@ -241,9 +241,9 @@ describe('agent-bundle hooks simulate', () => {
           process.env.AGENT_BUNDLE_HOOK_HOST = previousHost;
         }
         if (previousState === undefined) {
-          delete process.env.CARGO_CONDUCTOR_STATE_DIR;
+          delete process.env.CARGO_HAULER_STATE_DIR;
         } else {
-          process.env.CARGO_CONDUCTOR_STATE_DIR = previousState;
+          process.env.CARGO_HAULER_STATE_DIR = previousState;
         }
         rmSync(join(repoRoot, '.tmp-hook-simulate'), { force: true, recursive: true });
       }

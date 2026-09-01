@@ -108,7 +108,7 @@ export interface BrokerApi {
   ) => Effect.Effect<readonly SessionCompletedRecord[]>;
 }
 
-export class Broker extends Context.Service<Broker, BrokerApi>()('cargo-conductor/Broker') {}
+export class Broker extends Context.Service<Broker, BrokerApi>()('cargo-hauler/Broker') {}
 
 const invalidLaneKey = 'invalid';
 
@@ -312,7 +312,7 @@ export const BrokerLive: Layer.Layer<
      * The ledger only stores an output tail at settlement, but the in-flight
      * job (or a follower's attachment view) accumulates one live. Overlay it
      * so a running ticket's record shows progress instead of nothing — a
-     * long cargo run polled via `conductor result` or the dashboard drawer
+     * long cargo run polled via `hauler result` or the dashboard drawer
      * should never be blind until the end.
      */
     const withLiveTail = (record: RequestRecord | null): RequestRecord | null => {
@@ -497,7 +497,7 @@ export const BrokerLive: Layer.Layer<
         const metricWindows = yield* ledger.metricsWindows(nowMs);
         const kache = yield* costModel.kacheStatus;
         const savings = yield* ledger.attachmentSavings();
-        // Devices worth watching right now: the conductor's own state disk
+        // Devices worth watching right now: the hauler's own state disk
         // plus whatever disks the in-flight builds are writing to.
         const ioSample = yield* Effect.sync(() =>
           systemIo.sample([

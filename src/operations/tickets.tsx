@@ -18,7 +18,7 @@ import {
 } from '../client/tickets.js';
 import type { RequestRecord } from '../daemon/protocol.js';
 import { describeRequestRecord, displayRequestRecord } from '../query.js';
-import { ConductorResult } from '../result.js';
+import { HaulerResult } from '../result.js';
 
 import {
   awaitMaxWaitMs,
@@ -56,7 +56,7 @@ const parseTicket = (args: readonly string[]): TicketInput => {
   }
   if (maxWaitMs > awaitMaxWaitMs) {
     throw new Error(
-      `--max-wait-ms must be at most ${awaitMaxWaitMs} (${awaitMaxWaitMs / 60_000} minutes); use conductor result to poll longer waits`,
+      `--max-wait-ms must be at most ${awaitMaxWaitMs} (${awaitMaxWaitMs / 60_000} minutes); use hauler result to poll longer waits`,
     );
   }
   return { maxWaitMs, ticket };
@@ -83,15 +83,15 @@ const infraFailure = (error: TicketSocketError): Error => {
   switch (error._tag) {
     case 'DaemonUnreachable':
       return new Error(
-        `conductor daemon unreachable at ${error.socketPath}; it starts on demand with any exec, or run: conductor daemon start`,
+        `hauler daemon unreachable at ${error.socketPath}; it starts on demand with any exec, or run: hauler daemon start`,
       );
     case 'ControlTimeout':
       return new Error(
-        `conductor daemon did not answer within ${error.timeoutMs}ms (socket ${error.socketPath})`,
+        `hauler daemon did not answer within ${error.timeoutMs}ms (socket ${error.socketPath})`,
       );
     case 'ConnectionClosed':
       return new Error(
-        `connection to the conductor daemon closed mid-request (socket ${error.socketPath})`,
+        `connection to the hauler daemon closed mid-request (socket ${error.socketPath})`,
       );
     default: {
       const exhaustive: never = error;
@@ -158,7 +158,7 @@ export const enrichTicketRequest = (
 export const defaultTicketOperations: TicketOperations = {
   await: async (input, context) => {
     const waited = await runTicketEffect(
-      // Progress heartbeats go to stderr so a terminal `conductor await`
+      // Progress heartbeats go to stderr so a terminal `hauler await`
       // shows phase/elapsed/estimate while stdout stays machine-readable.
       awaitTicketWithProgress(input.ticket, input.maxWaitMs ?? 30_000, (line) => {
         process.stderr.write(line);
@@ -203,26 +203,26 @@ export const ticketOperations = (operations: TicketOperations) => [
     cli: {
       name: 'await',
       parse: parseTicket,
-      summary: 'Wait for a conductor ticket to finish.',
+      summary: 'Wait for a hauler ticket to finish.',
       usage: 'await <ticket> [--max-wait-ms N]',
     },
     execute: operations.await,
     id: 'await',
     inputSchema: ticketInputSchema,
     mcp: {
-      description: 'Long-poll a cargo-conductor ticket until it finishes or the wait expires.',
-      name: 'conductor_await',
+      description: 'Long-poll a cargo-hauler ticket until it finishes or the wait expires.',
+      name: 'hauler_await',
       readOnly: true,
-      server: 'conductor',
+      server: 'hauler',
     },
-    render: (receipt) => <ConductorResult receipt={receipt} />,
+    render: (receipt) => <HaulerResult receipt={receipt} />,
     resultSchema: awaitResultSchema,
   }),
   defineOperation({
     cli: {
       name: 'result',
       parse: parseTicket,
-      summary: 'Fetch a durable conductor ticket result.',
+      summary: 'Fetch a durable hauler ticket result.',
       usage: 'result <ticket>',
     },
     execute: operations.result,
@@ -230,12 +230,12 @@ export const ticketOperations = (operations: TicketOperations) => [
     inputSchema: ticketInputSchema,
     mcp: {
       description:
-        'Fetch one cargo-conductor ticket. Running tickets include a live output-tail snapshot; terminal tickets include the durable ledger result.',
-      name: 'conductor_result',
+        'Fetch one cargo-hauler ticket. Running tickets include a live output-tail snapshot; terminal tickets include the durable ledger result.',
+      name: 'hauler_result',
       readOnly: true,
-      server: 'conductor',
+      server: 'hauler',
     },
-    render: (receipt) => <ConductorResult receipt={receipt} />,
+    render: (receipt) => <HaulerResult receipt={receipt} />,
     resultSchema: resultFetchResultSchema,
   }),
   defineOperation({
@@ -251,11 +251,11 @@ export const ticketOperations = (operations: TicketOperations) => [
     mcp: {
       description:
         'Submit a background cargo request and return a durable ticket id. Host and session are inferred when omitted; explicit fields override inferred attribution.',
-      name: 'conductor_request',
+      name: 'hauler_request',
       readOnly: false,
-      server: 'conductor',
+      server: 'hauler',
     },
-    render: (receipt) => <ConductorResult receipt={receipt} />,
+    render: (receipt) => <HaulerResult receipt={receipt} />,
     resultSchema: requestResultSchema,
   }),
 ];

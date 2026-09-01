@@ -8,7 +8,7 @@ import { realCargoBin } from '../src/daemon/real-cargo.js';
 
 describe('realCargoBin', () => {
   it('honors the explicit override', () => {
-    expect(realCargoBin({ CARGO_CONDUCTOR_CARGO_BIN: '/opt/rust/cargo' })).toBe('/opt/rust/cargo');
+    expect(realCargoBin({ CARGO_HAULER_CARGO_BIN: '/opt/rust/cargo' })).toBe('/opt/rust/cargo');
   });
 
   it('prefers CARGO_HOME/bin/cargo when it exists', () => {

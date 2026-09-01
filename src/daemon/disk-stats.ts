@@ -10,7 +10,7 @@ import { readFileSync } from 'node:fs';
  * - iowait share of total CPU time between consecutive samples, from the
  *   aggregate `cpu` line of `/proc/stat`;
  * - per-device busy share (io_ticks delta over wall time) for the devices
- *   that back the conductor state dir and the in-flight target dirs,
+ *   that back the hauler state dir and the in-flight target dirs,
  *   resolved through `/proc/self/mountinfo` → `/proc/diskstats`. No device
  *   path is ever hardcoded.
  *

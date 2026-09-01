@@ -13,22 +13,22 @@ import {
   type TicketOperations,
 } from './operations/tickets.js';
 
-export type ConductorOperations = DaemonOperations & InspectOperations & TicketOperations;
+export type HaulerOperations = DaemonOperations & InspectOperations & TicketOperations;
 
-const operationDefinitions = (operations: ConductorOperations) =>
+const operationDefinitions = (operations: HaulerOperations) =>
   Object.freeze([
     ...inspectOperations(operations),
     ...ticketOperations(operations),
     ...daemonOperations(operations),
   ]);
 
-export const createConductorApplication = (
-  options: { readonly operations?: ConductorOperations } = {},
+export const createHaulerApplication = (
+  options: { readonly operations?: HaulerOperations } = {},
 ) =>
   defineRscApplication({
     description:
       'Coalesce, schedule, and stream cargo so concurrent agent sessions share compiles instead of fighting locks.',
-    name: 'cargo-conductor',
+    name: 'cargo-hauler',
     operations: operationDefinitions({
       ...defaultDaemonOperations,
       ...defaultInspectOperations,
@@ -38,4 +38,4 @@ export const createConductorApplication = (
     version: packageVersion,
   });
 
-export const conductorApplication = createConductorApplication();
+export const haulerApplication = createHaulerApplication();

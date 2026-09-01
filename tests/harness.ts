@@ -50,12 +50,12 @@ export const makeFixture = (maxConcurrent: number): Fixture => {
     return dir;
   };
   const config = resolveDaemonConfig({
-    CARGO_CONDUCTOR_STATE_DIR: stateDir,
-    CARGO_CONDUCTOR_MAX_CONCURRENT: String(maxConcurrent),
-    CARGO_CONDUCTOR_BATCH_WINDOW_MS: '0',
-    CARGO_CONDUCTOR_CPU_PRESSURE_THRESHOLD: '0',
+    CARGO_HAULER_STATE_DIR: stateDir,
+    CARGO_HAULER_MAX_CONCURRENT: String(maxConcurrent),
+    CARGO_HAULER_BATCH_WINDOW_MS: '0',
+    CARGO_HAULER_CPU_PRESSURE_THRESHOLD: '0',
     // Hermetic tests: no live kache priors.
-    CARGO_CONDUCTOR_KACHE_INDEX: '',
+    CARGO_HAULER_KACHE_INDEX: '',
   });
   return { config, root, binDir, ws1: makeWorkspace('ws1'), ws2: makeWorkspace('ws2') };
 };
@@ -128,7 +128,7 @@ export const execRequest = (fixture: Fixture, options: ExecOptions) => {
     PATH: `${fixture.binDir}:${process.env.PATH ?? ''}`,
     // The executor refuses to resolve bare `cargo` through PATH (shim
     // recursion guard); pin jobs at the fixture's fake cargo explicitly.
-    CARGO_CONDUCTOR_CARGO_BIN: join(fixture.binDir, 'cargo'),
+    CARGO_HAULER_CARGO_BIN: join(fixture.binDir, 'cargo'),
     ...options.extraEnv,
   };
   if (options.sleep !== undefined) {

@@ -12,23 +12,23 @@ import {
 } from '../src/shim/install.js';
 
 describe('PATH cargo shim', () => {
-  it('emits a shim that forwards argv through conductor exec', () => {
+  it('emits a shim that forwards argv through hauler exec', () => {
     const script = renderCargoShim({
-      conductorArgv: ['/usr/bin/node', '/opt/plugin/scripts/conductor.mjs'],
+      haulerArgv: ['/usr/bin/node', '/opt/plugin/scripts/hauler.mjs'],
       realCargo: '/usr/bin/cargo',
     });
     expect(script).toContain('#!/bin/sh');
     expect(script).toContain(
-      'exec /usr/bin/node /opt/plugin/scripts/conductor.mjs exec --host shim -- /usr/bin/cargo "$@"',
+      'exec /usr/bin/node /opt/plugin/scripts/hauler.mjs exec --host shim -- /usr/bin/cargo "$@"',
     );
   });
 
   it('passes daemon-spawned cargo straight through instead of re-brokering it', () => {
     const script = renderCargoShim({
-      conductorArgv: ['conductor'],
+      haulerArgv: ['hauler'],
       realCargo: '/usr/bin/cargo',
     });
-    expect(script).toContain('if [ -n "${CARGO_CONDUCTOR_INSIDE:-}" ]; then');
+    expect(script).toContain('if [ -n "${CARGO_HAULER_INSIDE:-}" ]; then');
     expect(script).toContain('  exec /usr/bin/cargo "$@"');
   });
 
@@ -43,14 +43,14 @@ describe('PATH cargo shim', () => {
 
       expect(() =>
         installCargoShim({
-          conductorArgv: ['conductor'],
+          haulerArgv: ['hauler'],
           destDir,
           realCargo: '/usr/bin/cargo',
         }),
       ).toThrow(/already exists/u);
 
       const forced = installCargoShim({
-        conductorArgv: ['conductor'],
+        haulerArgv: ['hauler'],
         destDir,
         force: true,
         realCargo: '/usr/bin/cargo',
@@ -58,7 +58,7 @@ describe('PATH cargo shim', () => {
       expect(forced.path).toBe(foreign);
       expect(existsSync(foreign)).toBe(true);
       expect(readFileSync(foreign, 'utf8')).toContain(
-        'conductor exec --host shim -- /usr/bin/cargo',
+        'hauler exec --host shim -- /usr/bin/cargo',
       );
     } finally {
       rmSync(root, { recursive: true, force: true });
@@ -98,7 +98,7 @@ describe('PATH cargo shim', () => {
       process.env.PATH = `${shimDir}:${realDir}`;
       try {
         const installed = installCargoShim({
-          conductorArgv: ['conductor'],
+          haulerArgv: ['hauler'],
           destDir: shimDir,
           force: true,
           realCargo: 'cargo',
@@ -118,7 +118,7 @@ describe('PATH cargo shim', () => {
       const destDir = join(root, 'bin');
       expect(() =>
         installCargoShim({
-          conductorArgv: ['conductor'],
+          haulerArgv: ['hauler'],
           destDir,
           platform: 'win32',
           realCargo: '/usr/bin/cargo',

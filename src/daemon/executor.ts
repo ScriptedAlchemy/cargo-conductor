@@ -141,7 +141,7 @@ const defaultKillGraceMs = 8_000;
 
 const killGraceMs = (env: Readonly<Record<string, string>> | undefined): number => {
   const parsed = Number.parseInt(
-    env?.CARGO_CONDUCTOR_KILL_GRACE_MS ?? process.env.CARGO_CONDUCTOR_KILL_GRACE_MS ?? '',
+    env?.CARGO_HAULER_KILL_GRACE_MS ?? process.env.CARGO_HAULER_KILL_GRACE_MS ?? '',
     10,
   );
   return Number.isInteger(parsed) && parsed >= 0 ? parsed : defaultKillGraceMs;
@@ -152,9 +152,9 @@ const buildCommand = (options: ExecuteCargoOptions): ChildProcess.StandardComman
   if (executable === undefined) {
     return undefined;
   }
-  // Bare `cargo` must not resolve through PATH: with the conductor shim
+  // Bare `cargo` must not resolve through PATH: with the hauler shim
   // installed, the daemon would spawn the shim and submit its own work back
-  // to itself. CARGO_CONDUCTOR_INSIDE lets the shim pass nested invocations
+  // to itself. CARGO_HAULER_INSIDE lets the shim pass nested invocations
   // straight through to the real binary.
   const resolved = executable === 'cargo' ? realCargoBin(options.env ?? process.env) : executable;
   // A daemon-spawned cargo joins the machine-wide jobserver pool, so
@@ -182,7 +182,7 @@ const buildCommand = (options: ExecuteCargoOptions): ChildProcess.StandardComman
   // inherited PATH/HOME etc. (v4 replaces the environment by default).
   return ChildProcess.make(resolved, options.argv.slice(1), {
     cwd: options.cwd,
-    env: { ...color, ...jobserver, ...options.env, CARGO_CONDUCTOR_INSIDE: '1' },
+    env: { ...color, ...jobserver, ...options.env, CARGO_HAULER_INSIDE: '1' },
     extendEnv: true,
     stdin: 'pipe',
   });

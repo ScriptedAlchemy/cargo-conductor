@@ -8,7 +8,7 @@ import { join } from 'node:path';
  * tests. Defaults must be machine-agnostic: a per-user cache directory
  * following each platform's convention, never a path that only exists on
  * one machine. Operators point elsewhere (a RAM disk, a shared volume)
- * exclusively through CARGO_CONDUCTOR_STATE_DIR / CARGO_CONDUCTOR_KACHE_INDEX.
+ * exclusively through CARGO_HAULER_STATE_DIR / CARGO_HAULER_KACHE_INDEX.
  */
 
 /**
@@ -36,22 +36,22 @@ export const userCacheDir = (
   return join(home, '.cache');
 };
 
-/** Default daemon state root when CARGO_CONDUCTOR_STATE_DIR is unset. */
+/** Default daemon state root when CARGO_HAULER_STATE_DIR is unset. */
 export const defaultStateDir = (
   env: Readonly<Record<string, string | undefined>> = process.env,
   platform: NodeJS.Platform = process.platform,
   home: string = homedir(),
-): string => join(userCacheDir(env, platform, home), 'cargo-conductor');
+): string => join(userCacheDir(env, platform, home), 'cargo-hauler');
 
 /**
- * The one state-dir resolution: CARGO_CONDUCTOR_STATE_DIR wins, otherwise
+ * The one state-dir resolution: CARGO_HAULER_STATE_DIR wins, otherwise
  * the portable per-user default. Daemon config and hook clients both call
  * this, so they cannot drift apart.
  */
 export const resolveStateDir = (
   env: Readonly<Record<string, string | undefined>> = process.env,
 ): string => {
-  const override = env.CARGO_CONDUCTOR_STATE_DIR;
+  const override = env.CARGO_HAULER_STATE_DIR;
   return override !== undefined && override.length > 0
     ? override
     : defaultStateDir(env);
@@ -78,7 +78,7 @@ export const daemonSocketPath = (
     return join(stateDir, 'daemon.sock');
   }
   const digest = createHash('sha256').update(stateDir.toLowerCase()).digest('hex').slice(0, 16);
-  return `${namedPipePrefix}cargo-conductor-${digest}`;
+  return `${namedPipePrefix}cargo-hauler-${digest}`;
 };
 
 /**
@@ -110,7 +110,7 @@ const kacheConfiguredStore = (
 };
 
 /**
- * Default kache index when CARGO_CONDUCTOR_KACHE_INDEX is unset: the store
+ * Default kache index when CARGO_HAULER_KACHE_INDEX is unset: the store
  * kache's own config names, else kache's sibling directory under the same
  * per-user cache base. A missing file is fine — kache status degrades to
  * unavailable and priors to defaults.

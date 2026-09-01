@@ -41,7 +41,7 @@ exit "\${FAKE_EXIT:-0}"
 const temps: string[] = [];
 
 const makeWorkspace = (): { readonly dir: string; readonly script: string } => {
-  const dir = mkdtempSync(join(tmpdir(), 'cargo-conductor-exec-'));
+  const dir = mkdtempSync(join(tmpdir(), 'cargo-hauler-exec-'));
   temps.push(dir);
   const script = join(dir, 'fake-cargo');
   writeFileSync(script, scriptSource);
@@ -201,7 +201,7 @@ describe('executeCargo', () => {
   it('sees a caller NO_COLOR through the client env transport end to end', async () => {
     const { dir, script } = makeWorkspace();
 
-    // The exact env `conductor exec` ships: NO_COLOR must survive the
+    // The exact env `hauler exec` ships: NO_COLOR must survive the
     // relevance filter, or the executor falls back to forcing color.
     const result = await runExecute({
       argv: [script, 'color'],
@@ -300,7 +300,7 @@ describe('executeCargo', () => {
     const result = await runExecute({
       argv: [script, 'ignore-term'],
       cwd: dir,
-      env: { CARGO_CONDUCTOR_KILL_GRACE_MS: '100' },
+      env: { CARGO_HAULER_KILL_GRACE_MS: '100' },
       killSignal,
       tailBytes: 4096,
       onOutput: (channel) =>
@@ -322,7 +322,7 @@ describe('executeCargo', () => {
     const result = await runExecute({
       argv: [script, 'ignore-term'],
       cwd: dir,
-      env: { CARGO_CONDUCTOR_KILL_GRACE_MS: '100' },
+      env: { CARGO_HAULER_KILL_GRACE_MS: '100' },
       killSignal: unusedKill(),
       tailBytes: 4096,
       onOutput: (channel) =>

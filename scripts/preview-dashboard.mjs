@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 
 const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 const appHtml = join(repoRoot, 'artifact', 'plugin', 'mcp-apps', 'dashboard.html');
-const conductorCli = join(repoRoot, 'artifact', 'plugin', 'scripts', 'conductor.mjs');
+const haulerCli = join(repoRoot, 'artifact', 'plugin', 'scripts', 'hauler.mjs');
 const portFlag = process.argv.indexOf('--port');
 const port = portFlag === -1 ? 4941 : Number(process.argv[portFlag + 1]);
 if (!Number.isInteger(port) || port < 1 || port > 65_535) {
@@ -17,7 +17,7 @@ if (!Number.isInteger(port) || port < 1 || port > 65_535) {
 
 const harness = `<!doctype html>
 <html>
-<head><meta charset="utf-8"><title>cargo-conductor dashboard (live preview)</title>
+<head><meta charset="utf-8"><title>cargo-hauler dashboard (live preview)</title>
 <style>html,body{margin:0;height:100%}iframe{border:0;width:100%;height:100%}</style></head>
 <body>
 <iframe id="app" src="/app"></iframe>
@@ -36,9 +36,9 @@ window.addEventListener('message', async (event) => {
       const name = msg.params && msg.params.name;
       const args = (msg.params && msg.params.arguments) || {};
       let url = '/status';
-      if (name === 'conductor_result') {
+      if (name === 'hauler_result') {
         url = '/result?ticket=' + encodeURIComponent(args.ticket ?? '');
-      } else if (name === 'conductor_await') {
+      } else if (name === 'hauler_await') {
         url = '/await?ticket=' + encodeURIComponent(args.ticket ?? '');
         if (typeof args.maxWaitMs === 'number') url += '&maxWaitMs=' + args.maxWaitMs;
       }
@@ -53,8 +53,8 @@ window.addEventListener('message', async (event) => {
 </body>
 </html>`;
 
-const runConductor = (args, response) => {
-  execFile(process.execPath, [conductorCli, ...args], { maxBuffer: 64 * 1024 * 1024 }, (error, stdout) => {
+const runHauler = (args, response) => {
+  execFile(process.execPath, [haulerCli, ...args], { maxBuffer: 64 * 1024 * 1024 }, (error, stdout) => {
     if (error) {
       response.writeHead(500, { 'content-type': 'application/json' });
       response.end(JSON.stringify({ error: String(error) }));
@@ -83,11 +83,11 @@ const server = createServer((request, response) => {
     return;
   }
   if (url.pathname === '/status') {
-    runConductor(['status'], response);
+    runHauler(['status'], response);
     return;
   }
   // The widget's ticket drawer follow-up: status payloads strip outputTail,
-  // conductor result reads the full ledger record.
+  // hauler result reads the full ledger record.
   if (url.pathname === '/result' || url.pathname === '/await') {
     const ticket = url.searchParams.get('ticket');
     if (ticket === null || ticket.length === 0) {
@@ -95,11 +95,11 @@ const server = createServer((request, response) => {
       return;
     }
     if (url.pathname === '/result') {
-      runConductor(['result', ticket], response);
+      runHauler(['result', ticket], response);
       return;
     }
     const maxWaitMs = url.searchParams.get('maxWaitMs');
-    runConductor(
+    runHauler(
       ['await', ticket, ...(maxWaitMs === null ? [] : ['--max-wait-ms', maxWaitMs])],
       response,
     );

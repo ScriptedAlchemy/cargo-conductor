@@ -34,7 +34,7 @@ export interface TopologyApi {
 }
 
 export class Topology extends Context.Service<Topology, TopologyApi>()(
-  'cargo-conductor/Topology',
+  'cargo-hauler/Topology',
 ) {}
 
 const metadataTtlMs = 60_000;

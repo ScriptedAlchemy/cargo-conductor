@@ -51,7 +51,7 @@ const repoRoot = fileURLToPath(new URL('..', import.meta.url));
 
 describe('MCP App dashboard', () => {
   it('declares the widget URI and ships a self-contained artifact page', () => {
-    expect(APP_RESOURCE_URI).toBe('ui://cargo-conductor/dashboard.html');
+    expect(APP_RESOURCE_URI).toBe('ui://cargo-hauler/dashboard.html');
     for (const target of ['plugin', 'portable'] as const) {
       const built = join(repoRoot, 'artifact', target, 'mcp-apps', 'dashboard.html');
       expect(existsSync(built)).toBe(true);
@@ -59,8 +59,8 @@ describe('MCP App dashboard', () => {
       expect(html).toContain('In flight');
       expect(html).toContain('History');
       expect(html).toContain('Contention');
-      expect(html).toContain('conductor_status');
-      expect(html).toContain('conductor_result');
+      expect(html).toContain('hauler_status');
+      expect(html).toContain('hauler_result');
       expect(html).not.toContain('src="http');
     }
   });
@@ -376,7 +376,7 @@ describe('frequency metrics (zero is not a signal)', () => {
 
 describe('ticket detail (click-through to cargo output)', () => {
   // Status rows from a running daemon: the broker nulls outputTail to keep
-  // the report small, so terminal rows need one conductor_result follow-up.
+  // the report small, so terminal rows need one hauler_result follow-up.
   const statusRow = {
     argv: ['cargo', 'test', '-p', 'tracedecay-store-runtime'],
     error: null,
@@ -391,7 +391,7 @@ describe('ticket detail (click-through to cargo output)', () => {
     workspaceRoot: '/projects/tracedecay-plan40-stage3-so',
   };
 
-  it('fetches the stripped output tail via conductor_result for terminal rows', async () => {
+  it('fetches the stripped output tail via hauler_result for terminal rows', async () => {
     const calls: string[] = [];
     const detail = await resolveTicketDetail(statusRow, async (ticket) => {
       calls.push(ticket);
@@ -578,9 +578,9 @@ describe('summaryFirstLine (bounded dashboard header)', () => {
   it('keeps only the compact status header when active-run details follow', () => {
     expect(
       summaryFirstLine(
-        'cargo-conductor daemon is running; 1 active, 20 recent\ncc-2 running cargo test',
+        'cargo-hauler daemon is running; 1 active, 20 recent\ncc-2 running cargo test',
       ),
-    ).toBe('cargo-conductor daemon is running; 1 active, 20 recent');
+    ).toBe('cargo-hauler daemon is running; 1 active, 20 recent');
   });
 });
 
@@ -1005,7 +1005,7 @@ describe('attachSavings (runs avoided is attach coalescing, not kache)', () => {
 
   it('derives nothing from kache-shaped compile timings', () => {
     // Kache topCrates rows carry crate/ms/profile — no attach fields. Feeding
-    // them in must produce zero savings: crate build cost is not conductor
+    // them in must produce zero savings: crate build cost is not hauler
     // savings, and the two must never be conflated.
     const savings = attachSavings([
       { crate: 'linker-heavy', ms: 90_000, profile: 'release' } as never,

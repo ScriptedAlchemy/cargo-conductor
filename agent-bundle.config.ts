@@ -1,15 +1,15 @@
 import { defineConfig } from 'agent-bundle/config';
 
 /**
- * cargo-conductor is a generic per-workspace cargo orchestrator.
+ * cargo-hauler is a generic per-workspace cargo orchestrator.
  * tracedecay is the first customer; identity is (workspace root, target dir).
  *
- * - `src/mcp/conductor.ts` is the conventional stdio entry (no `entry` field).
+ * - `src/mcp/hauler.ts` is the conventional stdio entry (no `entry` field).
  * - `src/cli.ts` is the package bin by convention; declaring it as a script
- *   also ships `conductor` inside every host artifact.
- * - `skills/cargo-conductor/SKILL.md` is discovered by convention.
+ *   also ships `hauler` inside every host artifact.
+ * - `skills/cargo-hauler/SKILL.md` is discovered by convention.
  * - Adapters inject `AGENT_BUNDLE_PLUGIN_ROOT`; daemon state lives under the
- *   per-user cache dir (`CARGO_CONDUCTOR_STATE_DIR` overrides).
+ *   per-user cache dir (`CARGO_HAULER_STATE_DIR` overrides).
  */
 export default defineConfig({
   // Claude Code and Codex install via `<cli> plugin marketplace add`; this
@@ -22,11 +22,11 @@ export default defineConfig({
   },
   mcp: {
     servers: {
-      conductor: {
+      hauler: {
         apps: {
           dashboard: {
             entry: './views/dashboard.tsx',
-            resourceUri: 'ui://cargo-conductor/dashboard.html',
+            resourceUri: 'ui://cargo-hauler/dashboard.html',
             template: './views/dashboard.html',
           },
         },
@@ -36,12 +36,12 @@ export default defineConfig({
   plugin: {
     description:
       'Coalesce, schedule, and stream cargo so concurrent agent sessions share compiles instead of fighting locks.',
-    name: 'cargo-conductor',
+    name: 'cargo-hauler',
     version: '0.1.22',
   },
   runtime: { node: '22.19.0' },
   scripts: {
-    conductor: './src/cli.ts',
+    hauler: './src/cli.ts',
   },
   // `plugin` emits Claude, Codex, and Cursor into one bundle (and AGENTS.md).
   // Listing `claude`/`cursor`/`plugin` together trips AB6017: those names are

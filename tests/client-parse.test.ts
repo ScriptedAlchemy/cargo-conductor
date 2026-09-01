@@ -12,7 +12,7 @@ describe('parseExecArgv', () => {
     });
   });
 
-  it('accepts conductor flags before an implicit cargo command', () => {
+  it('accepts hauler flags before an implicit cargo command', () => {
     expect(parseExecArgv(['--cwd', '/tmp/ws', '--bg', 'cargo', 'test'])).toEqual({
       background: true,
       cargoArgv: ['cargo', 'test'],

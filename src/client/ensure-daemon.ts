@@ -105,7 +105,7 @@ export const spawnDetachedDaemon = (
             [entryPath, 'daemon', 'run'],
             {
               detached: true,
-              env: { ...process.env, CARGO_CONDUCTOR_STATE_DIR: config.stateDir },
+              env: { ...process.env, CARGO_HAULER_STATE_DIR: config.stateDir },
               stdio: ['ignore', logFd, logFd],
             },
           );

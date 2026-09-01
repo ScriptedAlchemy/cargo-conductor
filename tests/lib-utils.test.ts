@@ -41,7 +41,7 @@ describe('shared micro utilities', () => {
     ]);
   });
 
-  it('parses only canonical conductor tickets', () => {
+  it('parses only canonical hauler tickets', () => {
     expect(parseTicket('cc-42')).toBe(42);
     expect(parseTicket('cc-nope')).toBeNull();
     expect(parseTicket('prefix-cc-42')).toBeNull();

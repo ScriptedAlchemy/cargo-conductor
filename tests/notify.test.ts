@@ -7,7 +7,7 @@ describe('afterTool completion notify', () => {
     const result = await handleAfterShell(
       {
         sessionId: 'sess-1',
-        toolInput: { command: 'conductor exec -- cargo check' },
+        toolInput: { command: 'hauler exec -- cargo check' },
         toolName: 'Bash',
         toolResponse: { exitCode: 0 },
       },
@@ -40,7 +40,7 @@ describe('afterTool completion notify', () => {
 
     expect(result.outcome).toBe('continue');
     expect(result.additionalContext).toContain('cc-42 finished: success, 0 errors, 2 warnings');
-    expect(result.additionalContext).toContain('call conductor_result cc-42');
+    expect(result.additionalContext).toContain('call hauler_result cc-42');
     expect(result.additionalContext).toContain('cc-43 finished: failed, 3 errors, 1 warning');
   });
 

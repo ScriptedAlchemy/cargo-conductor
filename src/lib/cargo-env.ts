@@ -8,13 +8,13 @@ const exactEnvironmentNames = new Set([
   'PKG_CONFIG_PATH',
 ]);
 
-const conductorPrefix = 'CARGO_CONDUCTOR_';
+const haulerPrefix = 'CARGO_HAULER_';
 
 const targetToolPattern =
   /^(?:AR|CC|CFLAGS|CXX|CXXFLAGS|LDFLAGS)_[A-Za-z0-9_-]+$/u;
 
 export const isRelevantCargoEnvironmentVariable = (name: string): boolean =>
-  !name.startsWith(conductorPrefix) &&
+  !name.startsWith(haulerPrefix) &&
   (exactEnvironmentNames.has(name) ||
     name.startsWith('CARGO_') ||
     name.startsWith('RUST') ||

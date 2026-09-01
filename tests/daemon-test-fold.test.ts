@@ -144,13 +144,13 @@ describe('test batch folding', () => {
               execRequest(fixture, {
                 argv: ['cargo', 'test', '-p', 'ccfold', '--', 'alpha_only'],
                 cwd: workspace,
-                extraEnv: { CARGO_CONDUCTOR_CARGO_BIN: realCargo },
+                extraEnv: { CARGO_HAULER_CARGO_BIN: realCargo },
                 timeoutMs: 180_000,
               }),
               execRequest(fixture, {
                 argv: ['cargo', 'test', '-p', 'ccfold', '--', 'beta_only'],
                 cwd: workspace,
-                extraEnv: { CARGO_CONDUCTOR_CARGO_BIN: realCargo },
+                extraEnv: { CARGO_HAULER_CARGO_BIN: realCargo },
                 timeoutMs: 180_000,
               }),
             ],

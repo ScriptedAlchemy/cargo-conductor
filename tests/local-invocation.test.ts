@@ -7,7 +7,7 @@ describe('localQueryReason', () => {
     expect(localQueryReason(['cargo', '--help'])).toContain('--help');
     expect(localQueryReason(['cargo', 'build', '--help'])).toContain('--help');
     expect(localQueryReason(['cargo', '-V'])).toContain('-V');
-    expect(localQueryReason(['cargo', 'conductor', '--help'])).toContain('--help');
+    expect(localQueryReason(['cargo', 'hauler', '--help'])).toContain('--help');
     expect(localQueryReason(['cargo', '--list'])).toContain('--list');
   });
 
@@ -33,7 +33,7 @@ describe('localQueryReason', () => {
 
   it('keeps unknown third-party subcommands brokered', () => {
     expect(localQueryReason(['cargo', 'flamegraph'])).toBeNull();
-    expect(localQueryReason(['cargo', 'conductor'])).toBeNull();
+    expect(localQueryReason(['cargo', 'hauler'])).toBeNull();
   });
 
   it('does not treat program arguments after -- as query flags', () => {

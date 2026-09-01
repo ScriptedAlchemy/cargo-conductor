@@ -64,8 +64,8 @@ describe('daemon start without a machine-specific mount', () => {
     // Deliberately not pre-created: the daemon must build its own state dir.
     const stateDir = join(root, 'nested', 'state');
     const config = resolveDaemonConfig({
-      CARGO_CONDUCTOR_STATE_DIR: stateDir,
-      CARGO_CONDUCTOR_KACHE_INDEX: '',
+      CARGO_HAULER_STATE_DIR: stateDir,
+      CARGO_HAULER_KACHE_INDEX: '',
     });
     try {
       const pong = await Effect.runPromise(

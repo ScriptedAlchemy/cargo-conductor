@@ -67,9 +67,9 @@ const decideAfterShell = async (
   if (command === undefined) {
     return { outcome: 'continue' };
   }
-  // Only cargo/conductor activity belongs in the telemetry log; every other
+  // Only cargo/hauler activity belongs in the telemetry log; every other
   // shell command still flows through so completion notifications inject.
-  if (command.includes('cargo') || command.includes('conductor')) {
+  if (command.includes('cargo') || command.includes('hauler')) {
     const record = services.record ?? appendHookRecord;
     const exitCode = extractExitCode(event.toolResponse);
     await record({

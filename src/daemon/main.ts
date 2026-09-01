@@ -35,7 +35,7 @@ const appLayer = (config: DaemonConfigShape) =>
   );
 
 const minimumLogLevelLayer = Layer.unwrap(
-  Config.logLevel('CARGO_CONDUCTOR_LOG_LEVEL').pipe(
+  Config.logLevel('CARGO_HAULER_LOG_LEVEL').pipe(
     Effect.catch(() => Effect.succeed('Info' as const)),
     Effect.map((level) => Layer.succeed(References.MinimumLogLevel, level)),
   ),
@@ -60,7 +60,7 @@ const daemonProgram = Effect.gen(function* () {
   const server = yield* NodeSocketServer.make({ path: config.socketPath });
   const suffix = reaped > 0 ? `, reaped ${reaped} orphaned requests` : '';
   yield* Effect.logInfo(
-    `cargo-conductor daemon listening on ${config.socketPath} (pid ${process.pid}${suffix})`,
+    `cargo-hauler daemon listening on ${config.socketPath} (pid ${process.pid}${suffix})`,
   );
   const handler = makeConnectionHandler({
     broker,
@@ -69,7 +69,7 @@ const daemonProgram = Effect.gen(function* () {
     version: daemonVersion,
   });
   yield* Effect.raceFirst(server.run(handler), Deferred.await(shutdownLatch));
-  yield* Effect.logInfo('cargo-conductor daemon shutting down');
+  yield* Effect.logInfo('cargo-hauler daemon shutting down');
 });
 
 export type DaemonOutcome = 'completed' | 'already-running';

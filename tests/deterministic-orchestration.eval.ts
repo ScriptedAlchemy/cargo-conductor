@@ -75,7 +75,7 @@ const realCargoEnv = (
   targetName: string,
   extra: Readonly<Record<string, string>> = {},
 ): Readonly<Record<string, string>> => ({
-  CARGO_CONDUCTOR_CARGO_BIN: realCargo,
+  CARGO_HAULER_CARGO_BIN: realCargo,
   CARGO_NET_OFFLINE: 'true',
   CARGO_TARGET_DIR: join(fixture.root, 'cargo-targets', targetName),
   ...extra,
@@ -111,7 +111,7 @@ const allDoneReport = (
     600,
   );
 
-describe('deterministic cargo-conductor acceptance evals', () => {
+describe('deterministic cargo-hauler acceptance evals', () => {
   it(
     'coalesces four identical real-cargo checks into exactly one spawn',
     () =>
