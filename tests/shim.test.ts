@@ -28,7 +28,9 @@ describe('PATH cargo shim', () => {
       haulerArgv: ['hauler'],
       realCargo: '/usr/bin/cargo',
     });
-    expect(script).toContain('if [ -n "${CARGO_HAULER_INSIDE:-}" ]; then');
+    expect(script).toContain(
+      'if [ -n "${CARGO_HAULER_INSIDE:-}" ] || [ -n "${CARGO_CONDUCTOR_INSIDE:-}" ]; then',
+    );
     expect(script).toContain('  exec /usr/bin/cargo "$@"');
   });
 

@@ -34,7 +34,12 @@ export interface StopHoldServices {
 // the total wait unbounded. Raise via CARGO_HAULER_STOP_WAIT_MS on hosts
 // known to honor long hook timeouts.
 const defaultMaxWaitMs = (() => {
-  const parsed = Number.parseInt(process.env.CARGO_HAULER_STOP_WAIT_MS ?? '', 10);
+  const parsed = Number.parseInt(
+    process.env.CARGO_HAULER_STOP_WAIT_MS ??
+      process.env.CARGO_CONDUCTOR_STOP_WAIT_MS ??
+      '',
+    10,
+  );
   return Number.isInteger(parsed) && parsed > 0 ? parsed : 30_000;
 })();
 const defaultMaxDenyCount = 8;

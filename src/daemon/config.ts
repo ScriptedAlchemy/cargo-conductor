@@ -62,15 +62,33 @@ export const resolveDaemonConfig = (
   platform: NodeJS.Platform = process.platform,
 ): DaemonConfigShape => {
   const stateDir = resolveStateDir(env);
-  const parsedMax = Number.parseInt(env.CARGO_HAULER_MAX_CONCURRENT ?? '', 10);
-  const parsedReplay = Number.parseInt(env.CARGO_HAULER_REPLAY_BUFFER_BYTES ?? '', 10);
+  // Backward compatibility: each CARGO_HAULER_* setting wins when present,
+  // while the corresponding CARGO_CONDUCTOR_* setting remains a fallback for
+  // operator environments created before the rebrand.
+  const maxConcurrentValue =
+    env.CARGO_HAULER_MAX_CONCURRENT ?? env.CARGO_CONDUCTOR_MAX_CONCURRENT;
+  const replayBufferValue =
+    env.CARGO_HAULER_REPLAY_BUFFER_BYTES ?? env.CARGO_CONDUCTOR_REPLAY_BUFFER_BYTES;
+  const jobsGrantValue = env.CARGO_HAULER_JOBS_GRANT ?? env.CARGO_CONDUCTOR_JOBS_GRANT;
+  const loadThresholdValue =
+    env.CARGO_HAULER_LOAD_THRESHOLD ?? env.CARGO_CONDUCTOR_LOAD_THRESHOLD;
+  const loadMinValue = env.CARGO_HAULER_LOAD_MIN ?? env.CARGO_CONDUCTOR_LOAD_MIN;
+  const cpuPressureValue =
+    env.CARGO_HAULER_CPU_PRESSURE_THRESHOLD ?? env.CARGO_CONDUCTOR_CPU_PRESSURE_THRESHOLD;
+  const batchValue = env.CARGO_HAULER_BATCH ?? env.CARGO_CONDUCTOR_BATCH;
+  const batchWindowValue =
+    env.CARGO_HAULER_BATCH_WINDOW_MS ?? env.CARGO_CONDUCTOR_BATCH_WINDOW_MS;
+  const kacheIndexValue =
+    env.CARGO_HAULER_KACHE_INDEX ?? env.CARGO_CONDUCTOR_KACHE_INDEX;
+  const parsedMax = Number.parseInt(maxConcurrentValue ?? '', 10);
+  const parsedReplay = Number.parseInt(replayBufferValue ?? '', 10);
   const maxConcurrent =
     Number.isInteger(parsedMax) && parsedMax > 0 ? parsedMax : defaultMaxConcurrent;
-  const parsedJobs = Number.parseInt(env.CARGO_HAULER_JOBS_GRANT ?? '', 10);
-  const parsedLoadThreshold = Number.parseFloat(env.CARGO_HAULER_LOAD_THRESHOLD ?? '');
-  const parsedLoadMin = Number.parseInt(env.CARGO_HAULER_LOAD_MIN ?? '', 10);
-  const parsedCpuStall = Number.parseFloat(env.CARGO_HAULER_CPU_PRESSURE_THRESHOLD ?? '');
-  const parsedBatchWindow = Number.parseInt(env.CARGO_HAULER_BATCH_WINDOW_MS ?? '', 10);
+  const parsedJobs = Number.parseInt(jobsGrantValue ?? '', 10);
+  const parsedLoadThreshold = Number.parseFloat(loadThresholdValue ?? '');
+  const parsedLoadMin = Number.parseInt(loadMinValue ?? '', 10);
+  const parsedCpuStall = Number.parseFloat(cpuPressureValue ?? '');
+  const parsedBatchWindow = Number.parseInt(batchWindowValue ?? '', 10);
   // Divide the cores between the admitted builds so N concurrent cargos do
   // not each assume they own the whole machine (rheo's grant idea).
   const defaultJobsGrant = Math.max(4, Math.floor(availableParallelism() / maxConcurrent));
@@ -86,9 +104,9 @@ export const resolveDaemonConfig = (
       Number.isInteger(parsedReplay) && parsedReplay >= 0 ? parsedReplay : 4 * 1024 * 1024,
     // '' (explicitly empty) disables kache; a missing default file merely
     // reports kache as unavailable, so no machine needs the path to exist.
-    kacheIndexPath: env.CARGO_HAULER_KACHE_INDEX ?? defaultKacheIndexPath(env),
+    kacheIndexPath: kacheIndexValue ?? defaultKacheIndexPath(env),
     jobsGrant: Number.isInteger(parsedJobs) && parsedJobs >= 0 ? parsedJobs : defaultJobsGrant,
-    batchEnabled: env.CARGO_HAULER_BATCH !== '0',
+    batchEnabled: batchValue !== '0',
     batchWindowMs:
       Number.isInteger(parsedBatchWindow) && parsedBatchWindow >= 0
         ? parsedBatchWindow
@@ -98,7 +116,7 @@ export const resolveDaemonConfig = (
     loadMinConcurrent:
       Number.isInteger(parsedLoadMin) && parsedLoadMin >= 1 ? parsedLoadMin : 2,
     cpuStallThreshold:
-      env.CARGO_HAULER_CPU_PRESSURE_THRESHOLD === undefined
+      cpuPressureValue === undefined
         ? defaultCpuStallThreshold
         : Number.isFinite(parsedCpuStall) && parsedCpuStall > 0
           ? parsedCpuStall

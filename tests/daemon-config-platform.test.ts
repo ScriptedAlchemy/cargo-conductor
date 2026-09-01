@@ -21,4 +21,33 @@ describe('daemon config platform posture', () => {
     expect(resolveDaemonConfig({ CARGO_HAULER_BATCH_WINDOW_MS: '0' }).batchWindowMs).toBe(0);
     expect(resolveDaemonConfig({ CARGO_HAULER_BATCH_WINDOW_MS: '275' }).batchWindowMs).toBe(275);
   });
+
+  it('falls back to legacy config variables and gives hauler variables precedence', () => {
+    const legacy = resolveDaemonConfig({
+      CARGO_CONDUCTOR_BATCH: '0',
+      CARGO_CONDUCTOR_BATCH_WINDOW_MS: '275',
+      CARGO_CONDUCTOR_CPU_PRESSURE_THRESHOLD: '0',
+      CARGO_CONDUCTOR_JOBS_GRANT: '7',
+      CARGO_CONDUCTOR_LOAD_MIN: '3',
+      CARGO_CONDUCTOR_LOAD_THRESHOLD: '1.5',
+      CARGO_CONDUCTOR_MAX_CONCURRENT: '4',
+      CARGO_CONDUCTOR_REPLAY_BUFFER_BYTES: '2048',
+    });
+    expect(legacy).toMatchObject({
+      batchEnabled: false,
+      batchWindowMs: 275,
+      cpuStallThreshold: null,
+      jobsGrant: 7,
+      loadMinConcurrent: 3,
+      loadThresholdPerCore: 1.5,
+      maxConcurrent: 4,
+      replayBufferBytes: 2048,
+    });
+
+    const preferred = resolveDaemonConfig({
+      CARGO_CONDUCTOR_MAX_CONCURRENT: '4',
+      CARGO_HAULER_MAX_CONCURRENT: '6',
+    });
+    expect(preferred.maxConcurrent).toBe(6);
+  });
 });

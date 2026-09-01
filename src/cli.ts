@@ -103,17 +103,21 @@ const runExecCommand = async (argv: readonly string[], options: CliOptions): Pro
       writeStdout: options.writeStdout ?? defaultWriteStdout,
     };
     const exec = options.runExec ?? runExecClient;
+    // Backward compatibility: the hauler names win, while legacy conductor
+    // host/session settings remain valid for existing operator wrappers.
+    const envHost = process.env.CARGO_HAULER_HOST ?? process.env.CARGO_CONDUCTOR_HOST;
+    const envSession = process.env.CARGO_HAULER_SESSION ?? process.env.CARGO_CONDUCTOR_SESSION;
     return await Effect.runPromise(
       exec({
         argv: parsed.cargoArgv,
         cwd: parsed.cwd ?? process.cwd(),
         env: buildRelevantEnv(process.env),
-        host: parsed.host ?? process.env['CARGO_HAULER_HOST'] ?? 'cli',
+        host: parsed.host ?? envHost ?? 'cli',
         io,
         ...(parsed.background ? { background: true } : {}),
-        ...((parsed.session ?? process.env['CARGO_HAULER_SESSION']) === undefined
+        ...((parsed.session ?? envSession) === undefined
           ? {}
-          : { session: parsed.session ?? process.env['CARGO_HAULER_SESSION'] }),
+          : { session: parsed.session ?? envSession }),
       }).pipe(
         Effect.map((result) => result.exitCode),
         Effect.catchCause((cause) =>

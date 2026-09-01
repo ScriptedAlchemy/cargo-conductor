@@ -50,6 +50,20 @@ describe('portable state root', () => {
     expect(resolveHookStateDir(env)).toBe('/fast/cache/cargo-hauler');
   });
 
+  it('falls back to the legacy state dir while preferring the hauler variable', () => {
+    const legacy = { CARGO_CONDUCTOR_STATE_DIR: '/fast/cache/cargo-conductor' };
+    expect(resolveStateDir(legacy)).toBe('/fast/cache/cargo-conductor');
+    expect(resolveDaemonConfig(legacy).stateDir).toBe('/fast/cache/cargo-conductor');
+    expect(resolveHookStateDir(legacy)).toBe('/fast/cache/cargo-conductor');
+
+    expect(
+      resolveStateDir({
+        CARGO_CONDUCTOR_STATE_DIR: '/legacy',
+        CARGO_HAULER_STATE_DIR: '/current',
+      }),
+    ).toBe('/current');
+  });
+
   it('keeps daemon config and hook clients on the same default', () => {
     const env = {};
     const config = resolveDaemonConfig(env);
@@ -184,5 +198,18 @@ describe('portable kache index default', () => {
         .kacheIndexPath,
     ).toBe('/fast/cache/kache/index.db');
     expect(resolveDaemonConfig({ CARGO_HAULER_KACHE_INDEX: '' }).kacheIndexPath).toBe('');
+  });
+
+  it('falls back to the legacy kache index while preferring the hauler variable', () => {
+    expect(
+      resolveDaemonConfig({ CARGO_CONDUCTOR_KACHE_INDEX: '/legacy/kache/index.db' })
+        .kacheIndexPath,
+    ).toBe('/legacy/kache/index.db');
+    expect(
+      resolveDaemonConfig({
+        CARGO_CONDUCTOR_KACHE_INDEX: '/legacy/kache/index.db',
+        CARGO_HAULER_KACHE_INDEX: '',
+      }).kacheIndexPath,
+    ).toBe('');
   });
 });

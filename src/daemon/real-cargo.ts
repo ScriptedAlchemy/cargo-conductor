@@ -8,12 +8,14 @@ import { join } from 'node:path';
  * PATH, and a daemon that launches the shim submits work back to itself.
  *
  * `CARGO_HAULER_CARGO_BIN` (read from the per-job env when present) is the
- * explicit override; the test harness uses it to route jobs at its fake cargo.
+ * explicit override; the legacy `CARGO_CONDUCTOR_CARGO_BIN` remains a
+ * backward-compatible fallback so existing operator setups keep their real
+ * cargo path. The test harness uses it to route jobs at its fake cargo.
  */
 export const realCargoBin = (
   env: Readonly<Record<string, string | undefined>> = process.env,
 ): string => {
-  const override = env.CARGO_HAULER_CARGO_BIN;
+  const override = env.CARGO_HAULER_CARGO_BIN ?? env.CARGO_CONDUCTOR_CARGO_BIN;
   if (override !== undefined && override.length > 0) {
     return override;
   }

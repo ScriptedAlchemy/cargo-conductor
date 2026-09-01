@@ -33,12 +33,13 @@ export const renderCargoShim = (options: RenderShimOptions): string => {
   const cargo = shellQuote(options.realCargo);
   // --host shim: unlike hook rewrites, the shim has no agent identity, but the
   // ledger should still say where a request entered. CARGO_HAULER_INSIDE
-  // marks cargo spawned by the daemon itself; forwarding it would submit the
-  // broker's own work back to the broker.
+  // marks cargo spawned by the daemon itself; the legacy guard remains a
+  // backward-compatible fallback during mixed-version swaps. Forwarding
+  // either would submit the broker's own work back to the broker.
   return `#!/bin/sh
 # cargo-hauler PATH shim — forwards cargo to the broker.
 # Installed by \`hauler install-shim\`. Hooks cannot see cargo inside scripts.
-if [ -n "\${CARGO_HAULER_INSIDE:-}" ]; then
+if [ -n "\${CARGO_HAULER_INSIDE:-}" ] || [ -n "\${CARGO_CONDUCTOR_INSIDE:-}" ]; then
   exec ${cargo} "$@"
 fi
 exec ${hauler} exec --host shim -- ${cargo} "$@"

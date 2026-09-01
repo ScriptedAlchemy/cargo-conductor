@@ -9,12 +9,14 @@ const exactEnvironmentNames = new Set([
 ]);
 
 const haulerPrefix = 'CARGO_HAULER_';
+const legacyConductorPrefix = 'CARGO_CONDUCTOR_';
 
 const targetToolPattern =
   /^(?:AR|CC|CFLAGS|CXX|CXXFLAGS|LDFLAGS)_[A-Za-z0-9_-]+$/u;
 
 export const isRelevantCargoEnvironmentVariable = (name: string): boolean =>
   !name.startsWith(haulerPrefix) &&
+  !name.startsWith(legacyConductorPrefix) &&
   (exactEnvironmentNames.has(name) ||
     name.startsWith('CARGO_') ||
     name.startsWith('RUST') ||

@@ -143,6 +143,49 @@ describe('hauler cli', () => {
     expect(() => JSON.parse(result.text)).toThrow();
   });
 
+  it('falls back to legacy host/session variables and prefers hauler variables', async () => {
+    const names = [
+      'CARGO_CONDUCTOR_HOST',
+      'CARGO_CONDUCTOR_SESSION',
+      'CARGO_HAULER_HOST',
+      'CARGO_HAULER_SESSION',
+    ] as const;
+    const previous = Object.fromEntries(names.map((name) => [name, process.env[name]]));
+    try {
+      process.env.CARGO_CONDUCTOR_HOST = 'legacy-host';
+      process.env.CARGO_CONDUCTOR_SESSION = 'legacy-session';
+      let seen: RunExecOptions | undefined;
+      await run(['exec', '--', 'cargo', 'check'], {
+        runExec: (options) => {
+          seen = options;
+          return Effect.succeed({ exitCode: 0, mode: 'brokered', ticket: 'cc-9' });
+        },
+      });
+      expect(seen?.host).toBe('legacy-host');
+      expect(seen?.session).toBe('legacy-session');
+
+      process.env.CARGO_HAULER_HOST = 'current-host';
+      process.env.CARGO_HAULER_SESSION = 'current-session';
+      await run(['exec', '--', 'cargo', 'check'], {
+        runExec: (options) => {
+          seen = options;
+          return Effect.succeed({ exitCode: 0, mode: 'brokered', ticket: 'cc-10' });
+        },
+      });
+      expect(seen?.host).toBe('current-host');
+      expect(seen?.session).toBe('current-session');
+    } finally {
+      for (const name of names) {
+        const value = previous[name];
+        if (value === undefined) {
+          delete process.env[name];
+        } else {
+          process.env[name] = value;
+        }
+      }
+    }
+  });
+
   it('returns the cargo exit code from exec and rejects a missing cargo command', async () => {
     const failed = await run(['exec', '--', 'cargo', 'test'], {
       runExec: () => Effect.succeed({ exitCode: 17, mode: 'passthrough' }),

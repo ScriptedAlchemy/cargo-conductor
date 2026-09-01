@@ -44,14 +44,15 @@ export const defaultStateDir = (
 ): string => join(userCacheDir(env, platform, home), 'cargo-hauler');
 
 /**
- * The one state-dir resolution: CARGO_HAULER_STATE_DIR wins, otherwise
- * the portable per-user default. Daemon config and hook clients both call
- * this, so they cannot drift apart.
+ * The one state-dir resolution: CARGO_HAULER_STATE_DIR wins, then the legacy
+ * CARGO_CONDUCTOR_STATE_DIR remains a backward-compatible fallback so existing
+ * operator setups do not silently move to a fresh ledger. Daemon config and
+ * hook clients both call this, so they cannot drift apart.
  */
 export const resolveStateDir = (
   env: Readonly<Record<string, string | undefined>> = process.env,
 ): string => {
-  const override = env.CARGO_HAULER_STATE_DIR;
+  const override = env.CARGO_HAULER_STATE_DIR ?? env.CARGO_CONDUCTOR_STATE_DIR;
   return override !== undefined && override.length > 0
     ? override
     : defaultStateDir(env);

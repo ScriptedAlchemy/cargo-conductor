@@ -248,6 +248,10 @@ All settings are environment variables read by the daemon (and hooks):
 | `CARGO_HAULER_BATCH_WINDOW_MS` | `150` | Brief hold for a batchable lane head so near-simultaneous agent requests can fold (`0` disables) |
 | `CARGO_HAULER_STOP_WAIT_MS` | `30000` | Bounded wait per stop-hold hook invocation |
 
+For a non-breaking rebrand, each `CARGO_HAULER_*` setting takes precedence
+over its legacy `CARGO_CONDUCTOR_*` alias; existing operator environments
+continue to work while they migrate.
+
 Daemon state defaults to a per-user cache directory: `$XDG_CACHE_HOME/cargo-hauler`
 when `XDG_CACHE_HOME` is set, otherwise `~/.cache/cargo-hauler` on Linux,
 `~/Library/Caches/cargo-hauler` on macOS, and `%LOCALAPPDATA%\cargo-hauler`
