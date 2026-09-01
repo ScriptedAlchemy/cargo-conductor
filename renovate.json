@@ -1,0 +1,18 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:recommended"],
+  "schedule": ["before 9am on monday"],
+  "prConcurrentLimit": 3,
+  "ignoreDeps": [
+    "effect",
+    "@effect/platform-node",
+    "@effect/atom-react",
+    "@effect/tsgo",
+    "@typescript/native-preview",
+    "typescript",
+    "agent-bundle",
+    "@agent-bundle/rsc-runtime",
+    "bashjsast"
+  ],
+  "description": "Effect stays pinned to its 4.0.0-rc line (bumped deliberately with migration review), agent-bundle tracks pkg.pr.new preview URLs, and typescript is pinned by the tsgo integration; Renovate manages the rest on a weekly schedule."
+}
