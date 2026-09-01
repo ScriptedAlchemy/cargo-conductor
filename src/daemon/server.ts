@@ -5,6 +5,7 @@ import * as Cause from 'effect/Cause';
 import * as Deferred from 'effect/Deferred';
 import * as Effect from 'effect/Effect';
 import * as Queue from 'effect/Queue';
+import * as Result from 'effect/Result';
 import type * as Scope from 'effect/Scope';
 
 import type { BrokerApi } from './broker.js';
@@ -473,18 +474,22 @@ export const makeConnectionHandler =
         const handleLine = (line: string): Effect.Effect<void, never, Scope.Scope> => {
           let requestId: string | null = null;
           return Effect.gen(function* () {
-            let json: unknown;
-            try {
-              json = JSON.parse(line);
-            } catch (cause) {
+            const parsedJson = yield* Effect.result(
+              Effect.try({
+                try: (): unknown => JSON.parse(line),
+                catch: (cause) => (cause instanceof Error ? cause.message : String(cause)),
+              }),
+            );
+            if (Result.isFailure(parsedJson)) {
               yield* send({
                 type: 'error',
                 id: null,
                 code: 'bad-message',
-                message: `invalid JSON line: ${cause instanceof Error ? cause.message : String(cause)}`,
+                message: `invalid JSON line: ${parsedJson.failure}`,
               });
               return;
             }
+            const json = parsedJson.success;
             requestId = extractId(json);
             const parsed = clientMessageSchema.safeParse(json);
             if (!parsed.success) {
