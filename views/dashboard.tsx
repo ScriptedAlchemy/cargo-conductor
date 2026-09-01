@@ -9,6 +9,7 @@ import {
   argvTitle,
   dashboardVersion,
   DEMUX_FLAG,
+  formatBytes,
   formatCompactNumber,
   formatMs,
   ranAsFor,
@@ -524,11 +525,9 @@ const KacheSection = ({ value }: { readonly value: unknown }): ReactNode => {
         <Stat label="entries" value={countValue(kache.entryCount)} />
         <Stat label="crates" value={countValue(kache.distinctCrates)} />
         <Stat
-          label="index bytes"
+          label="index size"
           value={
-            typeof kache.indexSizeBytes === 'number'
-              ? `${formatCompactNumber(kache.indexSizeBytes)}B`
-              : '—'
+            typeof kache.indexSizeBytes === 'number' ? formatBytes(kache.indexSizeBytes) : '—'
           }
         />
         <Stat

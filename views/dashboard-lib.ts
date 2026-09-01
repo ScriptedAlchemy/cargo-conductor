@@ -98,6 +98,21 @@ export const formatMs = (ms: number): string => {
   return rest === 0 ? `${minutes}m` : `${minutes}m ${rest}s`;
 };
 
+/** 1536 → "1.5 KB", 1610612736 → "1.5 GB"; bytes get binary-ish 1024 steps. */
+export const formatBytes = (bytes: number): string => {
+  if (!Number.isFinite(bytes) || bytes < 0) {
+    return '—';
+  }
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  let value = bytes;
+  let unit = 0;
+  while (value >= 1024 && unit < units.length - 1) {
+    value /= 1024;
+    unit += 1;
+  }
+  return `${unit === 0 ? String(Math.round(value)) : value.toFixed(1)} ${units[unit]}`;
+};
+
 export const formatCompactNumber = (value: number): string => {
   const absolute = Math.abs(value);
   const unit =
