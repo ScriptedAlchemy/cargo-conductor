@@ -6,8 +6,6 @@ import * as Context from 'effect/Context';
 import * as Effect from 'effect/Effect';
 import * as Layer from 'effect/Layer';
 
-import { stripAnsi } from '../lib/ansi.js';
-
 import { DaemonConfig } from './config.js';
 import { formatTicket } from './protocol.js';
 import type {
@@ -199,9 +197,6 @@ const toText = (value: unknown): string => String(value);
 const toNullableText = (value: unknown): string | null =>
   value === null || value === undefined ? null : String(value);
 
-const toNullableAnsiFreeText = (value: unknown): string | null =>
-  value === null || value === undefined ? null : stripAnsi(String(value));
-
 const toNullableStringArray = (value: unknown): readonly string[] | null => {
   if (value === null || value === undefined) {
     return null;
@@ -235,14 +230,11 @@ const toRequestRecord = (row: Row): RequestRecord => {
     runMs: toNullableNumber(row.run_ms),
     exitCode: toNullableNumber(row.exit_code),
     signal: toNullableText(row.signal),
-    // New rows are stripped at capture time; stripping again on read keeps
-    // rows persisted by pre-0.1.11 versions (which stored raw ANSI) from
-    // leaking escapes into await/status/MCP JSON.
-    outputTail: toNullableAnsiFreeText(row.output_tail),
+    outputTail: toNullableText(row.output_tail),
     error: toNullableText(row.error),
     errorCount: toNullableNumber(row.error_count),
     warningCount: toNullableNumber(row.warning_count),
-    diagnostics: toNullableStringArray(row.diagnostics_json)?.map(stripAnsi) ?? null,
+    diagnostics: toNullableStringArray(row.diagnostics_json),
     attachedTo: toNullableText(row.attached_to),
     attachMode: toNullableText(row.attach_mode) as AttachMode | null,
     background: toNumber(row.background ?? 0) !== 0,

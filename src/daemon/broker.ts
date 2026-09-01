@@ -13,8 +13,6 @@ import * as Ref from 'effect/Ref';
 import * as Semaphore from 'effect/Semaphore';
 import * as ChildProcessSpawner from 'effect/unstable/process/ChildProcessSpawner';
 
-import { stripAnsi } from '../lib/ansi.js';
-
 import {
   batchCompatibleFor,
   batchExitShared,
@@ -286,14 +284,11 @@ const addDiagnostic = (
   } else {
     return;
   }
-  // Diagnostics surface only as JSON text (ledger, status, await/MCP), where
-  // the demux stream's ANSI-rendered color would arrive as escaped `\u001b[…`
-  // noise; the live stream keeps the colored bytes.
-  const text = rendered === null ? null : stripAnsi(rendered);
-  if (text !== null && text.length > 0 && accumulator.diagnostics.length < maxDiagnostics) {
+  // Stored verbatim, ANSI included: display surfaces strip per consumer.
+  if (rendered !== null && rendered.length > 0 && accumulator.diagnostics.length < maxDiagnostics) {
     accumulator.diagnostics.push({
       order,
-      rendered: text.slice(0, maxDiagnosticLength),
+      rendered: rendered.slice(0, maxDiagnosticLength),
     });
   }
 };

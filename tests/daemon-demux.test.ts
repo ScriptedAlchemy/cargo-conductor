@@ -6,8 +6,17 @@ import * as Effect from 'effect/Effect';
 import * as Fiber from 'effect/Fiber';
 
 import { createLedgerApi, openLedgerDatabase } from '../src/daemon/ledger.js';
+import { defaultTicketOperations } from '../src/operations/tickets.js';
 import { decodeOutput, execRequest, findExit, pollReport, withDaemon } from './harness.js';
 import type { Fixture } from './harness.js';
+
+const restoreEnv = (name: string, value: string | undefined): void => {
+  if (value === undefined) {
+    delete process.env[name];
+  } else {
+    process.env[name] = value;
+  }
+};
 
 /**
  * A staged fake cargo: executes FAKE_STAGE_FILE line by line — `sleep:N`,
@@ -311,7 +320,7 @@ describe('json demux early release', () => {
       }),
     ));
 
-  it('keeps ANSI on the live stream but out of diagnostics and the durable tail', () =>
+  it('stores ANSI verbatim; the consumer seam strips only for no-color environments', () =>
     withDaemon(5, (fixture) =>
       Effect.gen(function* () {
         const esc = '\u001b';
@@ -331,28 +340,57 @@ describe('json demux early release', () => {
         });
         const exit = findExit(messages);
         expect(exit.status).toBe('failed');
-        // The live stream keeps the colored bytes for TTY consumers (the
-        // exec client strips them when its consumer cannot render color).
+        // The live stream carries the colored bytes; the exec client decides
+        // at display time whether its consumer gets them.
         const liveStderr = decodeOutput(messages, 'stderr');
         expect(liveStderr).toContain(`${esc}[38;5;9merror[E0432]`);
 
+        // Storage keeps color: the ledger row and status report are the
+        // shared source for consumers with and without color support.
         const report = yield* pollReport(fixture, (candidate) =>
           candidate.recent.some((record) => record.ticket === exit.ticket),
         );
         const record = report.recent.find((item) => item.ticket === exit.ticket);
-        // JSON surfaces (status/await/result/MCP) must never show a raw or
-        // escaped ESC: diagnostics are captured color-free.
         expect(record?.errorCount).toBe(1);
-        expect(record?.diagnostics).toEqual([
-          'error[E0432]: unresolved import\n --> src/lib.rs:3:5\n',
-        ]);
+        expect(record?.diagnostics?.join('')).toContain(`${esc}[38;5;9merror[E0432]`);
 
         const db = openLedgerDatabase(fixture.config.databasePath);
         const durable = yield* createLedgerApi(db).getRequestByTicket(exit.ticket);
         db.close();
-        expect(durable?.outputTail).toContain('error[E0432]: unresolved import');
-        expect(durable?.outputTail).not.toContain(esc);
-        expect(durable?.diagnostics?.join('')).not.toContain(esc);
+        expect(durable?.outputTail).toContain(`${esc}[38;5;9merror[E0432]`);
+
+        // The operations seam projects records per consumer: NO_COLOR gets
+        // zero ESC (so JSON surfaces never show `\u001b[…`), FORCE_COLOR
+        // keeps the CSI sequences even without a TTY.
+        const previousEnv = {
+          forceColor: process.env.FORCE_COLOR,
+          noColor: process.env.NO_COLOR,
+          stateDir: process.env.CARGO_CONDUCTOR_STATE_DIR,
+        };
+        const context = { signal: new AbortController().signal };
+        try {
+          process.env.CARGO_CONDUCTOR_STATE_DIR = fixture.config.stateDir;
+          process.env.NO_COLOR = '1';
+          delete process.env.FORCE_COLOR;
+          const plain = yield* Effect.promise(() =>
+            defaultTicketOperations.result({ ticket: exit.ticket }, context),
+          );
+          expect(plain.request?.diagnostics?.join('')).toContain('error[E0432]: unresolved import');
+          expect(plain.request?.diagnostics?.join('')).not.toContain(esc);
+          expect(plain.request?.outputTail ?? '').not.toContain(esc);
+          expect(JSON.stringify(plain.request)).not.toContain('\\u001b');
+
+          delete process.env.NO_COLOR;
+          process.env.FORCE_COLOR = '1';
+          const colored = yield* Effect.promise(() =>
+            defaultTicketOperations.result({ ticket: exit.ticket }, context),
+          );
+          expect(colored.request?.diagnostics?.join('')).toContain(`${esc}[38;5;9merror[E0432]`);
+        } finally {
+          restoreEnv('CARGO_CONDUCTOR_STATE_DIR', previousEnv.stateDir);
+          restoreEnv('NO_COLOR', previousEnv.noColor);
+          restoreEnv('FORCE_COLOR', previousEnv.forceColor);
+        }
       }),
     ));
 

@@ -84,14 +84,11 @@ describe('TailBuffer', () => {
     expect(tail.toString()).toBe('56789');
   });
 
-  it('strips ANSI color from the rendered tail (JSON surfaces never see ESC)', () => {
+  it('preserves captured ANSI verbatim (color is a display-time decision)', () => {
+    const colored = 'import\u001b[0m\n \u001b[1m\u001b[94m--> \u001b[0msrc/lib.rs:3:5\n';
     const tail = new TailBuffer(4096);
-    tail.push(Buffer.from('error[E0432]: unresolved im'));
-    tail.push(Buffer.from('port: `rusqlite::Connection`\u001b[0m\n \u001b[1m\u001b[94m--> \u001b[0msrc/lib.rs:3:5\n'));
-    expect(tail.toString()).toBe(
-      'error[E0432]: unresolved import: `rusqlite::Connection`\n --> src/lib.rs:3:5\n',
-    );
-    expect(tail.toString()).not.toContain('\u001b');
+    tail.push(Buffer.from(colored));
+    expect(tail.toString()).toBe(colored);
   });
 });
 
@@ -153,12 +150,28 @@ describe('executeCargo', () => {
     expect(result.error).toBeNull();
   });
 
-  it('defaults cargo color to never for the captured pipe', async () => {
+  it('captures color by default: the pipe would otherwise make auto mean never', async () => {
     const { dir, script } = makeWorkspace();
 
     const result = await runExecute({
       argv: [script, 'color'],
       cwd: dir,
+      killSignal: unusedKill(),
+      tailBytes: 4096,
+      onOutput: () => Effect.void,
+    });
+
+    expect(result.outcome).toBe('done');
+    expect(result.outputTail).toContain('color:always');
+  });
+
+  it('respects an explicit caller CARGO_TERM_COLOR over the capture default', async () => {
+    const { dir, script } = makeWorkspace();
+
+    const result = await runExecute({
+      argv: [script, 'color'],
+      cwd: dir,
+      env: { CARGO_TERM_COLOR: 'never' },
       killSignal: unusedKill(),
       tailBytes: 4096,
       onOutput: () => Effect.void,
@@ -168,20 +181,20 @@ describe('executeCargo', () => {
     expect(result.outputTail).toContain('color:never');
   });
 
-  it('respects an explicit caller CARGO_TERM_COLOR over the never default', async () => {
+  it('honors a caller NO_COLOR by spawning with color off', async () => {
     const { dir, script } = makeWorkspace();
 
     const result = await runExecute({
       argv: [script, 'color'],
       cwd: dir,
-      env: { CARGO_TERM_COLOR: 'always' },
+      env: { NO_COLOR: '1' },
       killSignal: unusedKill(),
       tailBytes: 4096,
       onOutput: () => Effect.void,
     });
 
     expect(result.outcome).toBe('done');
-    expect(result.outputTail).toContain('color:always');
+    expect(result.outputTail).toContain('color:never');
   });
 
   it('runs the child with the requested cwd', async () => {
