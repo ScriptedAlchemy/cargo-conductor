@@ -13,7 +13,12 @@ import type { KacheStatusReport, KacheTopCrate } from './protocol.js';
 const defaultEventTailBytes = 8 * 1024 * 1024;
 const defaultTtlMs = 60_000;
 const heartbeatWindowMs = 5 * 60_000;
-const topCrateLimit = 8;
+/**
+ * Slowest crates are selected per profile: dev and release timings are not
+ * comparable populations, so a single global top-N would silently rank
+ * across profiles and starve the cheaper one out of the report.
+ */
+const topCratesPerProfile = 5;
 const eventEwmaAlpha = 0.25;
 
 const finitePositiveMs = (value: number): number | null =>
@@ -289,6 +294,14 @@ export const readKacheStatusSnapshot = (
       topCrates.push({ crate: crateName, profile, ms: compileTimeMs });
     }
     topCrates.sort((left, right) => right.ms - left.ms || left.crate.localeCompare(right.crate));
+    // Cap within each profile; the flat ms-descending order of the surviving
+    // rows is presentation-neutral (consumers group by profile).
+    const perProfileSeen = new Map<string, number>();
+    const cappedTopCrates = topCrates.filter((row) => {
+      const seen = perProfileSeen.get(row.profile) ?? 0;
+      perProfileSeen.set(row.profile, seen + 1);
+      return seen < topCratesPerProfile;
+    });
     return {
       status: {
         available: true,
@@ -297,7 +310,7 @@ export const readKacheStatusSnapshot = (
         indexSizeBytes,
         eventsFreshMs: events.eventsFreshMs,
         recentHeartbeatRoots: events.recentHeartbeatRoots,
-        topCrates: topCrates.slice(0, topCrateLimit),
+        topCrates: cappedTopCrates,
       },
       indexPriors: {
         compileTimeMs: (crateName, profiles) => {

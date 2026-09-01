@@ -9,21 +9,31 @@ import {
   DEMUX_FLAG,
   argvText,
   argvTitle,
+  attachSavings,
+  diagnosticBadges,
   formatCompactNumber,
   formatMs,
   frequencyEntries,
   frequencyTotal,
   kacheColumns,
+  kacheProfileGroups,
+  laneIsActive,
+  outputTextFor,
   pathBasename,
   percentileMinSamples,
+  queuedWaitMs,
+  queuedWaitThresholdMs,
   ranAsFor,
   relativeTime,
   remainingEstimateMs,
   remainingMinMs,
   resolveTicketDetail,
+  rowSubcommand,
   runMetricsView,
   sectionOrder,
   shortenPath,
+  subcommandTimings,
+  terminalStatuses,
   ticketDetailFrom,
 } from '../views/dashboard-lib.js';
 
@@ -358,5 +368,247 @@ describe('display formatting', () => {
     expect(shortenPath('/srv/some/deeply/nested/workspace/checkout/target/debug', 20)).toBe(
       '…/target/debug',
     );
+  });
+});
+
+describe('kacheProfileGroups (slowest crates never rank across profiles)', () => {
+  const topCrates = [
+    { crate: 'linker-heavy', ms: 90_000, profile: 'release' },
+    { crate: 'proc-macros', ms: 20_000, profile: 'release' },
+    { crate: 'graph-db', ms: 8_000, profile: 'dev' },
+    { crate: 'store-runtime', ms: 3_000, profile: 'dev' },
+    { crate: 'itest-suite', ms: 40_000, profile: 'test' },
+  ];
+
+  it('groups by profile with dev leading, each group sorted within itself', () => {
+    const groups = kacheProfileGroups(topCrates);
+    expect(groups.map((group) => group.profile)).toEqual(['dev', 'release', 'test']);
+    expect(groups[0].rows).toEqual([
+      { crate: 'graph-db', ms: 8_000 },
+      { crate: 'store-runtime', ms: 3_000 },
+    ]);
+  });
+
+  it('meters each group against its own maximum, never the global one', () => {
+    const groups = kacheProfileGroups(topCrates);
+    const dev = groups.find((group) => group.profile === 'dev');
+    const release = groups.find((group) => group.profile === 'release');
+    // A 90s release build must not flatten the dev group's meters.
+    expect(dev?.maxMs).toBe(8_000);
+    expect(release?.maxMs).toBe(90_000);
+  });
+
+  it('produces no group for profiles without valid timings', () => {
+    expect(kacheProfileGroups([])).toEqual([]);
+    expect(
+      kacheProfileGroups([
+        { crate: 'zeroed', ms: 0, profile: 'dev' },
+        { crate: 42, ms: 1_000, profile: 'dev' },
+      ]),
+    ).toEqual([]);
+  });
+
+  it('appends unknown profiles after the familiar cargo ones', () => {
+    const groups = kacheProfileGroups([
+      { crate: 'a', ms: 1, profile: 'zcustom' },
+      { crate: 'b', ms: 1, profile: 'release' },
+    ]);
+    expect(groups.map((group) => group.profile)).toEqual(['release', 'zcustom']);
+  });
+});
+
+describe('rowSubcommand (check and test are different populations)', () => {
+  it('prefers the daemon-normalized intentJson subcommand', () => {
+    expect(
+      rowSubcommand({
+        argv: ['cargo', 'whatever'],
+        intentJson: JSON.stringify({ profile: 'dev', subcommand: 'nextest' }),
+      }),
+    ).toBe('nextest');
+  });
+
+  it('falls back to argv, skipping flags and toolchain selectors', () => {
+    expect(rowSubcommand({ argv: ['cargo', 'check', '-p', 'aa'] })).toBe('check');
+    expect(rowSubcommand({ argv: ['cargo', '+nightly', '--quiet', 'test'] })).toBe('test');
+    expect(rowSubcommand({ argv: ['cargo'] })).toBeNull();
+    expect(rowSubcommand({})).toBeNull();
+  });
+
+  it('survives malformed intentJson via the argv fallback', () => {
+    expect(rowSubcommand({ argv: ['cargo', 'build'], intentJson: '{oops' })).toBe('build');
+  });
+});
+
+describe('subcommandTimings (metrics split by subcommand)', () => {
+  const rows = [
+    { argv: ['cargo', 'check', '-p', 'aa'], runMs: 1_000 },
+    { argv: ['cargo', 'check', '-p', 'bb'], runMs: 3_000 },
+    { argv: ['cargo', 'check', '-p', 'cc'], runMs: 5_000 },
+    { argv: ['cargo', 'test', '-p', 'aa'], runMs: 60_000 },
+    { argv: ['cargo', 'test', '-p', 'bb'], runMs: 90_000 },
+    // Rows without a duration (still running, denied) never count toward n.
+    { argv: ['cargo', 'test', '-p', 'cc'], runMs: null },
+  ];
+
+  it('reports each subcommand as its own population with an honest n', () => {
+    const timings = subcommandTimings(rows);
+    expect(timings).toEqual([
+      { count: 3, maxMs: 5_000, meanMs: 3_000, p50Ms: 3_000, subcommand: 'check' },
+      { count: 2, maxMs: 90_000, meanMs: 75_000, p50Ms: 60_000, subcommand: 'test' },
+    ]);
+  });
+
+  it('never blends check and test into one line', () => {
+    const timings = subcommandTimings(rows);
+    const check = timings.find((timing) => timing.subcommand === 'check');
+    // A blended p50 over all five runs would be 5s; the honest check p50 is 3s.
+    expect(check?.p50Ms).toBe(3_000);
+    expect(timings).toHaveLength(2);
+  });
+});
+
+describe('diagnosticBadges (history/in-flight warning and error counts)', () => {
+  it('renders nothing for unknown or zero counts', () => {
+    expect(diagnosticBadges(null, null)).toEqual([]);
+    expect(diagnosticBadges(0, 0)).toEqual([]);
+    expect(diagnosticBadges(undefined, undefined)).toEqual([]);
+  });
+
+  it('emits errors before warnings with their counts', () => {
+    expect(diagnosticBadges(2, 5)).toEqual([
+      { count: 2, kind: 'errors' },
+      { count: 5, kind: 'warnings' },
+    ]);
+    expect(diagnosticBadges(0, 3)).toEqual([{ count: 3, kind: 'warnings' }]);
+  });
+});
+
+describe('terminal statuses (denied is its own distinct end)', () => {
+  it('treats denied as finished work alongside done, failed, and killed', () => {
+    expect([...terminalStatuses].sort()).toEqual(['denied', 'done', 'failed', 'killed']);
+  });
+
+  it('does not re-fetch output for denied rows once resolved', async () => {
+    const calls: string[] = [];
+    await resolveTicketDetail(
+      { outputTail: null, status: 'denied', ticket: 'cc-9' },
+      async (ticket) => {
+        calls.push(ticket);
+        return null;
+      },
+    );
+    // Denied is terminal, so the drawer is allowed one result fetch.
+    expect(calls).toEqual(['cc-9']);
+  });
+});
+
+describe('queuedWaitMs (in-flight rows that queued first)', () => {
+  it('surfaces waits from the documented threshold up', () => {
+    expect(queuedWaitMs(queuedWaitThresholdMs)).toBe(queuedWaitThresholdMs);
+    expect(queuedWaitMs(8_000)).toBe(8_000);
+  });
+
+  it('hides sub-threshold bookkeeping waits and non-numbers', () => {
+    expect(queuedWaitMs(queuedWaitThresholdMs - 1)).toBeNull();
+    expect(queuedWaitMs(0)).toBeNull();
+    expect(queuedWaitMs(null)).toBeNull();
+    expect(queuedWaitMs(undefined)).toBeNull();
+  });
+});
+
+describe('outputTextFor (drawer diagnostics fallback)', () => {
+  const base = ticketDetailFrom({ ticket: 'cc-1', status: 'failed' });
+
+  it('prefers the output tail when present', () => {
+    const detail = ticketDetailFrom({
+      diagnostics: ['warning: unused import'],
+      outputTail: 'Compiling…',
+      status: 'failed',
+      ticket: 'cc-1',
+    });
+    expect(detail === null ? null : outputTextFor(detail)).toBe('Compiling…');
+  });
+
+  it('renders the ledger diagnostics when the tail is null (live daemon nulls it)', () => {
+    const detail = ticketDetailFrom({
+      diagnostics: ['error[E0308]: mismatched types', 'warning: unused import'],
+      outputTail: null,
+      status: 'failed',
+      ticket: 'cc-1',
+    });
+    expect(detail === null ? null : outputTextFor(detail)).toBe(
+      'error[E0308]: mismatched types\n\nwarning: unused import',
+    );
+  });
+
+  it('yields null when neither tail nor diagnostics exist', () => {
+    expect(base === null ? 'missing' : outputTextFor(base)).toBeNull();
+    const empty = ticketDetailFrom({ diagnostics: [], status: 'done', ticket: 'cc-2' });
+    expect(empty === null ? 'missing' : outputTextFor(empty)).toBeNull();
+  });
+});
+
+describe('laneIsActive (idle lanes collapse)', () => {
+  it('keeps lanes holding work', () => {
+    expect(laneIsActive({ queued: 2, runningTicket: null })).toBe(true);
+    expect(laneIsActive({ queued: 0, runningTicket: 'cc-4' })).toBe(true);
+  });
+
+  it('drops lanes with nothing running and nothing queued', () => {
+    expect(laneIsActive({ queued: 0, runningTicket: null })).toBe(false);
+    expect(laneIsActive({})).toBe(false);
+  });
+});
+
+describe('attachSavings (runs avoided is attach coalescing, not kache)', () => {
+  it('credits the leader real runtime once per follower when the leader finished', () => {
+    const savings = attachSavings([
+      { attachedTo: null, runMs: 42_000, ticket: 'cc-1' },
+      { attachMode: 'identity', attachedTo: 'cc-1', estimateMs: 39_000, ticket: 'cc-2' },
+      { attachMode: 'coverage', attachedTo: 'cc-1', estimateMs: 10_000, ticket: 'cc-3' },
+    ]);
+    expect(savings.avoidedRuns).toBe(2);
+    expect(savings.savedExactMs).toBe(84_000);
+    expect(savings.savedEstimatedMs).toBe(0);
+  });
+
+  it('falls back to the follower estimate, kept separate as estimated', () => {
+    const savings = attachSavings([
+      { attachedTo: null, runMs: null, ticket: 'cc-1' },
+      { attachMode: 'identity', attachedTo: 'cc-1', estimateMs: 39_000, ticket: 'cc-2' },
+      { attachMode: 'batch', attachedTo: 'cc-9', estimateMs: 5_000, ticket: 'cc-3' },
+    ]);
+    expect(savings.savedExactMs).toBe(0);
+    expect(savings.savedEstimatedMs).toBe(44_000);
+    expect(savings.avoidedRuns).toBe(2);
+  });
+
+  it('counts packages folded into visible batch leaders', () => {
+    const savings = attachSavings([
+      {
+        argv: ['cargo', 'check', '-p', 'aa'],
+        attachedTo: null,
+        execArgv: ['cargo', 'check', '-p', 'aa', '-p', 'bb', '-p', 'cc', DEMUX_FLAG],
+        ticket: 'cc-1',
+      },
+    ]);
+    expect(savings.batchExtraPackages).toBe(2);
+    expect(savings.avoidedRuns).toBe(0);
+  });
+
+  it('derives nothing from kache-shaped compile timings', () => {
+    // Kache topCrates rows carry crate/ms/profile — no attach fields. Feeding
+    // them in must produce zero savings: crate build cost is not conductor
+    // savings, and the two must never be conflated.
+    const savings = attachSavings([
+      { crate: 'linker-heavy', ms: 90_000, profile: 'release' } as never,
+      { crate: 'graph-db', ms: 8_000, profile: 'dev' } as never,
+    ]);
+    expect(savings).toEqual({
+      avoidedRuns: 0,
+      batchExtraPackages: 0,
+      savedEstimatedMs: 0,
+      savedExactMs: 0,
+    });
   });
 });

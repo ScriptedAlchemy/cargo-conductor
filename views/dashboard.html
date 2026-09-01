@@ -53,7 +53,21 @@
       .pill.done { background: rgba(125, 206, 154, 0.14); color: var(--good); }
       .pill.failed { background: rgba(224, 122, 95, 0.16); color: var(--bad); }
       .pill.killed { background: rgba(227, 154, 85, 0.16); color: var(--warn); }
+      /* Denied (hook-blocked, cargo never ran) must not read as failed or
+         killed: outline instead of fill keeps the three ends distinct. */
+      .pill.denied { background: transparent; border: 1px solid rgba(224, 122, 95, 0.45); color: var(--bad); }
       .pill.neutral { background: rgba(232, 228, 217, 0.1); color: var(--muted); }
+      .badge {
+        display: inline-block;
+        margin-left: 6px;
+        padding: 0 6px;
+        border-radius: 999px;
+        font-family: var(--mono);
+        font-size: 0.68rem;
+        white-space: nowrap;
+      }
+      .badge.err { background: rgba(224, 122, 95, 0.16); color: var(--bad); }
+      .badge.warn { background: rgba(227, 154, 85, 0.16); color: var(--warn); }
       tr.selectable { cursor: pointer; }
       tr.selectable:hover td { background: rgba(232, 228, 217, 0.045); }
       tr.selectable:hover .ticket { color: var(--accent); }
@@ -167,6 +181,16 @@
         white-space: nowrap;
       }
       .crate-row { padding: 2px 0 4px; }
+      .crate-group { margin-bottom: 9px; }
+      .crate-group-head {
+        padding: 2px 0 1px;
+        border-bottom: 1px solid var(--line);
+        margin-bottom: 3px;
+      }
+      .crate-group-head .profile { font-size: 0.72rem; letter-spacing: 0.08em; text-transform: uppercase; }
+      .subcommand-split { margin-top: 13px; max-width: 460px; }
+      .subcommand-split .cmd { max-width: 300px; }
+      .diskutil .est { font-size: 0.72rem; }
       .crate-name {
         min-width: 0;
         overflow: hidden;

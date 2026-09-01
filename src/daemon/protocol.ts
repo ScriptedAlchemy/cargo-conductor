@@ -240,12 +240,28 @@ export interface StatusReport {
   readonly system?: SystemLoadReport;
 }
 
+/** Busy share of one device backing the state dir or an in-flight target dir. */
+export interface DiskUtilReport {
+  readonly device: string;
+  /** Percent of wall time (0–100) the device had I/O in flight since the previous sample. */
+  readonly utilPercent: number;
+}
+
 /** Machine load at report time, for dashboards and clamp visibility. */
 export interface SystemLoadReport {
   readonly loadAvg1: number;
   readonly cores: number;
   /** Configured per-core clamp threshold, or null when the clamp is off. */
   readonly clampThresholdPerCore: number | null;
+  /**
+   * iowait share (0–100) of CPU time since the previous status sample.
+   * Linux only, and only once a delta exists: absent means "no honest
+   * number", never zero. High iowait beside a modest loadavg is the
+   * disk-stalled-build tell.
+   */
+  readonly ioWaitPercent?: number;
+  /** Busy share of devices backing the state dir and in-flight target dirs (Linux only). */
+  readonly disks?: readonly DiskUtilReport[];
 }
 
 /**

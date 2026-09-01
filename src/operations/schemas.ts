@@ -88,6 +88,16 @@ const systemLoadSchema = z.object({
   loadAvg1: z.number().nonnegative(),
   cores: z.number().int().positive(),
   clampThresholdPerCore: z.number().positive().nullable(),
+  // Linux-only /proc deltas; absent where no honest sample exists.
+  ioWaitPercent: z.number().min(0).max(100).optional(),
+  disks: z
+    .array(
+      z.object({
+        device: z.string(),
+        utilPercent: z.number().min(0).max(100),
+      }),
+    )
+    .optional(),
 }) satisfies z.ZodType<SystemLoadReport>;
 
 const kacheStatusSchema = z.object({

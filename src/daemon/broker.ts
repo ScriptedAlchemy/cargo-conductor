@@ -14,6 +14,7 @@ import * as Cause from 'effect/Cause';
 import { attachModeMetric, cargoRunMetric, jobOutcomeMetric } from './broker-metrics.js';
 import { DaemonConfig } from './config.js';
 import { CostModel } from './cost.js';
+import { createSystemIoSampler } from './disk-stats.js';
 import { TailBuffer } from './executor.js';
 import { normalizeCargoIntent } from './intent-normalizer.js';
 import { isTerminalStatus, makeAttachment, remainingEstimateMs } from './job-state.js';
@@ -114,6 +115,10 @@ export const BrokerLive: Layer.Layer<
     const startedAtMs = Date.now();
 
     const directory = makeTicketDirectory((ticket) => ledger.getRequestByTicket(ticket));
+    // Disk/IO pressure needs a previous /proc sample to be honest, so the
+    // sampler lives for the daemon's lifetime and each status report advances
+    // it. Non-Linux platforms simply never produce a sample.
+    const systemIo = createSystemIoSampler();
     const lanesRuntime = yield* makeLaneRuntime({
       config,
       costModel,
@@ -431,6 +436,16 @@ export const BrokerLive: Layer.Layer<
         const jobOutcome = yield* Metric.value(jobOutcomeMetric);
         const attachMode = yield* Metric.value(attachModeMetric);
         const kache = yield* costModel.kacheStatus;
+        // Devices worth watching right now: the conductor's own state disk
+        // plus whatever disks the in-flight builds are writing to.
+        const ioSample = yield* Effect.sync(() =>
+          systemIo.sample([
+            config.stateDir,
+            ...laneStatuses
+              .filter((lane) => lane.runningTicket !== null)
+              .map((lane) => lane.targetDir),
+          ]),
+        );
         return {
           pid: process.pid,
           startedAtMs,
@@ -444,6 +459,12 @@ export const BrokerLive: Layer.Layer<
             loadAvg1: loadavg()[0],
             cores: availableParallelism(),
             clampThresholdPerCore: config.loadThresholdPerCore,
+            ...(ioSample?.ioWaitPercent == null
+              ? {}
+              : { ioWaitPercent: ioSample.ioWaitPercent }),
+            ...(ioSample !== null && ioSample.disks.length > 0
+              ? { disks: ioSample.disks }
+              : {}),
           },
           metrics: {
             cargo_run_ms: {
