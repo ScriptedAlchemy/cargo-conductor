@@ -1,96 +1,176 @@
 # cargo-hauler
 
-cargo-hauler is an [agent-bundle](https://github.com/ScriptedAlchemy/agent-bundle)
-plugin that puts a broker daemon between coding agents (Claude Code, Codex CLI,
-Cursor) and `cargo`. A `beforeTool` hook rewrites each agent's cargo shell call
-into a brokered request; the daemon deduplicates, schedules, and executes the
-work, then streams output back so the agent sees a normal cargo run.
+**Stop your AI agents from fighting over cargo.**
 
-Agents keep running plain `cargo …`; the broker does the rest.
+cargo-hauler brokers Rust builds across Claude Code, Codex, Cursor, scripts,
+and terminals. Agents keep running normal `cargo …` commands; one daemon
+coalesces duplicate work, controls machine pressure, and streams the result
+back to every rider.
+
+![cargo-hauler dashboard showing contention and active fleet work](docs/media/dashboard-overview.png)
 
 ## The problem
 
-Mined from Cursor/Codex/Claude session archives for one 49-crate Rust
-workspace, Jun–Aug 2026:
+Put several coding agents in one Rust codebase and they behave like strangers:
+they all start the same checks, block on Cargo's locks, thrash CPU and I/O, and
+sit blind during long builds. Splitting `CARGO_TARGET_DIR` makes the lock
+message disappear by paying for the same compilation several times.
 
-- ~73,000 agent cargo invocations, all sharing one target dir across worktrees.
-- ~45,600 "Blocking waiting for file lock" events; peak 33 concurrent cargo
-  processes; 91% of Cursor cargo runs started while another was in flight.
-- Massive redundancy: Cursor alone re-ran 12,783 identical command+cwd pairs
-  within 15 minutes — 96% of them near-simultaneous parallel-subagent
-  duplicates of a run already in flight.
-- The work is slow enough to matter: check p50 ~3 min, build p50 ~11 min.
-  Claude's shell tool killed 106 builds at its hard timeout, some of which
-  were passing.
-- Agents hand-rolled mitigations that make it worse: `CARGO_TARGET_DIR`
-  isolation on 29% of commands (defeats sharing), 6,197 `ps`/`pgrep` probes,
-  87+ `pkill cargo`.
+This is not hypothetical. A real 96-core fleet machine recorded:
 
-The broker replaces lock contention with a queue, duplicate runs with
-attachment, and blind waiting with tickets and status surfaces.
+| Live deployment signal | Observed |
+| --- | ---: |
+| Cargo runs brokered in 24 hours | **782** |
+| Compile compute avoided | **7h 42m** |
+| Agent latency saved | **3h 37m** |
+| Duplicate/compatible riders served | **138** |
 
-## How it works
+The run count is the dashboard's rolling 24-hour window. Savings and riders
+are all-time, ledger-backed totals captured from the same deployment; negative
+latency riders are included rather than hidden.
+
+The workload that motivated cargo-hauler was already severe: one 49-crate
+workspace produced about 73,000 agent Cargo invocations and 45,600
+`Blocking waiting for file lock` events in three months. Cursor alone repeated
+12,783 identical command-and-directory pairs within 15 minutes.
+
+## How it works in 60 seconds
+
+Three entry points intercept Cargo without changing how agents work:
+`beforeTool` hooks rewrite shell calls, an optional PATH shim catches Cargo
+inside scripts and terminals, and MCP clients submit work through
+`hauler_request`. Every request becomes a durable ticket.
+
+The daemon normalizes the command into an intent, then:
+
+1. **Identity attaches** byte-identical requests to one in-flight run.
+2. **Coverage attaches** a narrower check to a compatible stronger compile.
+3. **Batch folding** combines compatible queued compile or test requests.
+4. **Admission control** uses machine load, CPU/I/O pressure (PSI), and a
+   concurrency ceiling before starting more work.
+5. **Cost-aware scheduling** learns per-intent EWMA timings and can seed new
+   estimates from kache's per-crate history.
+
+One real Cargo process streams output to all attached agents. During quiet
+compile phases, silence-gated heartbeats keep host tools informed without
+flooding their context. The SQLite ledger records every transition and keeps
+two separate, honest savings numbers: compute not run and rider latency saved.
+Both can be negative when sharing cost more than it helped.
 
 ```mermaid
 flowchart LR
   agent["agent shell call<br/>cargo check -p foo"] --> hook["beforeTool hook<br/>rewrite to hauler exec"]
-  scripts["cargo inside scripts"] --> shim["PATH shim (optional)"]
-  hook --> client["hauler exec client<br/>streams output + progress"]
+  scripts["cargo in scripts / terminal"] --> shim["PATH shim (optional)"]
+  mcp["MCP hauler_request"] --> client
+  hook --> client["hauler client<br/>ticket + live stream"]
   shim --> client
   client -->|unix socket| daemon
-  subgraph daemon["hauler daemon (flock singleton)"]
-    normalizer["intent normalizer"] --> matcher["attach:<br/>identity / coverage"]
-    matcher --> lanes["lanes: one queue per<br/>(workspace root, target dir)"]
-    lanes --> scheduler["scheduler + batch composer<br/>+ admission gate"]
-    scheduler --> executor["executor: one real cargo<br/>--message-format=json demux"]
+  subgraph daemon["hauler daemon (singleton)"]
+    normalizer["intent normalizer"] --> matcher["identity / coverage"]
+    matcher --> lanes["lane per workspace<br/>+ target dir"]
+    lanes --> scheduler["batching + cost scheduler<br/>+ admission control"]
+    scheduler --> executor["one real cargo process<br/>JSON diagnostic demux"]
   end
   executor --> cargo["cargo → rustc<br/>(kache optional)"]
-  daemon --> ledgerDb["SQLite ledger:<br/>every request + transitions"]
-  ledgerDb --> surfaces["hauler status/log/last<br/>MCP tools + dashboard app"]
-  daemon --> notify["tickets: afterTool notify,<br/>stop-hold, hauler_await"]
+  daemon --> ledger["SQLite ledger<br/>tickets + savings"]
+  ledger --> surfaces["CLI + MCP tools<br/>dashboard"]
 ```
 
-Every request is normalized into an intent (subcommand, package set, targets,
-features, profile, toolchain, env digest, workspace root, resolved target
-dir), ledgered, and then served one of three ways:
+## Built for an agent fleet
 
-- **Attach.** A request whose normalized intent is byte-identical to an
-  in-flight run becomes a follower: the leader's buffered output is replayed,
-  live output is mirrored, and the exit is shared — this is aimed at the 96%
-  duplicate storm. A strictly weaker `cargo check` can also ride a stronger
-  in-flight `build`/`check` over the same compile surface and a covering
-  package set (coverage riding), with only the diagnostics for its own scope.
-- **Merge.** The batch composer folds queued compatible `check`/`build`/
-  `clippy` requests with explicit `-p` lists into the leader's single cargo
-  invocation (up to 16 packages). The executor runs cargo with
-  `--message-format=json-diagnostic-rendered-ansi` and demultiplexes per-unit
-  results back to each requester. Riders with `--lib`-scoped demands are
-  released early, as soon as the stream proves their packages compiled cleanly
-  (or shows them failing); broader demands settle with correct per-scope
-  results when the composite run completes. Test runs fold too: when a slot
-  opens, queued compatible `cargo test` requests in the same lane become one
-  composite run — the union of their `-p` packages and `--test` targets, the
-  union of their trailing libtest filters (dropped entirely if any participant
-  had none, so the composite always runs a superset), with `--no-fail-fast`
-  added so one crate's failure still surfaces the others' results.
-  `cargo nextest run` requests fold through `-E '(expr1) or (expr2)'` filter
-  expressions; a participant without `-E` contributes `package(...)`
-  expressions built from its `-p` flags. Unlike compile demux, folded test
-  participants share the composite's full output and exit code: a failure
-  anywhere fails everyone.
-- **Queue and run.** One lane per (workspace root, target dir) — the daemon is
-  the only cargo runner on managed paths, which alone ends the lock storms. A
-  cost scheduler picks the next job by score: shortest-job-first, divided by
-  waiter fan-out (runs that release the most agents win) and topological
-  unblocks (leaf crates before their dependents, warming the artifacts the
-  dependents reuse), halved for recently-edited crates (fail fast), and decayed
-  by age (every 30s waited halves the effective score, so broad builds are
-  never starved). Estimates come from the daemon's own per-intent EWMA, seeded
-  from ledger history, falling back to kache `index.db` per-crate compile-time
-  priors when kache is installed, then to mined-p50 defaults. Admitted runs
-  get a `CARGO_BUILD_JOBS`
-  grant that splits the machine's cores between them, and a machine-wide
-  admission gate caps concurrent cargo processes (default 5).
+| Capability | What changes |
+| --- | --- |
+| Work sharing | Identical work attaches; covered checks ride; compatible compile and test requests fold. |
+| Pressure-aware admission | Load, PSI, active lanes, and the configured ceiling decide when another Cargo process is safe. |
+| Learned scheduling | Intent EWMA and optional kache crate costs prioritize short, high-fan-out work without starving broad builds. |
+| Durable observability | Tickets, output, timings, outcomes, and savings survive daemon restarts in SQLite. |
+| Normal Cargo UX | Live output, buffered replay, quiet-period heartbeats, and the final exit code flow back to each caller. |
+
+### Metrics across the windows that matter
+
+The dashboard separates 1-hour, 24-hour, and all-time populations. Run and
+wait percentiles stay windowed; savings remain all-time ledger accounting.
+
+![cargo-hauler metrics for 1h, 24h, and all-time windows](docs/media/dashboard-metrics.png)
+
+### Kache intelligence
+
+When [kache](https://github.com/ScriptedAlchemy/kache) is present,
+cargo-hauler reads its machine-wide index for first-run cost priors and shows
+the slowest crates by profile. Without kache, the daemon falls back to its own
+EWMA history and the panel simply disappears.
+
+![cargo-hauler kache panel with slowest crates by profile](docs/media/dashboard-kache.png)
+
+### Live tickets instead of blind waits
+
+Open any active ticket to see its current output tail. The drawer refreshes
+while the run is live; completed results remain available from the ledger.
+
+![cargo-hauler live ticket drawer streaming compiler output](docs/media/dashboard-live-output.png)
+
+## Quickstart: the first five minutes
+
+Requirements: Node 22.19 or newer, Cargo, and Linux or macOS.
+
+```sh
+npm install
+npm run build
+```
+
+`artifact/plugin` is the installable multi-host bundle:
+
+```sh
+# Claude Code
+claude plugin marketplace add ./artifact/plugin
+claude plugin install cargo-hauler@cargo-hauler-marketplace
+
+# Codex CLI
+codex plugin marketplace add ./artifact/plugin
+codex plugin add cargo-hauler@cargo-hauler-marketplace
+
+# Cursor
+./scripts/install-cursor.sh
+```
+
+Cursor needs a restart so new sessions load the hooks. Start or inspect the
+daemon with the shipped CLI (shown as `hauler` below):
+
+```sh
+hauler daemon start
+hauler status
+```
+
+The first brokered request auto-starts the daemon. Hooks cover direct agent
+shell calls; install the optional PATH shim to catch Cargo inside scripts and
+ordinary terminals:
+
+```sh
+hauler install-shim --dir ~/.local/bin
+```
+
+MCP App-capable hosts render the dashboard from
+`ui://cargo-hauler/dashboard.html`. For a plain browser:
+
+```sh
+node scripts/preview-dashboard.mjs --port 4941
+```
+
+See [docs/install.md](docs/install.md) for host-specific details.
+
+## Honest limits
+
+- **Linux and macOS are supported.** Windows named-pipe support is
+  experimental; the POSIX PATH shim is unavailable and jobserver integration
+  is disabled there.
+- **Host integration is built with
+  [agent-bundle](https://github.com/ScriptedAlchemy/agent-bundle).** The
+  generated artifact is the supported Claude Code, Codex, and Cursor delivery
+  path.
+- **Sharing preserves declared semantics, not wishful equivalence.** Failed
+  stronger compile runs requeue dependents, and folded tests intentionally
+  share the composite exit code.
+- **Licensed under MIT.**
 
 ## Tickets and long builds
 
@@ -116,69 +196,12 @@ retrievable cross-session.
   any marathon hook process; `stopHookActive` plus a per-ticket deny cap (8)
   prevents livelock. Background tickets never hold the stop.
 
-## Install
+## PATH shim details
 
-Works on Linux and macOS. Windows is experimental and untested: the daemon
-resolves a `\\.\pipe\` named pipe instead of a unix socket and the jobserver
-degrades to disabled, but the cargo PATH shim is a POSIX shell script and
-`install-shim` refuses to install it there. Requires Node >= 22.19
-(`node:sqlite` without native deps).
-
-### The first five minutes
-
-Build the bundle once (`npm install && npm run build`); `artifact/plugin` is
-the installable multi-host bundle. Then install per host:
-
-- **Claude Code**:
-
-  ```sh
-  claude plugin marketplace add ./artifact/plugin
-  claude plugin install cargo-hauler@cargo-hauler-marketplace
-  ```
-
-- **Codex CLI**:
-
-  ```sh
-  codex plugin marketplace add ./artifact/plugin
-  codex plugin add cargo-hauler@cargo-hauler-marketplace
-  ```
-
-- **Cursor** — run the install script (Cursor's local-plugin loader needs
-  root manifests the artifact does not carry, so a bare symlink is not
-  enough), then restart Cursor so new sessions pick up the hooks:
-
-  ```sh
-  ./scripts/install-cursor.sh
-  ```
-
-Verify the daemon with the `hauler` CLI that ships in the artifact
-(`node artifact/plugin/scripts/hauler.mjs`, abbreviated `hauler` below):
-
-```sh
-hauler daemon start
-hauler daemon status
-```
-
-The first brokered request auto-spawns the daemon too, so this step just
-confirms the wiring. The dashboard is an MCP App
-(`ui://cargo-hauler/dashboard.html`) rendered by the `hauler_status`
-tool inside MCP App-capable hosts; to see it in a plain browser, run
-`node scripts/preview-dashboard.mjs` (see [Development](#development)).
-
-**Optional PATH shim** — hooks cannot see cargo spawned inside shell
-scripts; the shim catches those:
-
-```sh
-hauler install-shim --dir ~/.local/bin
-```
-
-The generated shim embeds absolute paths for both the hauler CLI and the
-real cargo (resolved at install time, never through PATH again), tags its
-submissions with `--host shim`, and passes daemon-spawned cargo straight
+The generated shim embeds absolute paths for both the hauler CLI and the real
+Cargo binary (resolved at install time, never through PATH again), tags its
+submissions with `--host shim`, and passes daemon-spawned Cargo straight
 through to the real binary so the broker never re-enters itself.
-
-See [docs/install.md](docs/install.md) for per-host hook details and Codex
-specifics.
 
 ## kache is optional
 
@@ -220,8 +243,10 @@ The same operations project to MCP tools on the `hauler` server:
 
 The MCP App dashboard (`ui://cargo-hauler/dashboard.html`, bound to
 `hauler_status`, loaded immediately and then refreshed every 5s) stacks
-full-width sections in the order contention → in flight → queue → lanes →
-history. Contention shows daemon state, queue depth, and an admission meter.
+full-width sections in the order contention → in flight → queue → metrics →
+kache → lanes → history. Contention shows daemon state, queue depth, and an
+admission meter. Metrics switch between 1-hour, 24-hour, and all-time
+populations while savings stay all-time and ledger-backed.
 In-flight and queued rows show the workspace, who submitted (host · session),
 and elapsed or waiting time against the cost-model estimate
 ("2m 18s / ~13m 11s"). Lanes lists only lanes with work — queued or running —
@@ -294,10 +319,10 @@ optional either way — see [kache is optional](#kache-is-optional).
   ~72s are plausible but unmeasured; the bounded-wait design tolerates being
   cut off either way. See [docs/codex-hooks.md](docs/codex-hooks.md).
 - Requires Node >= 22.19 (`node:sqlite` without native deps). Linux and macOS
-  only for now — Windows lacks the unix socket, shell shim, and POSIX fifo
-  the daemon relies on. Daemon state lives under the per-user cache dir by
-  default (`CARGO_HAULER_STATE_DIR` overrides; see
-  [Configuration](#configuration)).
+  are supported. Windows transport is experimental; the POSIX shell shim is
+  unavailable and jobserver integration is disabled there. Daemon state lives
+  under the per-user cache dir by default (`CARGO_HAULER_STATE_DIR` overrides;
+  see [Configuration](#configuration)).
 
 ## Development
 
@@ -324,7 +349,7 @@ runtime dependency; see `AGENTS.md`.
 
 agent-bundle has no npm release yet; this repo pins the
 [pkg.pr.new](https://pkg.pr.new) preview of main SHA
-[`560124af`](https://github.com/ScriptedAlchemy/agent-bundle/commit/560124af).
+[`b3c12f316`](https://github.com/ScriptedAlchemy/agent-bundle/commit/b3c12f316).
 Compile targets are `plugin` (one bundle for Claude, Codex, and Cursor) and
 `portable` (workbench playground); see `agent-bundle.config.ts` for why the
 per-host target names are not listed individually (AB6017).
