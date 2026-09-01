@@ -33,8 +33,17 @@ window.addEventListener('message', async (event) => {
   }
   if (msg.method === 'tools/call' && typeof msg.id === 'number') {
     try {
-      const status = await (await fetch('/status')).json();
-      reply({ id: msg.id, result: { structuredContent: status } });
+      const name = msg.params && msg.params.name;
+      const args = (msg.params && msg.params.arguments) || {};
+      let url = '/status';
+      if (name === 'conductor_result') {
+        url = '/result?ticket=' + encodeURIComponent(args.ticket ?? '');
+      } else if (name === 'conductor_await') {
+        url = '/await?ticket=' + encodeURIComponent(args.ticket ?? '');
+        if (typeof args.maxWaitMs === 'number') url += '&maxWaitMs=' + args.maxWaitMs;
+      }
+      const payload = await (await fetch(url)).json();
+      reply({ id: msg.id, result: { structuredContent: payload } });
     } catch (error) {
       reply({ id: msg.id, error: { message: String(error) } });
     }
@@ -44,27 +53,56 @@ window.addEventListener('message', async (event) => {
 </body>
 </html>`;
 
+const runConductor = (args, response) => {
+  execFile(process.execPath, [conductorCli, ...args], { maxBuffer: 64 * 1024 * 1024 }, (error, stdout) => {
+    if (error) {
+      response.writeHead(500, { 'content-type': 'application/json' });
+      response.end(JSON.stringify({ error: String(error) }));
+      return;
+    }
+    response.writeHead(200, { 'content-type': 'application/json' });
+    response.end(stdout);
+  });
+};
+
+const badRequest = (response, message) => {
+  response.writeHead(400, { 'content-type': 'application/json' });
+  response.end(JSON.stringify({ error: message }));
+};
+
 const server = createServer((request, response) => {
-  if (request.url === '/' || request.url === '/index.html') {
+  const url = new URL(request.url ?? '/', 'http://127.0.0.1');
+  if (url.pathname === '/' || url.pathname === '/index.html') {
     response.writeHead(200, { 'content-type': 'text/html' });
     response.end(harness);
     return;
   }
-  if (request.url === '/app') {
+  if (url.pathname === '/app') {
     response.writeHead(200, { 'content-type': 'text/html' });
     response.end(readFileSync(appHtml));
     return;
   }
-  if (request.url === '/status') {
-    execFile(process.execPath, [conductorCli, 'status'], { maxBuffer: 64 * 1024 * 1024 }, (error, stdout) => {
-      if (error) {
-        response.writeHead(500, { 'content-type': 'application/json' });
-        response.end(JSON.stringify({ error: String(error) }));
-        return;
-      }
-      response.writeHead(200, { 'content-type': 'application/json' });
-      response.end(stdout);
-    });
+  if (url.pathname === '/status') {
+    runConductor(['status'], response);
+    return;
+  }
+  // The widget's ticket drawer follow-up: status payloads strip outputTail,
+  // conductor result reads the full ledger record.
+  if (url.pathname === '/result' || url.pathname === '/await') {
+    const ticket = url.searchParams.get('ticket');
+    if (ticket === null || ticket.length === 0) {
+      badRequest(response, 'ticket query parameter is required');
+      return;
+    }
+    if (url.pathname === '/result') {
+      runConductor(['result', ticket], response);
+      return;
+    }
+    const maxWaitMs = url.searchParams.get('maxWaitMs');
+    runConductor(
+      ['await', ticket, ...(maxWaitMs === null ? [] : ['--max-wait-ms', maxWaitMs])],
+      response,
+    );
     return;
   }
   response.writeHead(404);
