@@ -89,6 +89,7 @@ export const requestJson = (
             return;
           }
         } catch {
+          clearTimeout(timer);
           finish(null);
           socket.destroy();
           return;

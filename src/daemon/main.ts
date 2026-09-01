@@ -2,9 +2,13 @@ import { rmSync } from 'node:fs';
 
 import { NodeContext, NodeSocketServer } from '@effect/platform-node';
 import type * as SocketServer from '@effect/platform/SocketServer';
+import * as Config from 'effect/Config';
 import * as Deferred from 'effect/Deferred';
 import * as Effect from 'effect/Effect';
 import * as Layer from 'effect/Layer';
+import * as Logger from 'effect/Logger';
+import * as LogLevel from 'effect/LogLevel';
+import * as Option from 'effect/Option';
 
 import { Broker, BrokerLive } from './broker.js';
 import { DaemonConfig, resolveDaemonConfig } from './config.js';
@@ -26,6 +30,14 @@ const appLayer = (config: DaemonConfigShape) =>
     Layer.provideMerge(Layer.succeed(DaemonConfig, config)),
     Layer.provideMerge(NodeContext.layer),
   );
+
+const minimumLogLevelLayer = Layer.unwrapEffect(
+  Config.logLevel('CARGO_CONDUCTOR_LOG_LEVEL').pipe(
+    Config.withDefault(LogLevel.Info),
+    Effect.orElseSucceed(() => LogLevel.Info),
+    Effect.map(Logger.minimumLogLevel),
+  ),
+);
 
 const daemonProgram = Effect.gen(function* () {
   const config = yield* DaemonConfig;
@@ -66,7 +78,9 @@ export const runDaemon = (
   config: DaemonConfigShape = resolveDaemonConfig(),
 ): Effect.Effect<DaemonOutcome, SingletonLockError | SocketServer.SocketServerError> =>
   Effect.scoped(daemonProgram).pipe(
+    Effect.withUnhandledErrorLogLevel(Option.some(LogLevel.Error)),
     Effect.provide(appLayer(config)),
+    Effect.provide(minimumLogLevelLayer),
     Effect.as('completed' as const),
     Effect.catchTag('DaemonAlreadyRunning', () => Effect.succeed('already-running' as const)),
   );

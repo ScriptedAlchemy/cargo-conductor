@@ -2,6 +2,7 @@ import { realpathSync } from 'node:fs';
 import { resolve } from 'node:path';
 
 import { runRscCli } from '@agent-bundle/rsc-runtime/plugin';
+import * as Cause from 'effect/Cause';
 import * as Effect from 'effect/Effect';
 
 import { createConductorApplication, type ConductorOperations } from './application.js';
@@ -77,7 +78,7 @@ const runExecCommand = async (argv: readonly string[], options: CliOptions): Pro
       writeStdout: options.writeStdout ?? defaultWriteStdout,
     };
     const exec = options.runExec ?? runExecClient;
-    const result = await Effect.runPromise(
+    return await Effect.runPromise(
       exec({
         argv: parsed.cargoArgv,
         cwd: parsed.cwd ?? process.cwd(),
@@ -86,9 +87,14 @@ const runExecCommand = async (argv: readonly string[], options: CliOptions): Pro
         ...(parsed.background ? { background: true } : {}),
         ...(parsed.host === undefined ? {} : { host: parsed.host }),
         ...(parsed.session === undefined ? {} : { session: parsed.session }),
-      }),
+      }).pipe(
+        Effect.map((result) => result.exitCode),
+        Effect.catchAllCause((cause) =>
+          Effect.sync(() => io.writeStderr(`${Cause.pretty(cause)}\n`)).pipe(Effect.as(1)),
+        ),
+      ),
+      { signal: options.signal },
     );
-    return result.exitCode;
   } catch (error) {
     if (error instanceof ExecUsageError) {
       write(usage);

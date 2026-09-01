@@ -3,8 +3,15 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { describe, expect, it } from '@rstest/core';
+import * as Deferred from 'effect/Deferred';
+import * as Effect from 'effect/Effect';
 
-import { newestMtimeMs, parseWorkspaceMetadata, workspaceClosure } from '../src/daemon/topology.js';
+import {
+  makeTopology,
+  newestMtimeMs,
+  parseWorkspaceMetadata,
+  workspaceClosure,
+} from '../src/daemon/topology.js';
 
 const metadataJson = JSON.stringify({
   packages: [
@@ -97,5 +104,101 @@ describe('newestMtimeMs', () => {
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
+  });
+});
+
+describe('makeTopology', () => {
+  it('returns edit data immediately, refreshes in the background, and retries after failure', async () => {
+    const packageDir = '/workspace/alpha';
+    const metadataLoaded = Effect.runSync(Deferred.make<void>());
+    const firstScanStarted = Effect.runSync(Deferred.make<void>());
+    const releaseFirstScan = Effect.runSync(Deferred.make<void>());
+    const firstScanFinished = Effect.runSync(Deferred.make<void>());
+    const secondScanFinished = Effect.runSync(Deferred.make<void>());
+    let scans = 0;
+    const metadata = {
+      packageDirs: new Map([['alpha', packageDir]]),
+      directDeps: new Map<string, ReadonlySet<string>>([['alpha', new Set()]]),
+    };
+
+    await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const topology = yield* makeTopology({
+            loadMetadata: () =>
+              Deferred.succeed(metadataLoaded, undefined).pipe(Effect.as(metadata)),
+            scanNewestMtime: () =>
+              Effect.suspend(() => {
+                scans += 1;
+                if (scans === 1) {
+                  return Deferred.succeed(firstScanStarted, undefined).pipe(
+                    Effect.zipRight(Deferred.await(releaseFirstScan)),
+                    Effect.zipRight(Effect.fail(new Error('stat failed'))),
+                    Effect.ensuring(Deferred.succeed(firstScanFinished, undefined)),
+                  );
+                }
+                return Deferred.succeed(secondScanFinished, undefined).pipe(
+                  Effect.as(Date.now()),
+                );
+              }),
+          });
+
+          expect(yield* topology.editedRecently('/workspace', ['alpha'])).toBe(false);
+          yield* Deferred.await(metadataLoaded);
+
+          expect(yield* topology.editedRecently('/workspace', ['alpha'])).toBe(false);
+          yield* Deferred.await(firstScanStarted);
+          yield* Deferred.succeed(releaseFirstScan, undefined);
+          yield* Deferred.await(firstScanFinished);
+
+          expect(yield* topology.editedRecently('/workspace', ['alpha'])).toBe(false);
+          yield* Deferred.await(secondScanFinished);
+
+          expect(yield* topology.editedRecently('/workspace', ['alpha'])).toBe(true);
+          expect(scans).toBe(2);
+        }),
+      ),
+    );
+  });
+
+  it('clears metadata refresh bookkeeping after failure and caches only success', async () => {
+    const firstLoadFinished = Effect.runSync(Deferred.make<void>());
+    const secondLoadFinished = Effect.runSync(Deferred.make<void>());
+    let loads = 0;
+    const metadata = parseWorkspaceMetadata(metadataJson);
+
+    await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const topology = yield* makeTopology({
+            loadMetadata: () =>
+              Effect.suspend(() => {
+                loads += 1;
+                if (loads === 1) {
+                  return Effect.fail(new Error('metadata failed')).pipe(
+                    Effect.ensuring(Deferred.succeed(firstLoadFinished, undefined)),
+                  );
+                }
+                return Deferred.succeed(secondLoadFinished, undefined).pipe(
+                  Effect.as(metadata),
+                );
+              }),
+            scanNewestMtime: () => Effect.succeed(null),
+          });
+
+          expect((yield* topology.dependencyClosure('/ws', ['top'])).size).toBe(0);
+          yield* Deferred.await(firstLoadFinished);
+
+          expect((yield* topology.dependencyClosure('/ws', ['top'])).size).toBe(0);
+          yield* Deferred.await(secondLoadFinished);
+
+          expect([...(yield* topology.dependencyClosure('/ws', ['top']))].sort()).toEqual([
+            'leaf',
+            'mid',
+          ]);
+          expect(loads).toBe(2);
+        }),
+      ),
+    );
   });
 });

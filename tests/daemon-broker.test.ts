@@ -62,6 +62,17 @@ describe('conductor daemon', () => {
         for (const lane of report.lanes) {
           expect(lane.queued).toBeGreaterThanOrEqual(0);
         }
+        expect(report.metrics).toMatchObject({
+          attach_mode: expect.any(Object),
+          cargo_run_ms: {
+            buckets: expect.any(Array),
+            count: expect.any(Number),
+            max: expect.anything(),
+            min: expect.anything(),
+            sum: expect.any(Number),
+          },
+          job_outcome: expect.objectContaining({ done: expect.any(Number) }),
+        });
 
         const db = openLedgerDatabase(fixture.config.databasePath);
         const transitions = yield* createLedgerApi(db).transitionsFor(
@@ -237,6 +248,54 @@ describe('conductor daemon', () => {
           (candidate) =>
             candidate.recent.find((record) => record.ticket === holderTicket)?.status === 'done',
         );
+      }),
+    ));
+
+  it('makes disconnect kill and startup mutually exclusive', () =>
+    withDaemon(1, (fixture) =>
+      Effect.gen(function* () {
+        const runningMessages = yield* execRequest(fixture, {
+          cwd: fixture.ws1,
+          argv: ['cargo', 'check', '-p', 'already-started'],
+          sleep: '0.8',
+          isTerminal: (message) => message.type === 'started',
+        });
+        const runningTicket =
+          runningMessages.find(
+            (message): message is StartedMessage => message.type === 'started',
+          )?.ticket ?? '';
+
+        // This lane worker removes the job from its pending list, then waits
+        // for the global admission permit held by already-started.
+        const queuedMessages = yield* execRequest(fixture, {
+          cwd: fixture.ws2,
+          argv: ['cargo', 'check', '-p', 'must-never-spawn'],
+          isTerminal: (message) => message.type === 'ack',
+        });
+        const queuedTicket =
+          queuedMessages.find((message): message is AckMessage => message.type === 'ack')
+            ?.ticket ?? '';
+
+        const report = yield* pollReport(
+          fixture,
+          (candidate) =>
+            [runningTicket, queuedTicket].every((ticket) =>
+              candidate.recent.some(
+                (record) =>
+                  record.ticket === ticket &&
+                  (record.status === 'done' ||
+                    record.status === 'failed' ||
+                    record.status === 'killed'),
+              ),
+            ),
+        );
+        const running = report.recent.find((record) => record.ticket === runningTicket);
+        const queued = report.recent.find((record) => record.ticket === queuedTicket);
+        expect(running?.status).toBe('done');
+        expect(running?.startedAtMs).not.toBeNull();
+        expect(queued?.status).toBe('killed');
+        expect(queued?.startedAtMs).toBeNull();
+        expect(queued?.outputTail).toBeNull();
       }),
     ));
 

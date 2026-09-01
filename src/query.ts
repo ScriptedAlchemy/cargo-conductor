@@ -3,18 +3,26 @@ import { existsSync } from 'node:fs';
 import type { DatabaseSync } from 'node:sqlite';
 
 import * as Effect from 'effect/Effect';
+import type * as Scope from 'effect/Scope';
 
 import { resolveDaemonConfig } from './daemon/config.js';
 import type { DaemonConfigShape } from './daemon/config.js';
 import { requestOverSocket } from './daemon/control.js';
 import { createLedgerApi, openLedgerDatabase, openLedgerDatabaseReadOnly } from './daemon/ledger.js';
-import type { LaneStatus, RequestRecord, StatusReport, StatusResultMessage } from './daemon/protocol.js';
+import type {
+  LaneStatus,
+  RequestRecord,
+  StatusMetrics,
+  StatusReport,
+  StatusResultMessage,
+} from './daemon/protocol.js';
 
 export interface ConductorSnapshot {
   readonly active: readonly RequestRecord[];
   readonly daemon: 'running' | 'stopped';
   readonly lanes: readonly LaneStatus[];
   readonly maxConcurrent: number | null;
+  readonly metrics?: StatusMetrics;
   readonly pid: number | null;
   readonly recent: readonly RequestRecord[];
   readonly socketPath: string;
@@ -52,6 +60,7 @@ const fromReport = (report: StatusReport, config: DaemonConfigShape): ConductorS
   daemon: 'running',
   lanes: report.lanes,
   maxConcurrent: report.maxConcurrent,
+  ...(report.metrics === undefined ? {} : { metrics: report.metrics }),
   pid: report.pid,
   recent: report.recent,
   socketPath: report.socketPath,
@@ -73,39 +82,46 @@ const emptyStopped = (config: DaemonConfigShape): ConductorSnapshot => ({
   summary: stoppedSummary(0),
 });
 
-const snapshotFrom = (db: DatabaseSync, config: DaemonConfigShape, recentLimit: number): ConductorSnapshot => {
-  try {
-    const ledger = createLedgerApi(db);
-    const recent = Effect.runSync(ledger.recentRequests(recentLimit));
-    const active = Effect.runSync(ledger.activeRequests());
-    return {
-      active,
-      daemon: 'stopped',
-      lanes: [],
-      maxConcurrent: null,
-      pid: null,
-      recent,
-      socketPath: config.socketPath,
-      startedAtMs: null,
-      stateRoot: config.stateDir,
-      summary: stoppedSummary(recent.length),
-    };
-  } finally {
-    db.close();
-  }
-};
+/**
+ * Scoped ledger handle for stopped-daemon reads: read-only when possible,
+ * falling back to the writable opener for WAL recovery after an unclean stop
+ * or a ledger predating a column migration. Always closed by the scope.
+ */
+const acquireSnapshotDb = (databasePath: string): Effect.Effect<DatabaseSync, never, Scope.Scope> =>
+  Effect.acquireRelease(
+    Effect.try(() => openLedgerDatabaseReadOnly(databasePath)).pipe(
+      Effect.orElse(() => Effect.sync(() => openLedgerDatabase(databasePath))),
+    ),
+    (db) => Effect.sync(() => db.close()),
+  );
 
-const fromLedger = (config: DaemonConfigShape, recentLimit: number): ConductorSnapshot => {
+const fromLedger = (
+  config: DaemonConfigShape,
+  recentLimit: number,
+): Effect.Effect<ConductorSnapshot> => {
   if (!existsSync(config.databasePath)) {
-    return emptyStopped(config);
+    return Effect.succeed(emptyStopped(config));
   }
-  try {
-    return snapshotFrom(openLedgerDatabaseReadOnly(config.databasePath), config, recentLimit);
-  } catch {
-    // WAL recovery after an unclean stop, or a ledger predating a column
-    // migration, needs the writable opener.
-    return snapshotFrom(openLedgerDatabase(config.databasePath), config, recentLimit);
-  }
+  return Effect.scoped(
+    Effect.gen(function* () {
+      const db = yield* acquireSnapshotDb(config.databasePath);
+      const ledger = createLedgerApi(db);
+      const recent = yield* ledger.recentRequests(recentLimit);
+      const active = yield* ledger.activeRequests();
+      return {
+        active,
+        daemon: 'stopped' as const,
+        lanes: [],
+        maxConcurrent: null,
+        pid: null,
+        recent,
+        socketPath: config.socketPath,
+        startedAtMs: null,
+        stateRoot: config.stateDir,
+        summary: stoppedSummary(recent.length),
+      };
+    }),
+  );
 };
 
 export const loadConductorSnapshot = (
@@ -119,12 +135,32 @@ export const loadConductorSnapshot = (
     socketPath: config.socketPath,
     timeoutMs: 2_000,
   }).pipe(
-    Effect.map((messages) => {
+    Effect.flatMap((messages) => {
       const result = messages.find(
         (message): message is StatusResultMessage => message.type === 'status-result',
       );
-      return result === undefined ? fromLedger(config, recentLimit) : fromReport(result.report, config);
+      return result === undefined
+        ? fromLedger(config, recentLimit)
+        : Effect.succeed(fromReport(result.report, config));
     }),
-    Effect.catchAll(() => Effect.sync(() => fromLedger(config, recentLimit))),
+    // Unreachable means stopped; a timeout or dropped connection means a
+    // daemon that exists but did not answer — say so instead of "stopped".
+    Effect.catchTags({
+      ControlTimeout: () => unresponsiveSnapshot(config, recentLimit, 'did not answer within 2s'),
+      ConnectionClosed: () => unresponsiveSnapshot(config, recentLimit, 'closed the connection mid-status'),
+      DaemonUnreachable: () => fromLedger(config, recentLimit),
+    }),
   );
 };
+
+const unresponsiveSnapshot = (
+  config: DaemonConfigShape,
+  recentLimit: number,
+  what: string,
+): Effect.Effect<ConductorSnapshot> =>
+  fromLedger(config, recentLimit).pipe(
+    Effect.map((snapshot) => ({
+      ...snapshot,
+      summary: `cargo-conductor daemon ${what}; showing ledger data (${snapshot.recent.length} recorded)`,
+    })),
+  );

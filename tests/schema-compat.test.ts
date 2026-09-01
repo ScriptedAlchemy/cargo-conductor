@@ -1,6 +1,11 @@
 import { describe, expect, it } from '@rstest/core';
 
-import { awaitMaxWaitMs, requestRecordSchema, ticketInputSchema } from '../src/operations/schemas.js';
+import {
+  awaitMaxWaitMs,
+  requestRecordSchema,
+  statusResultSchema,
+  ticketInputSchema,
+} from '../src/operations/schemas.js';
 
 const baseRecord = {
   argv: ['cargo', 'check'],
@@ -41,6 +46,36 @@ describe('schema forward compatibility (issue #4)', () => {
     });
     expect(parsed.ticket).toBe('cc-1');
     expect('futureDaemonField' in parsed).toBe(false);
+  });
+
+  it('accepts optional daemon metric snapshots in status results', () => {
+    const parsed = statusResultSchema.parse({
+      active: [],
+      daemon: 'running',
+      lanes: [],
+      maxConcurrent: 5,
+      metrics: {
+        attach_mode: { identity: 1 },
+        cargo_run_ms: {
+          buckets: [[1_000, 1], [null, 1]],
+          count: 1,
+          max: 12,
+          min: 12,
+          sum: 12,
+        },
+        job_outcome: { done: 1 },
+      },
+      operation: 'status',
+      pid: 42,
+      recent: [],
+      socketPath: '/tmp/cc/daemon.sock',
+      startedAtMs: 1,
+      stateRoot: '/tmp/cc',
+      summary: 'running',
+    });
+
+    expect(parsed.metrics?.cargo_run_ms.count).toBe(1);
+    expect(parsed.metrics?.job_outcome.done).toBe(1);
   });
 });
 

@@ -72,12 +72,14 @@ const run = async (
   extras: {
     readonly operations?: ConductorOperations;
     readonly runExec?: (options: RunExecOptions) => Effect.Effect<RunExecResult>;
+    readonly signal?: AbortSignal;
   } = {},
 ): Promise<{ readonly code: number; readonly text: string }> => {
   const lines: string[] = [];
   const code = await runCli(argv, {
     ...(extras.operations === undefined ? {} : { operations: extras.operations }),
     ...(extras.runExec === undefined ? {} : { runExec: extras.runExec }),
+    ...(extras.signal === undefined ? {} : { signal: extras.signal }),
     write: (line) => lines.push(line),
     writeStderr: (data) => lines.push(typeof data === 'string' ? data : Buffer.from(data).toString('utf8')),
     writeStdout: (data) => lines.push(Buffer.from(data).toString('utf8')),
@@ -150,6 +152,30 @@ describe('conductor cli', () => {
     const usage = await run(['exec']);
     expect(usage.code).toBe(2);
     expect(usage.text).toContain('Usage: conductor');
+  });
+
+  it('prints an exec defect and exits 1 instead of leaking a FiberFailure', async () => {
+    const result = await run(['exec', '--', 'cargo', 'check'], {
+      runExec: () => Effect.die(new SyntaxError('malformed daemon reply')),
+    });
+
+    expect(result.code).toBe(1);
+    expect(result.text).toContain('malformed daemon reply');
+  });
+
+  it('interrupts exec when the CLI abort signal fires', async () => {
+    const controller = new AbortController();
+    const pending = run(['exec', '--', 'cargo', 'check'], {
+      runExec: () =>
+        Effect.sleep('200 millis').pipe(
+          Effect.as({ exitCode: 0, mode: 'passthrough' as const }),
+        ),
+      signal: controller.signal,
+    });
+
+    controller.abort();
+
+    await expect(pending).rejects.toBeDefined();
   });
 
   it('status uses the default snapshot when no operations are injected', async () => {

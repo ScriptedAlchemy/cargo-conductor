@@ -3,6 +3,7 @@ import { DatabaseSync } from 'node:sqlite';
 import * as Context from 'effect/Context';
 import * as Effect from 'effect/Effect';
 import * as Layer from 'effect/Layer';
+import * as SynchronizedRef from 'effect/SynchronizedRef';
 
 import { DaemonConfig } from './config.js';
 import type { NormalizedCargoIntent } from './intent-normalizer.js';
@@ -61,6 +62,7 @@ const kacheProfilesFor = (profile: string): readonly string[] => {
 
 interface KacheReader {
   readonly maxCompileTimeMs: (crateName: string, profiles: readonly string[]) => number | null;
+  readonly close: () => void;
 }
 
 /**
@@ -72,19 +74,28 @@ export const openKacheReader = (indexPath: string): KacheReader | null => {
   if (indexPath.length === 0) {
     return null;
   }
-  let db: DatabaseSync;
+  let db: DatabaseSync | undefined;
   try {
     db = new DatabaseSync(indexPath, { readOnly: true });
     db.prepare('SELECT compile_time_ms FROM entries LIMIT 1').get();
   } catch {
+    try {
+      db?.close();
+    } catch {
+      // A failed schema probe still degrades to no prior.
+    }
     return null;
   }
+  const readerDb = db;
   // The live index can hold ~100k rows with no crate_name index, so a scan
   // costs real time on a loaded machine. One combined scan per lookup, and a
   // TTL memo keeps repeat submissions off the submit critical path.
   const memoTtlMs = 10 * 60_000;
   const memo = new Map<string, { readonly atMs: number; readonly ms: number | null }>();
   return {
+    close: () => {
+      readerDb.close();
+    },
     maxCompileTimeMs: (crateName, profiles) => {
       const memoKey = `${crateName}\0${profiles.join(',')}`;
       const cached = memo.get(memoKey);
@@ -94,7 +105,7 @@ export const openKacheReader = (indexPath: string): KacheReader | null => {
       let ms: number | null = null;
       try {
         const placeholders = profiles.map(() => '?').join(', ');
-        const row = db
+        const row = readerDb
           .prepare(
             `SELECT
                MAX(CASE WHEN profile IN (${placeholders}) THEN compile_time_ms END) AS exact_ms,
@@ -145,22 +156,25 @@ export interface CreateCostModelOptions {
 
 export const createCostModel = (options: CreateCostModelOptions): CostModelApi => {
   /** intentKey -> EWMA of observed run durations; null marks "seeded, empty". */
-  const ewma = new Map<string, number | null>();
+  const ewma = SynchronizedRef.unsafeMake<ReadonlyMap<string, number | null>>(new Map());
 
   const seededEwma = (intentKey: string): Effect.Effect<number | null> =>
-    Effect.gen(function* () {
-      const cached = ewma.get(intentKey);
-      if (cached !== undefined) {
-        return cached;
+    SynchronizedRef.modifyEffect(ewma, (current) => {
+      if (current.has(intentKey)) {
+        return Effect.succeed([current.get(intentKey) ?? null, current] as const);
       }
-      const durations = yield* options.seedDurations(intentKey, ewmaSeedLimit);
-      let value: number | null = null;
-      // Seed oldest-first so the newest observation weighs the most.
-      for (const runMs of [...durations].reverse()) {
-        value = value === null ? runMs : value + ewmaAlpha * (runMs - value);
-      }
-      ewma.set(intentKey, value);
-      return value;
+      return options.seedDurations(intentKey, ewmaSeedLimit).pipe(
+        Effect.map((durations) => {
+          let value: number | null = null;
+          // Seed oldest-first so the newest observation weighs the most.
+          for (const runMs of [...durations].reverse()) {
+            value = value === null ? runMs : value + ewmaAlpha * (runMs - value);
+          }
+          const updated = new Map(current);
+          updated.set(intentKey, value);
+          return [value, updated] as const;
+        }),
+      );
     });
 
   return {
@@ -177,20 +191,30 @@ export const createCostModel = (options: CreateCostModelOptions): CostModelApi =
         return { estimateMs: defaultEstimateFor(intent), source: 'default' as const };
       }),
     recordOutcome: (intentKey, runMs) =>
-      Effect.sync(() => {
-        const current = ewma.get(intentKey);
-        const base = current === undefined || current === null ? runMs : current;
-        ewma.set(intentKey, base + ewmaAlpha * (runMs - base));
+      SynchronizedRef.update(ewma, (current) => {
+        const observed = current.get(intentKey);
+        const base = observed === undefined || observed === null ? runMs : observed;
+        const updated = new Map(current);
+        updated.set(intentKey, base + ewmaAlpha * (runMs - base));
+        return updated;
       }),
   };
 };
 
-export const CostModelLive: Layer.Layer<CostModel, never, DaemonConfig | Ledger> = Layer.effect(
+export const CostModelLive: Layer.Layer<CostModel, never, DaemonConfig | Ledger> = Layer.scoped(
   CostModel,
   Effect.gen(function* () {
     const config = yield* DaemonConfig;
     const ledger = yield* Ledger;
-    const kacheReader = yield* Effect.sync(() => openKacheReader(config.kacheIndexPath));
+    const kacheReader = yield* Effect.acquireRelease(
+      Effect.sync(() => openKacheReader(config.kacheIndexPath)),
+      (reader) =>
+        reader === null
+          ? Effect.void
+          : Effect.sync(() => {
+              reader.close();
+            }),
+    );
     return createCostModel({
       kacheReader,
       seedDurations: (intentKey, limit) => ledger.recentDurations(intentKey, limit),

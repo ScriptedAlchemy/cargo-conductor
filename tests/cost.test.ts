@@ -1,7 +1,14 @@
-import { describe, expect, it } from '@rstest/core';
-import * as Effect from 'effect/Effect';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 
-import { createCostModel, defaultEstimateFor } from '../src/daemon/cost.js';
+import { describe, expect, it } from '@rstest/core';
+import * as Deferred from 'effect/Deferred';
+import * as Effect from 'effect/Effect';
+import * as Fiber from 'effect/Fiber';
+
+import { createCostModel, defaultEstimateFor, openKacheReader } from '../src/daemon/cost.js';
 import { normalizeCargoIntent } from '../src/daemon/intent-normalizer.js';
 
 const intent = (argv: readonly string[], cwd = '/tmp/ws') =>
@@ -21,10 +28,35 @@ describe('defaultEstimateFor', () => {
   });
 });
 
+describe('openKacheReader', () => {
+  it('exposes a closeable read-only database handle', () => {
+    const root = mkdtempSync(join(tmpdir(), 'cc-kache-reader-'));
+    const indexPath = join(root, 'index.db');
+    try {
+      const database = new DatabaseSync(indexPath);
+      database.exec(
+        'CREATE TABLE entries (crate_name TEXT, profile TEXT, compile_time_ms INTEGER)',
+      );
+      database
+        .prepare('INSERT INTO entries (crate_name, profile, compile_time_ms) VALUES (?, ?, ?)')
+        .run('alpha', 'debug', 1234);
+      database.close();
+
+      const reader = openKacheReader(indexPath);
+      expect(reader?.maxCompileTimeMs('alpha', ['debug'])).toBe(1234);
+      reader?.close();
+      expect(reader?.maxCompileTimeMs('uncached', ['debug'])).toBeNull();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
 describe('createCostModel', () => {
   it('prefers EWMA of recorded outcomes over kache and defaults', async () => {
     const model = createCostModel({
       kacheReader: {
+        close: () => {},
         maxCompileTimeMs: () => 50_000,
       },
       seedDurations: () => Effect.succeed([]),
@@ -39,6 +71,7 @@ describe('createCostModel', () => {
   it('falls back to the sum of kache crate priors when no EWMA exists', async () => {
     const model = createCostModel({
       kacheReader: {
+        close: () => {},
         maxCompileTimeMs: (crateName) => (crateName === 'alpha' ? 12_000 : 8_000),
       },
       seedDurations: () => Effect.succeed([]),
@@ -69,5 +102,31 @@ describe('createCostModel', () => {
     });
     const estimate = await Effect.runPromise(model.estimate(intent(['cargo', 'clippy', '-p', 'alpha'])));
     expect(estimate).toEqual({ estimateMs: 150_000, source: 'default' });
+  });
+
+  it('does not overwrite a concurrent outcome with stale seed data', async () => {
+    const seedStarted = Effect.runSync(Deferred.make<void>());
+    const releaseSeed = Effect.runSync(Deferred.make<void>());
+    const model = createCostModel({
+      kacheReader: null,
+      seedDurations: () =>
+        Deferred.succeed(seedStarted, undefined).pipe(
+          Effect.zipRight(Deferred.await(releaseSeed)),
+          Effect.as([100] as const),
+        ),
+    });
+    const scoped = intent(['cargo', 'check', '-p', 'alpha']);
+
+    const estimateFiber = Effect.runFork(model.estimate(scoped));
+    await Effect.runPromise(Deferred.await(seedStarted));
+    const outcomeFiber = Effect.runFork(model.recordOutcome(scoped.key, 200));
+    await Effect.runPromise(Deferred.succeed(releaseSeed, undefined));
+
+    const estimate = await Effect.runPromise(Fiber.join(estimateFiber));
+    await Effect.runPromise(Fiber.join(outcomeFiber));
+    const updated = await Effect.runPromise(model.estimate(scoped));
+
+    expect(estimate.estimateMs).toBe(100);
+    expect(updated).toEqual({ estimateMs: 140, source: 'ewma' });
   });
 });

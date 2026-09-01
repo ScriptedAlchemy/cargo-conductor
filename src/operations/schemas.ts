@@ -1,6 +1,11 @@
 import { z } from 'zod';
 
-import type { LaneStatus, RequestRecord, StatusReport } from '../daemon/protocol.js';
+import type {
+  LaneStatus,
+  RequestRecord,
+  StatusMetrics,
+  StatusReport,
+} from '../daemon/protocol.js';
 
 const requestStatusSchema = z.enum([
   'requested',
@@ -57,10 +62,25 @@ const laneStatusSchema = z.object({
   workspaceRoot: z.string(),
 }) satisfies z.ZodType<LaneStatus>;
 
+const frequencyMetricSchema = z.record(z.string(), z.number().int().nonnegative());
+
+const statusMetricsSchema = z.object({
+  attach_mode: frequencyMetricSchema,
+  cargo_run_ms: z.object({
+    buckets: z.array(z.tuple([z.number().nullable(), z.number().int().nonnegative()])),
+    count: z.number().int().nonnegative(),
+    max: z.number().nullable(),
+    min: z.number().nullable(),
+    sum: z.number(),
+  }),
+  job_outcome: frequencyMetricSchema,
+}) satisfies z.ZodType<StatusMetrics>;
+
 const statusReportSchema = z.object({
   active: z.array(requestRecordSchema),
   lanes: z.array(laneStatusSchema),
   maxConcurrent: z.number().int(),
+  metrics: statusMetricsSchema.optional(),
   pid: z.number().int(),
   recent: z.array(requestRecordSchema),
   socketPath: z.string(),
@@ -78,6 +98,7 @@ export interface StatusResult {
   readonly daemon: 'running' | 'stopped';
   readonly lanes: readonly LaneStatus[];
   readonly maxConcurrent: number | null;
+  readonly metrics?: StatusMetrics;
   readonly operation: 'status';
   readonly pid: number | null;
   readonly recent: readonly RequestRecord[];
@@ -117,6 +138,7 @@ export const statusResultSchema = z
     daemon: daemonStatusSchema,
     lanes: z.array(laneStatusSchema),
     maxConcurrent: z.number().int().nullable(),
+    metrics: statusMetricsSchema.optional(),
     operation: z.literal('status'),
     pid: z.number().int().nullable(),
     recent: z.array(requestRecordSchema),
