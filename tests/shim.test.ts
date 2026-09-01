@@ -4,7 +4,12 @@ import { join } from 'node:path';
 
 import { describe, expect, it } from '@rstest/core';
 
-import { installCargoShim, renderCargoShim, resolveRealCargo } from '../src/shim/install.js';
+import {
+  installCargoShim,
+  renderCargoShim,
+  resolveRealCargo,
+  shimPathStatus,
+} from '../src/shim/install.js';
 
 describe('PATH cargo shim', () => {
   it('emits a shim that forwards argv through conductor exec', () => {
@@ -102,6 +107,30 @@ describe('PATH cargo shim', () => {
       } finally {
         process.env.PATH = previousPath;
       }
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('reports whether PATH actually reaches the installed shim', () => {
+    const root = mkdtempSync(join(tmpdir(), 'cc-shim-path-'));
+    try {
+      const shimDir = join(root, 'shims');
+      const rustupDir = join(root, 'cargo-bin');
+      mkdirSync(shimDir, { recursive: true });
+      mkdirSync(rustupDir, { recursive: true });
+      const shim = join(shimDir, 'cargo');
+      const rustupCargo = join(rustupDir, 'cargo');
+      writeFileSync(shim, '#!/bin/sh\n');
+      writeFileSync(rustupCargo, '#!/bin/sh\n');
+
+      expect(shimPathStatus(shim, { PATH: `${shimDir}:${rustupDir}` })).toEqual({ kind: 'wins' });
+      // rustup's ~/.cargo/bin earlier on PATH: cargo bypasses the shim.
+      expect(shimPathStatus(shim, { PATH: `${rustupDir}:${shimDir}` })).toEqual({
+        by: rustupCargo,
+        kind: 'shadowed',
+      });
+      expect(shimPathStatus(shim, { PATH: '/nonexistent-dir' })).toEqual({ kind: 'not-on-path' });
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

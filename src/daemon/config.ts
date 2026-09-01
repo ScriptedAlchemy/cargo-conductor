@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import * as Context from 'effect/Context';
 import * as Layer from 'effect/Layer';
 
-import { conductorStateRoot } from '../status.js';
+import { defaultKacheIndexPath, resolveStateDir } from '../status.js';
 
 /** Filesystem layout and concurrency settings for one daemon instance. */
 export interface DaemonConfigShape {
@@ -54,7 +54,7 @@ const defaultCpuStallThreshold = 75;
 export const resolveDaemonConfig = (
   env: Readonly<Record<string, string | undefined>> = process.env,
 ): DaemonConfigShape => {
-  const stateDir = env.CARGO_CONDUCTOR_STATE_DIR ?? conductorStateRoot;
+  const stateDir = resolveStateDir(env);
   const parsedMax = Number.parseInt(env.CARGO_CONDUCTOR_MAX_CONCURRENT ?? '', 10);
   const parsedReplay = Number.parseInt(env.CARGO_CONDUCTOR_REPLAY_BUFFER_BYTES ?? '', 10);
   const maxConcurrent =
@@ -76,7 +76,9 @@ export const resolveDaemonConfig = (
     outputTailBytes: 16 * 1024,
     replayBufferBytes:
       Number.isInteger(parsedReplay) && parsedReplay >= 0 ? parsedReplay : 4 * 1024 * 1024,
-    kacheIndexPath: env.CARGO_CONDUCTOR_KACHE_INDEX ?? '/fast/cache/kache/index.db',
+    // '' (explicitly empty) disables kache; a missing default file merely
+    // reports kache as unavailable, so no machine needs the path to exist.
+    kacheIndexPath: env.CARGO_CONDUCTOR_KACHE_INDEX ?? defaultKacheIndexPath(env),
     jobsGrant: Number.isInteger(parsedJobs) && parsedJobs >= 0 ? parsedJobs : defaultJobsGrant,
     batchEnabled: env.CARGO_CONDUCTOR_BATCH !== '0',
     loadThresholdPerCore:

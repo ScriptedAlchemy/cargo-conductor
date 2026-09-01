@@ -1,6 +1,6 @@
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { performance } from 'node:perf_hooks';
 import { DatabaseSync } from 'node:sqlite';
 
@@ -17,6 +17,7 @@ import {
   readKacheEventPriors,
 } from '../src/daemon/cost.js';
 import type { KacheIndexPriors } from '../src/daemon/cost.js';
+import { resolveDaemonConfig } from '../src/daemon/config.js';
 import { normalizeCargoIntent } from '../src/daemon/intent-normalizer.js';
 
 const intent = (argv: readonly string[], cwd = '/tmp/ws') =>
@@ -386,8 +387,12 @@ describe('createCostModel', () => {
   });
 });
 
-const realKacheIndexPath = '/fast/cache/kache/index.db';
-const realKacheEventsPath = '/fast/cache/kache/events.jsonl';
+// Opt-in grounding against live kache data: runs only where the resolved
+// kache index (CARGO_CONDUCTOR_KACHE_INDEX or the per-user cache default)
+// actually exists; hermetic CI machines skip it.
+const realKacheIndexPath = resolveDaemonConfig(process.env).kacheIndexPath;
+const realKacheEventsPath =
+  realKacheIndexPath.length === 0 ? '' : join(dirname(realKacheIndexPath), 'events.jsonl');
 
 describe('real kache calibration', () => {
   it.skipIf(!existsSync(realKacheIndexPath) || !existsSync(realKacheEventsPath))(

@@ -8,8 +8,8 @@ import { defineConfig } from 'agent-bundle/config';
  * - `src/cli.ts` is the package bin by convention; declaring it as a script
  *   also ships `conductor` inside every host artifact.
  * - `skills/cargo-conductor/SKILL.md` is discovered by convention.
- * - Adapters inject `AGENT_BUNDLE_PLUGIN_ROOT`; daemon state lives under
- *   `/fast/cache/cargo-conductor/`.
+ * - Adapters inject `AGENT_BUNDLE_PLUGIN_ROOT`; daemon state lives under the
+ *   per-user cache dir (`CARGO_CONDUCTOR_STATE_DIR` overrides).
  */
 export default defineConfig({
   // Claude Code and Codex install via `<cli> plugin marketplace add`; this
