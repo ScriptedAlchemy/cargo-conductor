@@ -6,6 +6,7 @@ import * as Exit from 'effect/Exit';
 import * as Option from 'effect/Option';
 
 import { awaitTicket, fetchTicket, submitBackground, type TicketSocketError } from '../client/tickets.js';
+import { describeRequestRecord } from '../query.js';
 import { ConductorResult } from '../result.js';
 
 import {
@@ -67,13 +68,6 @@ const parseRequest = (args: readonly string[]): RequestInput => {
   };
 };
 
-const describeRecord = (ticket: string, request: AwaitResult['request']): string => {
-  if (request === null) {
-    return `${ticket} not found`;
-  }
-  return `${request.ticket} ${request.status}`;
-};
-
 const infraFailure = (error: TicketSocketError): Error => {
   switch (error._tag) {
     case 'DaemonUnreachable':
@@ -126,7 +120,7 @@ export const defaultTicketOperations: TicketOperations = {
       request: waited.request,
       summary: waited.timedOut
         ? `${input.ticket} still pending`
-        : describeRecord(input.ticket, waited.request),
+        : describeRequestRecord(input.ticket, waited.request),
       ticket: input.ticket,
       timedOut: waited.timedOut,
     };
@@ -144,7 +138,7 @@ export const defaultTicketOperations: TicketOperations = {
     return {
       operation: 'result',
       request,
-      summary: describeRecord(input.ticket, request),
+      summary: describeRequestRecord(input.ticket, request),
       ticket: input.ticket,
     };
   },

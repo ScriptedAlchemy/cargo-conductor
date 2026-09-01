@@ -14,8 +14,22 @@ describe('afterTool completion notify', () => {
       { nativeEvent: 'PostToolUse', target: 'claude' },
       {
         completedSince: async () => [
-          { error: null, exitCode: 0, status: 'done', ticket: 'cc-42' },
-          { error: 'boom', exitCode: 101, status: 'failed', ticket: 'cc-43' },
+          {
+            error: null,
+            errorCount: 0,
+            exitCode: 0,
+            status: 'done',
+            ticket: 'cc-42',
+            warningCount: 2,
+          },
+          {
+            error: 'boom',
+            errorCount: 3,
+            exitCode: 101,
+            status: 'failed',
+            ticket: 'cc-43',
+            warningCount: 1,
+          },
         ],
         nowMs: () => 50,
         readCursor: () => 10,
@@ -25,9 +39,9 @@ describe('afterTool completion notify', () => {
     );
 
     expect(result.outcome).toBe('continue');
-    expect(result.additionalContext).toContain('cc-42 finished: success, 0 errors');
+    expect(result.additionalContext).toContain('cc-42 finished: success, 0 errors, 2 warnings');
     expect(result.additionalContext).toContain('call conductor_result cc-42');
-    expect(result.additionalContext).toContain('cc-43 finished: failed');
+    expect(result.additionalContext).toContain('cc-43 finished: failed, 3 errors, 1 warning');
   });
 
   it('stays silent when nothing completed or the daemon is down', async () => {

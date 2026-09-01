@@ -7,7 +7,15 @@ import { z } from 'zod';
  * the ledger, so it must not import from the other daemon modules.
  */
 
-export type RequestStatus = 'requested' | 'queued' | 'running' | 'done' | 'failed' | 'killed';
+export type RequestStatus =
+  | 'requested'
+  | 'queued'
+  | 'running'
+  | 'done'
+  | 'failed'
+  | 'killed'
+  | 'denied'
+  | 'passthrough';
 
 /** Terminal statuses a request can end in. */
 export type FinishedStatus = 'done' | 'failed' | 'killed';
@@ -45,6 +53,9 @@ export interface RequestRecord {
   readonly signal: string | null;
   readonly outputTail: string | null;
   readonly error: string | null;
+  readonly errorCount: number | null;
+  readonly warningCount: number | null;
+  readonly diagnostics: readonly string[] | null;
   /** Leader ticket when this request was served by attaching to another run. */
   readonly attachedTo: string | null;
   readonly attachMode: AttachMode | null;
@@ -73,6 +84,17 @@ export const execRequestSchema = z.object({
   host: z.string().optional(),
   background: z.boolean().optional(),
   holdStop: z.boolean().optional(),
+});
+
+export const attemptRequestSchema = z.object({
+  type: z.literal('attempt'),
+  id: z.string().min(1),
+  kind: z.literal('denied'),
+  argv: z.array(z.string()).min(1),
+  cwd: z.string().min(1),
+  session: z.string().optional(),
+  host: z.string().optional(),
+  reason: z.string().min(1),
 });
 
 export const detachRequestSchema = z.object({
@@ -131,6 +153,7 @@ export const shutdownRequestSchema = z.object({
 
 export const clientMessageSchema = z.discriminatedUnion('type', [
   execRequestSchema,
+  attemptRequestSchema,
   detachRequestSchema,
   awaitRequestSchema,
   resultRequestSchema,
@@ -143,6 +166,7 @@ export const clientMessageSchema = z.discriminatedUnion('type', [
 ]);
 
 export type ExecRequest = z.infer<typeof execRequestSchema>;
+export type AttemptRequest = z.infer<typeof attemptRequestSchema>;
 export type DetachRequest = z.infer<typeof detachRequestSchema>;
 export type AwaitRequest = z.infer<typeof awaitRequestSchema>;
 export type ResultRequest = z.infer<typeof resultRequestSchema>;
@@ -272,6 +296,12 @@ export interface ShuttingDownMessage {
   readonly id: string;
 }
 
+export interface AttemptRecordedMessage {
+  readonly type: 'attempt-recorded';
+  readonly id: string;
+  readonly ticket: string;
+}
+
 export interface ErrorMessage {
   readonly type: 'error';
   readonly id: string | null;
@@ -313,6 +343,7 @@ export interface SessionCompletedResultMessage {
 
 export type ServerMessage =
   | AckMessage
+  | AttemptRecordedMessage
   | RequeuedMessage
   | StartedMessage
   | OutputMessage
@@ -339,6 +370,20 @@ export const parseServerMessageLine = (line: string): ServerMessage =>
   JSON.parse(line) as ServerMessage;
 
 export const formatTicket = (id: number): string => `cc-${id}`;
+
+export const passthroughSpoolFileName = 'passthrough-attempts.v1.jsonl';
+
+export interface PassthroughSpoolRecord {
+  readonly version: 1;
+  readonly id: string;
+  readonly kind: 'passthrough';
+  readonly atMs: number;
+  readonly argv: readonly string[];
+  readonly cwd: string;
+  readonly session: string | null;
+  readonly host: string | null;
+  readonly exitCode: number | null;
+}
 
 /**
  * Incremental NDJSON framing over a byte stream. Buffers bytes (not strings)

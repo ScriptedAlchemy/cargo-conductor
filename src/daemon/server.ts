@@ -358,6 +358,21 @@ export const makeConnectionHandler =
                   ),
                 ),
               );
+            case 'attempt':
+              return Effect.gen(function* () {
+                const recorded = yield* options.broker.recordAttempt({
+                  argv: message.argv,
+                  cwd: message.cwd,
+                  host: message.host,
+                  reason: message.reason,
+                  session: message.session,
+                });
+                yield* send({
+                  type: 'attempt-recorded',
+                  id: message.id,
+                  ticket: recorded.ticket,
+                });
+              });
             case 'kill':
               return Effect.gen(function* () {
                 const killed = yield* options.broker.kill(message.ticket);

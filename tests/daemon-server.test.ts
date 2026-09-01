@@ -12,6 +12,7 @@ const brokerWith = (overrides: Partial<BrokerApi> = {}): BrokerApi => ({
   awaitTicket: () => Effect.succeed({ record: null, timedOut: false }),
   getTicket: () => Effect.succeed(null),
   kill: () => Effect.succeed(true),
+  recordAttempt: () => Effect.succeed({ ticket: 'cc-attempt' }),
   report: () => Effect.die(new Error('status exploded')),
   sessionCompleted: () => Effect.succeed([]),
   sessionPending: () => Effect.succeed([]),

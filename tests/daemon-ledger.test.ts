@@ -145,6 +145,32 @@ describe('ledger lifecycle', () => {
     });
   });
 
+  it('persists scoped diagnostic counts and capped rendered messages', () => {
+    withLedger((ledger) => {
+      Effect.runSync(ledger.createRequest(makeInput()));
+      Effect.runSync(ledger.markQueued(1, 1_100));
+      Effect.runSync(ledger.markRunning(1, 1_500));
+      Effect.runSync(
+        ledger.markFinished(1, {
+          atMs: 2_500,
+          diagnostics: ['error[E0308]: mismatched types', 'warning: unused import'],
+          errorCount: 1,
+          exitCode: 101,
+          status: 'failed',
+          warningCount: 1,
+        }),
+      );
+
+      const record = Effect.runSync(ledger.getRequest(1));
+      expect(record?.errorCount).toBe(1);
+      expect(record?.warningCount).toBe(1);
+      expect(record?.diagnostics).toEqual([
+        'error[E0308]: mismatched types',
+        'warning: unused import',
+      ]);
+    });
+  });
+
   it('leaves runMs null when a request is killed before it started', () => {
     withLedger((ledger) => {
       Effect.runSync(ledger.createRequest(makeInput()));
@@ -165,6 +191,54 @@ describe('ledger lifecycle', () => {
         requestId: 1,
         toStatus: 'killed',
       });
+    });
+  });
+});
+
+describe('terminal attempts', () => {
+  it('creates denied and passthrough rows directly in terminal states', () => {
+    withLedger((ledger) => {
+      const denied = Effect.runSync(
+        ledger.recordAttempt({
+          argv: ['cargo', 'clean'],
+          atMs: 1_000,
+          cwd: '/repo',
+          error: 'blocked while builds are active',
+          host: 'cursor',
+          session: 'session-a',
+          status: 'denied',
+        }),
+      );
+      const passthrough = Effect.runSync(
+        ledger.recordAttempt({
+          argv: ['cargo', 'build'],
+          atMs: 2_000,
+          cwd: '/repo',
+          exitCode: 17,
+          host: 'codex',
+          session: 'session-b',
+          sourceAttemptId: 'attempt-1',
+          status: 'passthrough',
+        }),
+      );
+
+      expect(Effect.runSync(ledger.getRequest(denied.id))).toEqual(
+        expect.objectContaining({
+          argv: ['cargo', 'clean'],
+          error: 'blocked while builds are active',
+          status: 'denied',
+        }),
+      );
+      expect(Effect.runSync(ledger.getRequest(passthrough.id))).toEqual(
+        expect.objectContaining({
+          argv: ['cargo', 'build'],
+          exitCode: 17,
+          status: 'passthrough',
+        }),
+      );
+      expect(Effect.runSync(ledger.transitionsFor(denied.id))).toEqual([
+        { atMs: 1_000, fromStatus: null, requestId: denied.id, toStatus: 'denied' },
+      ]);
     });
   });
 });

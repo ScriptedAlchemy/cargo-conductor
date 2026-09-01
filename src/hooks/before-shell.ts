@@ -2,6 +2,7 @@ import { inspectShellCommand, rewriteShellCommand } from './inspect.js';
 import { resolveConductorArgv } from './paths.js';
 import { probeActiveBuilds } from './probe.js';
 import { appendHookRecord } from './record.js';
+import { recordDeniedAttempt } from './rpc.js';
 import {
   extractShellCommand,
   isRecord,
@@ -31,6 +32,8 @@ const continueResult = (): BeforeShellResult => ({ outcome: 'continue' });
 
 const denyCleanReason =
   'cargo clean is blocked while cargo-conductor has in-flight builds; wait for them to finish or run conductor status';
+
+const attemptArgv = (command: string): readonly string[] => command.trim().split(/\s+/u);
 
 const decideBeforeShell = async (
   event: BeforeShellEvent,
@@ -73,6 +76,20 @@ const decideBeforeShell = async (
         ...(cwd === undefined ? {} : { cwd }),
         ...(event.toolName === undefined ? {} : { toolName: event.toolName }),
       });
+      const submitAttempt = services.recordAttempt ?? recordDeniedAttempt;
+      try {
+        void Promise.resolve(
+          submitAttempt({
+            argv: attemptArgv(command),
+            cwd: cwd ?? process.cwd(),
+            host,
+            reason: denyCleanReason,
+            session,
+          }),
+        ).catch(() => undefined);
+      } catch {
+        // Attempt telemetry is strictly fail-open at the hook boundary.
+      }
       return { outcome: 'deny', reason: denyCleanReason };
     }
     if (active === null) {

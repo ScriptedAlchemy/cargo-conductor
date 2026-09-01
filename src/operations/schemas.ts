@@ -14,6 +14,8 @@ const requestStatusSchema = z.enum([
   'done',
   'failed',
   'killed',
+  'denied',
+  'passthrough',
 ]);
 
 const attachModeSchema = z.enum(['identity', 'coverage', 'batch']);
@@ -29,7 +31,9 @@ export const requestRecordSchema = z.object({
   attachedTo: z.string().nullable(),
   createdAtMs: z.number(),
   cwd: z.string(),
+  diagnostics: z.array(z.string()).nullable(),
   error: z.string().nullable(),
+  errorCount: z.number().int().nonnegative().nullable(),
   exitCode: z.number().nullable(),
   finishedAtMs: z.number().nullable(),
   host: z.string().nullable(),
@@ -47,6 +51,7 @@ export const requestRecordSchema = z.object({
   targetDir: z.string(),
   ticket: z.string(),
   waitMs: z.number().nullable(),
+  warningCount: z.number().int().nonnegative().nullable(),
   workspaceRoot: z.string(),
   background: z.boolean(),
   holdStop: z.boolean(),

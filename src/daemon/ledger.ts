@@ -1,5 +1,5 @@
-import { mkdirSync } from 'node:fs';
-import { dirname } from 'node:path';
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 
 import * as Context from 'effect/Context';
@@ -11,10 +11,12 @@ import { formatTicket } from './protocol.js';
 import type {
   AttachMode,
   FinishedStatus,
+  PassthroughSpoolRecord,
   RequestRecord,
   RequestStatus,
   TransitionRecord,
 } from './protocol.js';
+import { passthroughSpoolFileName } from './protocol.js';
 
 export interface CreateRequestInput {
   readonly createdAtMs: number;
@@ -39,6 +41,21 @@ export interface FinishRequestInput {
   readonly signal?: string | null;
   readonly outputTail?: string | null;
   readonly error?: string | null;
+  readonly errorCount?: number | null;
+  readonly warningCount?: number | null;
+  readonly diagnostics?: readonly string[] | null;
+}
+
+export interface RecordAttemptInput {
+  readonly atMs: number;
+  readonly session: string | null;
+  readonly host: string | null;
+  readonly cwd: string;
+  readonly argv: readonly string[];
+  readonly status: 'denied' | 'passthrough';
+  readonly exitCode?: number | null;
+  readonly error?: string | null;
+  readonly sourceAttemptId?: string;
 }
 
 export interface AttachRequestInput {
@@ -61,6 +78,10 @@ export interface LedgerApi {
   readonly markAttached: (id: number, input: AttachRequestInput) => Effect.Effect<void>;
   readonly markRequeued: (id: number, atMs: number) => Effect.Effect<void>;
   readonly markFinished: (id: number, input: FinishRequestInput) => Effect.Effect<void>;
+  readonly recordAttempt: (
+    input: RecordAttemptInput,
+  ) => Effect.Effect<{ readonly id: number; readonly ticket: string }>;
+  readonly ingestPassthroughSpool: (stateDir: string) => Effect.Effect<number>;
   readonly getRequest: (id: number) => Effect.Effect<RequestRecord | null>;
   readonly getRequestByTicket: (ticket: string) => Effect.Effect<RequestRecord | null>;
   /** Newest-first run durations of completed non-attached runs of one intent. */
@@ -89,7 +110,9 @@ CREATE TABLE IF NOT EXISTS requests (
   argv_json TEXT NOT NULL,
   intent_key TEXT,
   intent_json TEXT,
-  status TEXT NOT NULL,
+  status TEXT NOT NULL CHECK (
+    status IN ('requested', 'queued', 'running', 'done', 'failed', 'killed', 'denied', 'passthrough')
+  ),
   queued_at_ms INTEGER,
   started_at_ms INTEGER,
   finished_at_ms INTEGER,
@@ -115,7 +138,7 @@ CREATE INDEX IF NOT EXISTS transitions_request_id_idx ON transitions (request_id
 const requestColumns = `id, created_at_ms, session, host, cwd, workspace_root, target_dir, lane_key,
   argv_json, intent_key, intent_json, status, queued_at_ms, started_at_ms, finished_at_ms, wait_ms,
   run_ms, exit_code, signal, output_tail, error, attached_to, attach_mode, background, hold_stop,
-  estimate_ms, exec_argv_json`;
+  estimate_ms, exec_argv_json, error_count, warning_count, diagnostics_json`;
 
 /** Additive column migrations for databases created by earlier builds. */
 const columnMigrations: readonly (readonly [column: string, ddl: string])[] = [
@@ -125,6 +148,10 @@ const columnMigrations: readonly (readonly [column: string, ddl: string])[] = [
   ['hold_stop', 'ALTER TABLE requests ADD COLUMN hold_stop INTEGER NOT NULL DEFAULT 0'],
   ['estimate_ms', 'ALTER TABLE requests ADD COLUMN estimate_ms INTEGER'],
   ['exec_argv_json', 'ALTER TABLE requests ADD COLUMN exec_argv_json TEXT'],
+  ['error_count', 'ALTER TABLE requests ADD COLUMN error_count INTEGER'],
+  ['warning_count', 'ALTER TABLE requests ADD COLUMN warning_count INTEGER'],
+  ['diagnostics_json', 'ALTER TABLE requests ADD COLUMN diagnostics_json TEXT'],
+  ['source_attempt_id', 'ALTER TABLE requests ADD COLUMN source_attempt_id TEXT'],
 ];
 
 const activeStatusFilter = "status IN ('requested', 'queued', 'running')";
@@ -142,6 +169,16 @@ const toText = (value: unknown): string => String(value);
 
 const toNullableText = (value: unknown): string | null =>
   value === null || value === undefined ? null : String(value);
+
+const toNullableStringArray = (value: unknown): readonly string[] | null => {
+  if (value === null || value === undefined) {
+    return null;
+  }
+  const parsed = JSON.parse(String(value)) as unknown;
+  return Array.isArray(parsed)
+    ? parsed.filter((entry): entry is string => typeof entry === 'string')
+    : null;
+};
 
 const toRequestRecord = (row: Row): RequestRecord => {
   const id = toNumber(row.id);
@@ -168,6 +205,9 @@ const toRequestRecord = (row: Row): RequestRecord => {
     signal: toNullableText(row.signal),
     outputTail: toNullableText(row.output_tail),
     error: toNullableText(row.error),
+    errorCount: toNullableNumber(row.error_count),
+    warningCount: toNullableNumber(row.warning_count),
+    diagnostics: toNullableStringArray(row.diagnostics_json),
     attachedTo: toNullableText(row.attached_to),
     attachMode: toNullableText(row.attach_mode) as AttachMode | null,
     background: toNumber(row.background ?? 0) !== 0,
@@ -244,7 +284,130 @@ export const openLedgerDatabase = (databasePath: string): DatabaseSync => {
       db.exec(ddl);
     }
   }
+  db.exec(
+    'CREATE UNIQUE INDEX IF NOT EXISTS requests_source_attempt_id_idx ON requests (source_attempt_id) WHERE source_attempt_id IS NOT NULL',
+  );
   return db;
+};
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === 'object' && value !== null && !Array.isArray(value);
+
+const parsePassthroughSpoolRecord = (line: string): PassthroughSpoolRecord | null => {
+  let value: unknown;
+  try {
+    value = JSON.parse(line);
+  } catch {
+    return null;
+  }
+  if (
+    !isRecord(value) ||
+    value.version !== 1 ||
+    value.kind !== 'passthrough' ||
+    typeof value.id !== 'string' ||
+    typeof value.atMs !== 'number' ||
+    !Array.isArray(value.argv) ||
+    !value.argv.every((entry) => typeof entry === 'string') ||
+    typeof value.cwd !== 'string' ||
+    (value.session !== null && typeof value.session !== 'string') ||
+    (value.host !== null && typeof value.host !== 'string') ||
+    (value.exitCode !== null && typeof value.exitCode !== 'number')
+  ) {
+    return null;
+  }
+  return value as unknown as PassthroughSpoolRecord;
+};
+
+const insertAttempt = (
+  db: DatabaseSync,
+  input: RecordAttemptInput,
+): { readonly id: number; readonly ticket: string } => {
+  const result = db
+    .prepare(
+      `INSERT OR IGNORE INTO requests (
+         created_at_ms, session, host, cwd, workspace_root, target_dir, lane_key, argv_json,
+         intent_key, intent_json, status, finished_at_ms, exit_code, error, source_attempt_id
+       ) VALUES (?, ?, ?, ?, ?, '', 'attempt', ?, NULL, NULL, ?, ?, ?, ?, ?)`,
+    )
+    .run(
+      input.atMs,
+      input.session,
+      input.host,
+      input.cwd,
+      input.cwd,
+      JSON.stringify(input.argv),
+      input.status,
+      input.atMs,
+      input.exitCode ?? null,
+      input.error ?? null,
+      input.sourceAttemptId ?? null,
+    );
+  if (result.changes === 0 && input.sourceAttemptId !== undefined) {
+    const existing = db
+      .prepare('SELECT id FROM requests WHERE source_attempt_id = ?')
+      .get(input.sourceAttemptId);
+    if (existing !== undefined) {
+      const id = toNumber(existing.id);
+      return { id, ticket: formatTicket(id) };
+    }
+  }
+  const id = Number(result.lastInsertRowid);
+  recordTransition(db, id, input.atMs, null, input.status);
+  return { id, ticket: formatTicket(id) };
+};
+
+const ingestPassthroughSpool = (db: DatabaseSync, stateDir: string): number => {
+  mkdirSync(stateDir, { recursive: true });
+  const spoolPath = join(stateDir, passthroughSpoolFileName);
+  const drainPath = `${spoolPath}.drain`;
+  if (!existsSync(drainPath)) {
+    if (!existsSync(spoolPath)) {
+      return 0;
+    }
+    try {
+      renameSync(spoolPath, drainPath);
+    } catch {
+      return 0;
+    }
+  }
+  const records = readFileSync(drainPath, 'utf8')
+    .split('\n')
+    .flatMap((line) => {
+      if (line.trim().length === 0) {
+        return [];
+      }
+      const parsed = parsePassthroughSpoolRecord(line);
+      return parsed === null ? [] : [parsed];
+    });
+  let inserted = 0;
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    for (const record of records) {
+      const before = db
+        .prepare('SELECT id FROM requests WHERE source_attempt_id = ?')
+        .get(record.id);
+      if (before !== undefined) {
+        continue;
+      }
+      insertAttempt(db, {
+        argv: record.argv,
+        atMs: record.atMs,
+        cwd: record.cwd,
+        exitCode: record.exitCode,
+        host: record.host,
+        session: record.session,
+        sourceAttemptId: record.id,
+        status: 'passthrough',
+      });
+      inserted += 1;
+    }
+    db.exec('COMMIT');
+  } catch (cause) {
+    db.exec('ROLLBACK');
+    throw cause;
+  }
+  rmSync(drainPath, { force: true });
+  return inserted;
 };
 
 /** A failing ledger is a defect, not a recoverable condition, so nothing here has a typed error. */
@@ -360,7 +523,10 @@ export const createLedgerApi = (db: DatabaseSync): LedgerApi => ({
              exit_code = ?,
              signal = ?,
              output_tail = ?,
-             error = ?
+             error = ?,
+             error_count = ?,
+             warning_count = ?,
+             diagnostics_json = ?
          WHERE id = ?`,
       ).run(
         input.status,
@@ -370,10 +536,18 @@ export const createLedgerApi = (db: DatabaseSync): LedgerApi => ({
         input.signal ?? null,
         input.outputTail ?? null,
         input.error ?? null,
+        input.errorCount ?? null,
+        input.warningCount ?? null,
+        input.diagnostics == null ? null : JSON.stringify(input.diagnostics),
         id,
       );
       recordTransition(db, id, input.atMs, fromStatus, input.status);
     }),
+
+  recordAttempt: (input) => Effect.sync(() => insertAttempt(db, input)),
+
+  ingestPassthroughSpool: (stateDir) =>
+    Effect.sync(() => ingestPassthroughSpool(db, stateDir)),
 
   getRequest: (id) => Effect.sync(() => selectRequestById(db, id)),
 

@@ -1,0 +1,9 @@
+[package]
+name = "broken-crate"
+version.workspace = true
+edition.workspace = true
+build = "build.rs"
+
+[features]
+default = ["broken"]
+broken = []

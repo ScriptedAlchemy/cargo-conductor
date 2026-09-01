@@ -13,7 +13,9 @@ const baseRecord = {
   attachedTo: null,
   createdAtMs: 1,
   cwd: '/ws',
+  diagnostics: null,
   error: null,
+  errorCount: null,
   exitCode: 0,
   finishedAtMs: 2,
   host: 'cursor',
@@ -31,6 +33,7 @@ const baseRecord = {
   targetDir: '/ws/target',
   ticket: 'cc-1',
   waitMs: 0,
+  warningCount: null,
   workspaceRoot: '/ws',
   background: false,
   holdStop: false,
@@ -76,6 +79,13 @@ describe('schema forward compatibility (issue #4)', () => {
 
     expect(parsed.metrics?.cargo_run_ms.count).toBe(1);
     expect(parsed.metrics?.job_outcome.done).toBe(1);
+  });
+
+  it('accepts denied and passthrough terminal request records', () => {
+    expect(requestRecordSchema.parse({ ...baseRecord, status: 'denied' }).status).toBe('denied');
+    expect(
+      requestRecordSchema.parse({ ...baseRecord, status: 'passthrough' }).status,
+    ).toBe('passthrough');
   });
 });
 

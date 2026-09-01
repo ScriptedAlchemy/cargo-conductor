@@ -1,0 +1,8 @@
+[package]
+name = "slow-b"
+version.workspace = true
+edition.workspace = true
+build = "../build.rs"
+
+[lib]
+path = "../shared.rs"

@@ -10,7 +10,28 @@ import { resolveDaemonConfig } from '../src/daemon/config.js';
 import { pingDaemon, requestOverSocket } from '../src/daemon/control.js';
 import { createLedgerApi, openLedgerDatabase } from '../src/daemon/ledger.js';
 import { runDaemon } from '../src/daemon/main.js';
-import { loadConductorSnapshot } from '../src/query.js';
+import { describeRequestRecord, loadConductorSnapshot } from '../src/query.js';
+
+describe('ticket summaries', () => {
+  it('includes durable diagnostic counts when present', () => {
+    expect(
+      describeRequestRecord('cc-9', {
+        errorCount: 2,
+        status: 'failed',
+        ticket: 'cc-9',
+        warningCount: 3,
+      }),
+    ).toBe('cc-9 failed (2 errors, 3 warnings)');
+    expect(
+      describeRequestRecord('cc-10', {
+        errorCount: null,
+        status: 'done',
+        ticket: 'cc-10',
+        warningCount: null,
+      }),
+    ).toBe('cc-10 done');
+  });
+});
 
 const isolatedConfig = () => {
   const root = mkdtempSync(join(tmpdir(), 'cc-query-'));
