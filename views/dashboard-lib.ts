@@ -33,13 +33,19 @@ export interface SectionCounts {
   readonly lanes: number;
 }
 
-export const sectionOrder = (counts: SectionCounts): readonly DashboardSection[] => [
+/**
+ * Fixed section order regardless of content. Sections used to unmount when
+ * empty, but on a live-polling page that made the layout jump every time work
+ * started or finished; instead every section stays mounted and empty ones
+ * render a slim one-line state.
+ */
+export const sectionOrder = (_counts: SectionCounts): readonly DashboardSection[] => [
   'contention',
-  ...(counts.running > 0 ? (['inFlight'] as const) : []),
-  ...(counts.queued > 0 ? (['queue'] as const) : []),
+  'inFlight',
+  'queue',
   'metrics',
   'kache',
-  ...(counts.lanes > 0 ? (['lanes'] as const) : []),
+  'lanes',
   'history',
 ];
 

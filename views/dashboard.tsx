@@ -840,6 +840,7 @@ const DashboardContent = ({ structured }: { readonly structured: StructuredConte
           <section key="inFlight">
             <h2>In flight <span className="count">({running.length})</span></h2>
             <Table
+              empty="Nothing running."
               headers={['ticket', 'command', 'workspace', 'who', 'elapsed']}
               numericColumns={[4]}
               rows={running.map((row) => ({
@@ -857,6 +858,7 @@ const DashboardContent = ({ structured }: { readonly structured: StructuredConte
           <section key="queue">
             <h2>Queue <span className="count">({queueRows.length})</span></h2>
             <Table
+              empty="Empty."
               headers={['ticket', 'command', 'workspace', 'who', 'waiting', 'attached']}
               numericColumns={[4]}
               rows={queueRows.map((row) => ({
@@ -879,6 +881,7 @@ const DashboardContent = ({ structured }: { readonly structured: StructuredConte
           <section key="lanes">
             <h2>Lanes <span className="count">({laneCount})</span></h2>
             <Table
+              empty="No active lanes."
               headers={['workspace', 'running', 'queued']}
               numericColumns={[2]}
               rows={activeLanes.map((lane) => ({

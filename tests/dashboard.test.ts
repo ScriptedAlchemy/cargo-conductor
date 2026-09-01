@@ -46,37 +46,24 @@ describe('MCP App dashboard', () => {
   });
 });
 
-describe('sectionOrder (empty-section collapse)', () => {
-  it('collapses In flight, Queue, and Lanes on the idle home', () => {
-    expect(sectionOrder({ lanes: 0, queued: 0, running: 0 })).toEqual([
-      'contention',
-      'metrics',
-      'kache',
-      'history',
-    ]);
+describe('sectionOrder (stable layout)', () => {
+  const fullOrder = [
+    'contention',
+    'inFlight',
+    'queue',
+    'metrics',
+    'kache',
+    'lanes',
+    'history',
+  ];
+
+  it('keeps every section mounted on the idle home so live polling never shifts layout', () => {
+    expect(sectionOrder({ lanes: 0, queued: 0, running: 0 })).toEqual(fullOrder);
   });
 
-  it('puts In flight first in the body, above Queue, when work is running', () => {
-    expect(sectionOrder({ lanes: 2, queued: 1, running: 3 })).toEqual([
-      'contention',
-      'inFlight',
-      'queue',
-      'metrics',
-      'kache',
-      'lanes',
-      'history',
-    ]);
-  });
-
-  it('shows Queue without In flight when everything is still waiting', () => {
-    expect(sectionOrder({ lanes: 1, queued: 4, running: 0 })).toEqual([
-      'contention',
-      'queue',
-      'metrics',
-      'kache',
-      'lanes',
-      'history',
-    ]);
+  it('returns the identical order under load — work starting or finishing must not move sections', () => {
+    expect(sectionOrder({ lanes: 2, queued: 1, running: 3 })).toEqual(fullOrder);
+    expect(sectionOrder({ lanes: 1, queued: 4, running: 0 })).toEqual(fullOrder);
   });
 });
 
