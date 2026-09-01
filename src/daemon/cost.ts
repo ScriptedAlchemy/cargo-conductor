@@ -133,12 +133,25 @@ export const openKacheReader = (indexPath: string): KacheReader | null => {
   const readerDb = db;
   return {
     close: () => {
-      readerDb.close();
+      try {
+        readerDb.close();
+      } catch {
+        // Closing an already-broken or already-closed handle must not throw.
+      }
     },
     load: () => {
+      // The index can be truncated or replaced after a successful open
+      // (kache re-initializing its store); the prepared statement then
+      // throws at read time, which must degrade to "no prior".
+      let rows: ReturnType<typeof aggregate.all>;
+      try {
+        rows = aggregate.all();
+      } catch {
+        return emptyIndexPriors;
+      }
       const timings = new Map<string, number>();
       const maximumByCrate = new Map<string, number>();
-      for (const row of aggregate.all()) {
+      for (const row of rows) {
         const crateName = String(row.crate_name);
         const profile = String(row.profile);
         const compileTimeMs = finitePositiveMs(Number(row.compile_time_ms));

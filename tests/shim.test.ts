@@ -112,6 +112,25 @@ describe('PATH cargo shim', () => {
     }
   });
 
+  it('refuses to install on win32 with a clear unsupported error', () => {
+    const root = mkdtempSync(join(tmpdir(), 'cc-shim-win32-'));
+    try {
+      const destDir = join(root, 'bin');
+      expect(() =>
+        installCargoShim({
+          conductorArgv: ['conductor'],
+          destDir,
+          platform: 'win32',
+          realCargo: '/usr/bin/cargo',
+        }),
+      ).toThrow(/not supported on Windows/u);
+      // Nothing half-installed: the refusal happens before any writes.
+      expect(existsSync(join(destDir, 'cargo'))).toBe(false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it('reports whether PATH actually reaches the installed shim', () => {
     const root = mkdtempSync(join(tmpdir(), 'cc-shim-path-'));
     try {

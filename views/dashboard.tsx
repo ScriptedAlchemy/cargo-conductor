@@ -14,10 +14,13 @@ import {
   formatMs,
   frequencyEntries,
   frequencyTotal,
+  kacheColumns,
+  pathBasename,
   percentileMinSamples,
   pollStatus,
   ranAsFor,
   relativeTime,
+  remainingEstimateMs,
   resolveTicketDetail,
   runMetricsView,
   sectionOrder,
@@ -230,12 +233,14 @@ const duration = (value: unknown): string => (typeof value === 'number' ? format
 const ticket = (value: unknown): ReactNode =>
   value == null ? '—' : <span className="ticket">{String(value)}</span>;
 
+// Last path component only: middle-truncated absolute paths were eating the
+// distinguishing folder name; the full path lives in the title.
 const workspace = (value: unknown): ReactNode =>
   typeof value !== 'string' || value.length === 0 ? (
     '—'
   ) : (
     <span className="path" title={value}>
-      {shortenPath(value)}
+      {pathBasename(value)}
     </span>
   );
 
@@ -253,7 +258,23 @@ const who = (row: RequestRow): ReactNode => {
   );
 };
 
-const progress = (sinceMs: unknown, estimateMs: unknown, nowMs: number): ReactNode => {
+/** Running rows: elapsed plus a remaining hint, gated so estimate ≈ elapsed never fakes a countdown. */
+const elapsedCell = (sinceMs: unknown, estimateMs: unknown, nowMs: number): ReactNode => {
+  if (typeof sinceMs !== 'number') {
+    return '—';
+  }
+  const elapsed = Math.max(0, nowMs - sinceMs);
+  const remaining = remainingEstimateMs(elapsed, estimateMs);
+  return (
+    <>
+      <span className="dur">{formatMs(elapsed)}</span>
+      {remaining === null ? null : <span className="est"> · ~{formatMs(remaining)} left</span>}
+    </>
+  );
+};
+
+/** Queued rows: time waited, plus the prior-run estimate labeled as such (it is not a countdown). */
+const waitingCell = (sinceMs: unknown, estimateMs: unknown, nowMs: number): ReactNode => {
   if (typeof sinceMs !== 'number') {
     return '—';
   }
@@ -261,7 +282,9 @@ const progress = (sinceMs: unknown, estimateMs: unknown, nowMs: number): ReactNo
     <>
       <span className="dur">{formatMs(Math.max(0, nowMs - sinceMs))}</span>
       {typeof estimateMs === 'number' && estimateMs > 0 ? (
-        <span className="est"> / ~{formatMs(estimateMs)}</span>
+        <span className="est" title="expected run duration once started, from prior runs">
+          {' '}· est ~{formatMs(estimateMs)}
+        </span>
       ) : null}
     </>
   );
@@ -655,56 +678,84 @@ const KacheSection = ({ value }: { readonly value: unknown }): ReactNode => {
           }
         />
       </div>
-      <div className="kache-columns">
-        <div>
-          <h3>Compiling roots <span>(last 5m)</span></h3>
-          {roots.length === 0 ? (
-            <p className="empty">No recent heartbeats.</p>
-          ) : (
-            <div className="root-list">
-              {roots.map((row, index) => {
-                const root = typeof row.root === 'string' ? row.root : '';
-                return (
-                  <div className="compact-row" key={`${root}-${index}`}>
-                    <span className="path" title={root}>{shortenPath(root)}</span>
-                    <span className="row-value">{countValue(row.count)}</span>
-                  </div>
-                );
-              })}
-            </div>
-          )}
-        </div>
-        <div>
-          <h3>Slowest crates</h3>
-          {topCrates.length === 0 ? (
-            <p className="empty">No compile timings.</p>
-          ) : (
-            <div className="crate-list">
-              {topCrates.map((row, index) => {
-                const crate = typeof row.crate === 'string' ? row.crate : '';
-                const profile = typeof row.profile === 'string' ? row.profile : '';
-                const ms = typeof row.ms === 'number' ? row.ms : 0;
-                return (
-                  <div className="crate-row" key={`${crate}-${profile}-${index}`}>
-                    <div className="crate-label">
-                      <span className="crate-name" title={crate}>{crate}</span>
-                      <span className="profile">{profile}</span>
-                      <span className="row-value">{formatMs(ms)}</span>
-                    </div>
-                    <div className="crate-meter" aria-hidden="true">
-                      <div
-                        className="crate-meter-fill"
-                        style={{ width: `${maximumMs > 0 ? (ms / maximumMs) * 100 : 0}%` }}
-                      />
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          )}
-        </div>
-      </div>
+      <KacheColumns maximumMs={maximumMs} roots={roots} topCrates={topCrates} />
     </section>
+  );
+};
+
+// Empty kache sub-panels collapse like the top-level sections: no
+// "No recent heartbeats." placeholder on an idle machine.
+const KacheColumns = ({
+  maximumMs,
+  roots,
+  topCrates,
+}: {
+  readonly maximumMs: number;
+  readonly roots: readonly KacheRootRow[];
+  readonly topCrates: readonly KacheTopCrateRow[];
+}): ReactNode => {
+  const columns = kacheColumns({ crates: topCrates.length, roots: roots.length });
+  if (columns.length === 0) {
+    return null;
+  }
+  const countValue = (value: unknown): string =>
+    typeof value === 'number' ? formatCompactNumber(value) : '—';
+  return (
+    <div className={`kache-columns${columns.length === 1 ? ' single' : ''}`}>
+      {columns.map((column) => {
+        switch (column) {
+          case 'roots':
+            return (
+              <div key="roots">
+                <h3>Compiling roots <span>(last 5m)</span></h3>
+                <div className="root-list">
+                  {roots.map((row, index) => {
+                    const root = typeof row.root === 'string' ? row.root : '';
+                    return (
+                      <div className="compact-row" key={`${root}-${index}`}>
+                        <span className="path" title={root}>{shortenPath(root)}</span>
+                        <span className="row-value">{countValue(row.count)}</span>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            );
+          case 'crates':
+            return (
+              <div key="crates">
+                <h3>Slowest crates</h3>
+                <div className="crate-list">
+                  {topCrates.map((row, index) => {
+                    const crate = typeof row.crate === 'string' ? row.crate : '';
+                    const profile = typeof row.profile === 'string' ? row.profile : '';
+                    const ms = typeof row.ms === 'number' ? row.ms : 0;
+                    return (
+                      <div className="crate-row" key={`${crate}-${profile}-${index}`}>
+                        <div className="crate-label">
+                          <span className="crate-name" title={crate}>{crate}</span>
+                          <span className="profile">{profile}</span>
+                          <span className="row-value">{formatMs(ms)}</span>
+                        </div>
+                        <div className="crate-meter" aria-hidden="true">
+                          <div
+                            className="crate-meter-fill"
+                            style={{ width: `${maximumMs > 0 ? (ms / maximumMs) * 100 : 0}%` }}
+                          />
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            );
+          default: {
+            const exhaustive: never = column;
+            return exhaustive;
+          }
+        }
+      })}
+    </div>
   );
 };
 
@@ -797,12 +848,13 @@ const DashboardContent = ({ structured }: { readonly structured: StructuredConte
           <section key="inFlight">
             <h2>In flight <span className="count">({running.length})</span></h2>
             <Table
+              empty="Nothing running."
               headers={['ticket', 'command', 'workspace', 'who', 'elapsed']}
               numericColumns={[4]}
               rows={running.map((row) => ({
                 cells: [
                   ...requestCells(row),
-                  progress(row.startedAtMs ?? row.createdAtMs, row.estimateMs, nowMs),
+                  elapsedCell(row.startedAtMs ?? row.createdAtMs, row.estimateMs, nowMs),
                 ],
                 onSelect: selectRow(row),
               }))}
@@ -814,12 +866,13 @@ const DashboardContent = ({ structured }: { readonly structured: StructuredConte
           <section key="queue">
             <h2>Queue <span className="count">({queueRows.length})</span></h2>
             <Table
+              empty="Empty."
               headers={['ticket', 'command', 'workspace', 'who', 'waiting', 'attached']}
               numericColumns={[4]}
               rows={queueRows.map((row) => ({
                 cells: [
                   ...requestCells(row),
-                  progress(row.createdAtMs, row.estimateMs, nowMs),
+                  waitingCell(row.createdAtMs, row.estimateMs, nowMs),
                   typeof row.attachedTo === 'string' ? <AttachChip row={row} /> : '—',
                 ],
                 onSelect: selectRow(row),
@@ -836,6 +889,7 @@ const DashboardContent = ({ structured }: { readonly structured: StructuredConte
           <section key="lanes">
             <h2>Lanes <span className="count">({laneCount})</span></h2>
             <Table
+              empty="No active lanes."
               headers={['workspace', 'running', 'queued']}
               numericColumns={[2]}
               rows={activeLanes.map((lane) => ({

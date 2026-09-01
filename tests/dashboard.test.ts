@@ -14,10 +14,14 @@ import {
   formatMs,
   frequencyEntries,
   frequencyTotal,
+  kacheColumns,
+  pathBasename,
   percentileMinSamples,
   pollStatus,
   ranAsFor,
   relativeTime,
+  remainingEstimateMs,
+  remainingMinMs,
   resolveTicketDetail,
   runMetricsView,
   sectionOrder,
@@ -84,37 +88,77 @@ describe('pollStatus (one failed poll must not kill the stream)', () => {
   });
 });
 
-describe('sectionOrder (empty-section collapse)', () => {
-  it('collapses In flight, Queue, and Lanes on the idle home', () => {
-    expect(sectionOrder({ lanes: 0, queued: 0, running: 0 })).toEqual([
-      'contention',
-      'metrics',
-      'kache',
-      'history',
-    ]);
+describe('sectionOrder (stable layout)', () => {
+  const fullOrder = [
+    'contention',
+    'inFlight',
+    'queue',
+    'metrics',
+    'kache',
+    'lanes',
+    'history',
+  ];
+
+  it('keeps every section mounted on the idle home so live polling never shifts layout', () => {
+    expect(sectionOrder({ lanes: 0, queued: 0, running: 0 })).toEqual(fullOrder);
   });
 
-  it('puts In flight first in the body, above Queue, when work is running', () => {
-    expect(sectionOrder({ lanes: 2, queued: 1, running: 3 })).toEqual([
-      'contention',
-      'inFlight',
-      'queue',
-      'metrics',
-      'kache',
-      'lanes',
-      'history',
-    ]);
+  it('returns the identical order under load — work starting or finishing must not move sections', () => {
+    expect(sectionOrder({ lanes: 2, queued: 1, running: 3 })).toEqual(fullOrder);
+    expect(sectionOrder({ lanes: 1, queued: 4, running: 0 })).toEqual(fullOrder);
+  });
+});
+
+describe('remainingEstimateMs (no fake countdowns)', () => {
+  it('hides remaining when the estimate has been reached or passed', () => {
+    // The live busy dashboard showed elapsed 13s with "~13s" beside it.
+    expect(remainingEstimateMs(13_000, 13_000)).toBeNull();
+    expect(remainingEstimateMs(20_000, 13_000)).toBeNull();
   });
 
-  it('shows Queue without In flight when everything is still waiting', () => {
-    expect(sectionOrder({ lanes: 1, queued: 4, running: 0 })).toEqual([
-      'contention',
-      'queue',
-      'metrics',
-      'kache',
-      'lanes',
-      'history',
-    ]);
+  it('hides remaining when the estimate is missing or a placeholder', () => {
+    expect(remainingEstimateMs(13_000, undefined)).toBeNull();
+    expect(remainingEstimateMs(13_000, null)).toBeNull();
+    expect(remainingEstimateMs(13_000, 0)).toBeNull();
+    expect(remainingEstimateMs(13_000, -1)).toBeNull();
+  });
+
+  it('hides remaining inside the minimum margin', () => {
+    expect(remainingEstimateMs(60_000, 60_000 + remainingMinMs - 1)).toBeNull();
+    // 10m estimate with 30s left: >= 5s but under 10% of the estimate.
+    expect(remainingEstimateMs(9.5 * 60_000, 10 * 60_000)).toBeNull();
+  });
+
+  it('shows remaining when the estimate meaningfully exceeds elapsed', () => {
+    expect(remainingEstimateMs(13_000, 102_000)).toBe(89_000);
+    expect(remainingEstimateMs(0, 60_000)).toBe(60_000);
+  });
+});
+
+describe('pathBasename (workspace column)', () => {
+  it('keeps only the repo folder name', () => {
+    expect(pathBasename('/fast/projects/tracedecay')).toBe('tracedecay');
+    expect(pathBasename('/projects/tracedecay-plan40-stage3-sol')).toBe(
+      'tracedecay-plan40-stage3-sol',
+    );
+  });
+
+  it('handles trailing slashes and degenerate paths', () => {
+    expect(pathBasename('/fast/projects/tracedecay/')).toBe('tracedecay');
+    expect(pathBasename('tracedecay')).toBe('tracedecay');
+    expect(pathBasename('/')).toBe('/');
+  });
+});
+
+describe('kacheColumns (empty kache sub-panels collapse)', () => {
+  it('renders no columns on an idle machine', () => {
+    expect(kacheColumns({ crates: 0, roots: 0 })).toEqual([]);
+  });
+
+  it('drops only the empty side', () => {
+    expect(kacheColumns({ crates: 7, roots: 0 })).toEqual(['crates']);
+    expect(kacheColumns({ crates: 0, roots: 2 })).toEqual(['roots']);
+    expect(kacheColumns({ crates: 7, roots: 2 })).toEqual(['roots', 'crates']);
   });
 });
 
