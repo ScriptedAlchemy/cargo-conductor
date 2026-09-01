@@ -1,3 +1,5 @@
+<p align="center"><img src="docs/media/logo.png" width="140" alt="cargo-hauler logo"></p>
+
 # cargo-hauler
 
 **Stop your AI agents from fighting over cargo.**
