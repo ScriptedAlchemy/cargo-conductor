@@ -15,7 +15,13 @@
     "verbatimModuleSyntax": true,
     "plugins": [
       {
-        "name": "@effect/language-service"
+        "name": "@effect/language-service",
+        "diagnosticSeverity": {
+          "floatingEffect": "error",
+          "missingEffectError": "error",
+          "tryCatchInEffectGen": "error",
+          "globalErrorInEffectCatch": "error"
+        }
       }
     ]
   },

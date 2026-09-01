@@ -1,4 +1,5 @@
 .agent-bundle/
+.repos/
 .runtime/
 .tmp-hook-simulate/
 .worktrees/

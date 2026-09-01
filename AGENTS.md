@@ -6,6 +6,16 @@ This branch is **Effect v4** (`effect` 4.0.0-rc.112), not v3. v3 idioms
 (`Context.Tag`, `Data.TaggedError`, `@effect/platform` as a separate package)
 often do not apply; check the vendored v4 source before assuming an API exists.
 
+## Learning more about Effect
+
+Before writing any Effect code, first read `node_modules/effect/AGENTS.md`
+**completely**, and follow the links in the file when required.
+
+If you need to learn more about particular Effect apis and concepts that the
+guide doesn't cover, search through the source code in `node_modules/effect/src`
+**and** the vendored monorepo at `repos/effect` (the full monorepo at the same
+pin; never import from it).
+
 ## `repos/` — vendored reference source (read-only)
 
 `repos/effect` is the Effect monorepo vendored as a git subtree, pinned to the

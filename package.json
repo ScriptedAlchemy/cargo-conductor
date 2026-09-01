@@ -12,8 +12,9 @@
   },
   "scripts": {
     "build": "agent-bundle build --output artifact",
-    "check": "npm run validate && npm run build && npm run typecheck && npm run test",
+    "check": "npm run validate && npm run build && npm run typecheck && npm run diagnostics && npm run test",
     "dev": "agent-bundle dev",
+    "diagnostics": "effect-tsgo diagnostics --project tsconfig.json",
     "test": "rstest",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "validate": "agent-bundle validate",
