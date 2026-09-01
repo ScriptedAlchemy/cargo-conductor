@@ -1,5 +1,5 @@
 import { RegistryProvider, useAtomRefresh, useAtomSet, useAtomValue } from '@effect/atom-react';
-import { Cause, Effect, Option, Schedule, Stream } from 'effect';
+import { Cause, Data, Effect, Option, Schedule, Stream } from 'effect';
 import { AsyncResult, Atom } from 'effect/unstable/reactivity';
 import { useEffect, useState, type ReactNode } from 'react';
 import { createRoot } from 'react-dom/client';
@@ -29,6 +29,12 @@ interface ToolCallResult {
   readonly structuredContent?: StructuredContent | null;
 }
 
+interface SystemLoadShape {
+  readonly loadAvg1?: unknown;
+  readonly cores?: unknown;
+  readonly clampThresholdPerCore?: unknown;
+}
+
 interface StructuredContent {
   readonly summary?: unknown;
   readonly daemon?: unknown;
@@ -40,6 +46,7 @@ interface StructuredContent {
   readonly operation?: unknown;
   readonly structuredContent?: unknown;
   readonly metrics?: unknown;
+  readonly system?: unknown;
   readonly kache?: unknown;
 }
 
@@ -169,6 +176,14 @@ const structuredFrom = (value: unknown): StructuredContent | null => {
   return null;
 };
 
+class StatusRpcError extends Data.TaggedError('StatusRpcError')<{
+  readonly cause: unknown;
+}> {
+  override get message(): string {
+    return this.cause instanceof Error ? this.cause.message : String(this.cause);
+  }
+}
+
 const fetchStatus = Effect.tryPromise({
   try: async () => {
     const response = await rpcRequest('tools/call', {
@@ -177,7 +192,7 @@ const fetchStatus = Effect.tryPromise({
     });
     return structuredFrom(response);
   },
-  catch: (error) => (error instanceof Error ? error : new Error(String(error))),
+  catch: (cause) => new StatusRpcError({ cause }),
 });
 
 export const statusAtom = Atom.make(
@@ -336,23 +351,50 @@ const Stat = ({
 
 const AdmissionMeter = ({
   maxConcurrent,
-  runningCount,
+  permitHolders,
+  riders,
 }: {
   readonly maxConcurrent: number;
-  readonly runningCount: number;
+  readonly permitHolders: number;
+  readonly riders: number;
 }): ReactNode => {
+  // Riders share a leader's process: they must not read as extra permits, or
+  // healthy coalescing looks like over-subscription (a real 8-rows-on-5-slots
+  // sighting was 4 permits + 4 identity riders).
   const percent =
-    maxConcurrent > 0 ? Math.min(100, Math.round((runningCount / maxConcurrent) * 100)) : 0;
+    maxConcurrent > 0 ? Math.min(100, Math.round((permitHolders / maxConcurrent) * 100)) : 0;
   return (
     <div className="stat meterstat">
-      <b>{runningCount}/{maxConcurrent > 0 ? maxConcurrent : '—'}</b>
+      <b>
+        {permitHolders}/{maxConcurrent > 0 ? maxConcurrent : '—'}
+        {riders > 0 ? <span className="est"> +{riders} riding</span> : null}
+      </b>
       <span>admission</span>
       <div
         className="meter"
-        title={`${runningCount} of ${maxConcurrent} admission permits in use`}
+        title={`${permitHolders} of ${maxConcurrent} admission permits in use; ${riders} attached request${riders === 1 ? '' : 's'} riding leaders`}
       >
         <div className="meter-fill" style={{ width: `${percent}%` }} />
       </div>
+    </div>
+  );
+};
+
+const LoadStat = ({ system }: { readonly system: SystemLoadShape | null }): ReactNode => {
+  if (system === null || typeof system.loadAvg1 !== 'number' || typeof system.cores !== 'number') {
+    return null;
+  }
+  const perCore = system.cores > 0 ? system.loadAvg1 / system.cores : 0;
+  const clamp =
+    typeof system.clampThresholdPerCore === 'number' ? system.clampThresholdPerCore : null;
+  const clamped = clamp !== null && perCore > clamp;
+  return (
+    <div className="stat" title={clamp === null ? 'admission load clamp off' : `admission defers above ${clamp}/core`}>
+      <b>
+        {system.loadAvg1.toFixed(1)}
+        <span className="est"> ({perCore.toFixed(2)}/core{clamped ? ' · clamping' : ''})</span>
+      </b>
+      <span>load ({system.cores} cores)</span>
     </div>
   );
 };
@@ -570,6 +612,9 @@ const DashboardContent = ({ structured }: { readonly structured: StructuredConte
     .filter((row) => typeof row.status === 'string' && terminalStatuses.has(row.status))
     .slice(0, 20);
   const metrics = (structured?.metrics ?? null) as StatusMetricsShape | null;
+  const system = (structured?.system ?? null) as SystemLoadShape | null;
+  const permitHolders = running.filter((row) => row.attachedTo == null).length;
+  const riders = running.length - permitHolders;
   const laneCount =
     activeLanes.length === lanes.length
       ? String(lanes.length)
@@ -584,7 +629,12 @@ const DashboardContent = ({ structured }: { readonly structured: StructuredConte
           <Stat label="pid" value={structured?.pid == null ? '—' : String(structured.pid)} />
           <Stat label="queued" value={String(queued.length)} />
           <Stat label="attached" value={String(attached.length)} />
-          <AdmissionMeter runningCount={running.length} maxConcurrent={maxConcurrent} />
+          <LoadStat system={system} />
+          <AdmissionMeter
+            permitHolders={permitHolders}
+            riders={riders}
+            maxConcurrent={maxConcurrent}
+          />
         </div>
       </section>
       <section>

@@ -14,6 +14,7 @@ import type {
   StatusMetrics,
   StatusReport,
   StatusResultMessage,
+  SystemLoadReport,
 } from './daemon/protocol.js';
 import { shortId } from './lib/id.js';
 import { countWord } from './lib/text.js';
@@ -24,6 +25,7 @@ export interface ConductorSnapshot {
   readonly lanes: readonly LaneStatus[];
   readonly maxConcurrent: number | null;
   readonly metrics?: StatusMetrics;
+  readonly system?: SystemLoadReport;
   readonly pid: number | null;
   readonly recent: readonly RequestRecord[];
   readonly report: StatusReport | null;
@@ -87,6 +89,7 @@ const fromReport = (report: StatusReport, config: DaemonConfigShape): ConductorS
       active: report.active,
       daemon: 'running',
       ...(report.kache === undefined ? {} : { kache: report.kache }),
+      ...(report.system === undefined ? {} : { system: report.system }),
       lanes: report.lanes,
       maxConcurrent: report.maxConcurrent,
       ...(report.metrics === undefined ? {} : { metrics: report.metrics }),

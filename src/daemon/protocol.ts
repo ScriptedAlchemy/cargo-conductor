@@ -237,6 +237,15 @@ export interface StatusReport {
   readonly recent: readonly RequestRecord[];
   readonly metrics?: StatusMetrics;
   readonly kache?: KacheStatusReport | null;
+  readonly system?: SystemLoadReport;
+}
+
+/** Machine load at report time, for dashboards and clamp visibility. */
+export interface SystemLoadReport {
+  readonly loadAvg1: number;
+  readonly cores: number;
+  /** Configured per-core clamp threshold, or null when the clamp is off. */
+  readonly clampThresholdPerCore: number | null;
 }
 
 /**

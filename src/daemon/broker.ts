@@ -1933,6 +1933,11 @@ export const BrokerLive: Layer.Layer<
           active: active.map((record) => ({ ...record, outputTail: null })),
           recent: recent.map((record) => ({ ...record, outputTail: null })),
           kache,
+          system: {
+            loadAvg1: loadavg()[0],
+            cores: availableParallelism(),
+            clampThresholdPerCore: config.loadThresholdPerCore,
+          },
           metrics: {
             cargo_run_ms: {
               buckets: cargoRun.buckets.map(([boundary, count]) => [
