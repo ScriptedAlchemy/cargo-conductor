@@ -1,4 +1,13 @@
-import { closeSync, constants, mkdtempSync, openSync, readSync, rmSync, statSync } from 'node:fs';
+import {
+  closeSync,
+  constants,
+  mkdtempSync,
+  openSync,
+  readSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -76,6 +85,33 @@ describe('shared jobserver', () => {
 
   it('injects nothing while unarmed', () => {
     expect(sharedJobserverDelta({})).toBeNull();
+  });
+
+  it('degrades to unarmed when the FIFO path holds a regular file', () => {
+    // Models a platform where mkfifo is absent (win32, stripped containers):
+    // whatever ends up at the path is not a FIFO, so arming reports failure
+    // instead of throwing, and spawns keep their unarmed behavior.
+    const stateDir = scratch();
+    try {
+      writeFileSync(join(stateDir, jobserverFifoFileName), 'not a fifo');
+      expect(armSharedJobserver({ stateDir, tokens: 2 })).toBe(false);
+      expect(sharedJobserverDelta({})).toBeNull();
+    } finally {
+      rmSync(stateDir, { force: true, recursive: true });
+    }
+  });
+
+  it('degrades to unarmed when the state dir cannot be created', () => {
+    const root = scratch();
+    try {
+      const blocking = join(root, 'blocked');
+      writeFileSync(blocking, '');
+      // mkdirSync throws ENOTDIR/EEXIST here; arming must swallow it.
+      expect(armSharedJobserver({ stateDir: join(blocking, 'state'), tokens: 2 })).toBe(false);
+      expect(sharedJobserverDelta({})).toBeNull();
+    } finally {
+      rmSync(root, { force: true, recursive: true });
+    }
   });
 
   it('yields to explicit parallelism pinning and appends to plain MAKEFLAGS', () => {

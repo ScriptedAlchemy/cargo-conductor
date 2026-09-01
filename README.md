@@ -44,7 +44,7 @@ flowchart LR
     lanes --> scheduler["scheduler + batch composer<br/>+ admission gate"]
     scheduler --> executor["executor: one real cargo<br/>--message-format=json demux"]
   end
-  executor --> cargo["cargo → kache → rustc"]
+  executor --> cargo["cargo → rustc<br/>(kache optional)"]
   daemon --> ledgerDb["SQLite ledger:<br/>every request + transitions"]
   ledgerDb --> surfaces["conductor status/log/last<br/>MCP tools + dashboard app"]
   daemon --> notify["tickets: afterTool notify,<br/>stop-hold, conductor_await"]
@@ -87,7 +87,8 @@ dir), ledgered, and then served one of three ways:
   by age (every 30s waited halves the effective score, so broad builds are
   never starved). Estimates come from the daemon's own per-intent EWMA, seeded
   from ledger history, falling back to kache `index.db` per-crate compile-time
-  priors, then to mined-p50 defaults. Admitted runs get a `CARGO_BUILD_JOBS`
+  priors when kache is installed, then to mined-p50 defaults. Admitted runs
+  get a `CARGO_BUILD_JOBS`
   grant that splits the machine's cores between them, and a machine-wide
   admission gate caps concurrent cargo processes (default 5).
 
@@ -117,14 +118,16 @@ retrievable cross-session.
 
 ## Install
 
+Works on Linux and macOS. Windows is experimental and untested: the daemon
+resolves a `\\.\pipe\` named pipe instead of a unix socket and the jobserver
+degrades to disabled, but the cargo PATH shim is a POSIX shell script and
+`install-shim` refuses to install it there. Requires Node >= 22.19
+(`node:sqlite` without native deps).
+
+### The first five minutes
+
 Build the bundle once (`npm install && npm run build`); `artifact/plugin` is
-the installable multi-host bundle. Per host:
-
-- **Cursor** — symlink into the local plugins directory:
-
-  ```sh
-  ln -s "$(pwd)/artifact/plugin" ~/.cursor/plugins/local/cargo-conductor
-  ```
+the installable multi-host bundle. Then install per host:
 
 - **Claude Code**:
 
@@ -140,20 +143,52 @@ the installable multi-host bundle. Per host:
   codex plugin add cargo-conductor@cargo-conductor-marketplace
   ```
 
-- **Optional PATH shim** — hooks cannot see cargo spawned inside shell
-  scripts; the shim catches those:
+- **Cursor** — run the install script (Cursor's local-plugin loader needs
+  root manifests the artifact does not carry, so a bare symlink is not
+  enough), then restart Cursor so new sessions pick up the hooks:
 
   ```sh
-  conductor install-shim --dir ~/.local/bin
+  ./scripts/install-cursor.sh
   ```
 
-  The generated shim embeds absolute paths for both the conductor CLI and the
-  real cargo (resolved at install time, never through PATH again), tags its
-  submissions with `--host shim`, and passes daemon-spawned cargo straight
-  through to the real binary so the broker never re-enters itself.
+Verify the daemon with the `conductor` CLI that ships in the artifact
+(`node artifact/plugin/scripts/conductor.mjs`, abbreviated `conductor` below):
+
+```sh
+conductor daemon start
+conductor daemon status
+```
+
+The first brokered request auto-spawns the daemon too, so this step just
+confirms the wiring. The dashboard is an MCP App
+(`ui://cargo-conductor/dashboard.html`) rendered by the `conductor_status`
+tool inside MCP App-capable hosts; to see it in a plain browser, run
+`node scripts/preview-dashboard.mjs` (see [Development](#development)).
+
+**Optional PATH shim** — hooks cannot see cargo spawned inside shell
+scripts; the shim catches those:
+
+```sh
+conductor install-shim --dir ~/.local/bin
+```
+
+The generated shim embeds absolute paths for both the conductor CLI and the
+real cargo (resolved at install time, never through PATH again), tags its
+submissions with `--host shim`, and passes daemon-spawned cargo straight
+through to the real binary so the broker never re-enters itself.
 
 See [docs/install.md](docs/install.md) for per-host hook details and Codex
-timeout fallbacks.
+specifics.
+
+## kache is optional
+
+The broker never requires kache. Without it, scheduling estimates come from
+the daemon's own EWMA over ledger history (plus mined-p50 defaults for
+never-seen intents) and the dashboard
+simply omits the machine-wide cache panel. With kache installed, its
+`index.db` seeds per-crate compile-time priors, so the very first run of an
+intent gets a real estimate instead of a default. A missing index is reported
+as "kache unavailable", never an error.
 
 ## Surfaces
 
@@ -207,7 +242,7 @@ All settings are environment variables read by the daemon (and hooks):
 | `CARGO_CONDUCTOR_CARGO_BIN` | `$CARGO_HOME/bin/cargo` | Real cargo binary for daemon-spawned work (bare `cargo` as last resort); the daemon never resolves `cargo` through PATH, where the shim may sit |
 | `CARGO_CONDUCTOR_MAX_CONCURRENT` | `5` | Machine-wide cap on concurrently running cargo processes (admission permits) |
 | `CARGO_CONDUCTOR_REPLAY_BUFFER_BYTES` | `4194304` | Leader output retained in memory for late-attacher replay |
-| `CARGO_CONDUCTOR_KACHE_INDEX` | `<user cache>/kache/index.db` | kache index for per-crate compile-time priors (empty string disables; a missing file just reports kache as unavailable) |
+| `CARGO_CONDUCTOR_KACHE_INDEX` | kache's own configured store (see below) | kache index for per-crate compile-time priors (empty string disables; a missing file just reports kache as unavailable) |
 | `CARGO_CONDUCTOR_JOBS_GRANT` | `max(4, cores / max concurrent)` | `CARGO_BUILD_JOBS` injected into each spawned cargo (`0` disables; caller-set `-j`/env wins) |
 | `CARGO_CONDUCTOR_BATCH` | enabled | Set to `0` to disable the batch composer |
 | `CARGO_CONDUCTOR_STOP_WAIT_MS` | `30000` | Bounded wait per stop-hold hook invocation |
@@ -217,6 +252,13 @@ when `XDG_CACHE_HOME` is set, otherwise `~/.cache/cargo-conductor` on Linux,
 `~/Library/Caches/cargo-conductor` on macOS, and `%LOCALAPPDATA%\cargo-conductor`
 on Windows. Set `CARGO_CONDUCTOR_STATE_DIR` to move it (e.g. onto a RAM disk);
 no machine-specific mount is ever required.
+
+When `CARGO_CONDUCTOR_KACHE_INDEX` is unset, the kache index resolves to
+`<local_store>/index.db` where `local_store` is read from kache's own config
+(`$XDG_CONFIG_HOME/kache/config.toml`, else `~/.config/kache/config.toml`,
+`[cache]` section); if no config exists, it falls back to
+`<user cache>/kache/index.db` under the same cache base as above. kache is
+optional either way — see [kache is optional](#kache-is-optional).
 
 ## Guarantees and caveats
 
@@ -241,12 +283,16 @@ no machine-specific mount is ever required.
 - **Denied and attempted runs are recorded.** Hook rewrites and policy denials
   (`cargo clean` while builds are in flight) append to `hook-events.jsonl`
   under the state dir; malformed cargo commands get a failed ledger row.
-- **Codex stop-hook timeout honoring is unverified** on Codex 0.147. The
-  bounded-wait design tolerates being cut off; see
-  [docs/install.md](docs/install.md) and [docs/codex-hooks.md](docs/codex-hooks.md).
-- Requires Node >= 22.19 (`node:sqlite` without native deps). Daemon state
-  lives under the per-user cache dir by default (`CARGO_CONDUCTOR_STATE_DIR`
-  overrides; see [Configuration](#configuration)).
+- **Codex stop-hook behavior is verified on Codex 0.147.0** (live probe:
+  holds of ~29s and ~72s ran to their own wait bound and denied intact; hook
+  trust must be granted or bypassed for hooks to run at all). Budgets above
+  ~72s are plausible but unmeasured; the bounded-wait design tolerates being
+  cut off either way. See [docs/codex-hooks.md](docs/codex-hooks.md).
+- Requires Node >= 22.19 (`node:sqlite` without native deps). Linux and macOS
+  only for now — Windows lacks the unix socket, shell shim, and POSIX fifo
+  the daemon relies on. Daemon state lives under the per-user cache dir by
+  default (`CARGO_CONDUCTOR_STATE_DIR` overrides; see
+  [Configuration](#configuration)).
 
 ## Development
 

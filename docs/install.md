@@ -4,6 +4,10 @@ cargo-conductor is an [agent-bundle](https://github.com/ScriptedAlchemy/agent-bu
 plugin. The compile target is `plugin`, which emits Claude, Codex, and Cursor
 into one artifact.
 
+Supported platforms: Linux and macOS. Windows is experimental and untested
+(the daemon endpoint resolves to a named pipe, but the cargo PATH shim is
+POSIX-only and refuses to install). Node >= 22.19 is required (`node:sqlite`).
+
 ## Build
 
 ```sh
@@ -34,11 +38,19 @@ open the portable target in the workbench playground).
 
 ### Cursor
 
-- Install by symlinking the bundle into the local plugins directory:
+- Install with the script (a bare symlink of the artifact does not work:
+  Cursor's local-plugin loader reads a root `plugin.json`/`mcp.json` and a
+  Cursor-format `hooks/hooks.json`, not the artifact's `.cursor-plugin/`
+  manifest — the script generates those and pins the plugin root):
 
   ```sh
-  ln -s "$(pwd)/artifact/plugin" ~/.cursor/plugins/local/cargo-conductor
+  ./scripts/install-cursor.sh
   ```
+
+  It installs into `~/.cursor/plugins/local/cargo-conductor`
+  (`CURSOR_PLUGINS_DIR` overrides the base). Restart or reload Cursor so new
+  agent sessions pick up the hooks. Re-run the script after every
+  `npm run build` — hook wrapper filenames are content-hashed.
 
 - Hook events: `preToolUse`, `postToolUse`. Cursor drops `beforeTool`
   additionalContext but honors `afterTool` context injection.
@@ -55,15 +67,20 @@ open the portable target in the workbench playground).
   ```
 
 - Hook schema mirrors Claude (`PreToolUse` / `PostToolUse` / `Stop`).
-- Whether Codex 0.147 honors per-hook `timeout` is **unverified** in this
-  repo. If a Stop hook is cut off mid-hold:
+- Stop-hook behavior is **verified on Codex 0.147.0** by a live probe: holds
+  of ~29s and ~72s ran to their own wait bound and delivered their deny
+  intact, and the re-deny loop (`stopHookActive` re-entry) works. Budgets
+  above ~72s are plausible but unmeasured. Details and quirks in
+  [codex-hooks.md](codex-hooks.md).
+- **Hook trust gates everything**: without persisted trust in
+  `~/.codex/config.toml` (`[hooks.state]`) or
+  `--dangerously-bypass-hook-trust`, Codex does not run the hooks at all.
+- If a Stop hook is ever cut off mid-hold anyway:
   1. Shorten the in-hook wait (`CARGO_CONDUCTOR_STOP_WAIT_MS`, default 30000).
   2. Rely on the re-deny loop: the next Stop re-enters with `stopHookActive`.
-  3. If needed, raise the Codex hook budget in `~/.codex/config.toml`
-     (host-specific; not generated here).
 - Integration: `npm run test` covers native Codex PreToolUse envelopes on
-  the generated wrapper. A live Codex Stop timeout probe is documented as
-  a manual check, not a CI gate.
+  the generated wrapper. The live Codex Stop timeout probe is documented in
+  [codex-hooks.md](codex-hooks.md), not a CI gate.
 
 ## Optional PATH shim
 
@@ -116,6 +133,12 @@ Daemon socket and ledger live under a per-user cache directory:
 `~/.cache/cargo-conductor` on Linux, `~/Library/Caches/cargo-conductor` on
 macOS, and `%LOCALAPPDATA%\cargo-conductor` on Windows. Set
 `CARGO_CONDUCTOR_STATE_DIR` to relocate it (a RAM disk or other fast mount is
-optional, never required). `CARGO_CONDUCTOR_KACHE_INDEX` likewise overrides
-the kache index location, which defaults to `kache/index.db` under the same
-cache base and is simply reported unavailable when absent.
+optional, never required).
+
+kache is optional. When `CARGO_CONDUCTOR_KACHE_INDEX` is unset, the daemon
+reads kache's own config (`$XDG_CONFIG_HOME/kache/config.toml`, else
+`~/.config/kache/config.toml`) for the `local_store` path under `[cache]` and
+uses `<local_store>/index.db`; without that config it falls back to
+`kache/index.db` under the same per-user cache base. An empty string disables
+the lookup entirely; a missing file just reports kache as unavailable and the
+scheduler uses its own EWMA/ledger priors.

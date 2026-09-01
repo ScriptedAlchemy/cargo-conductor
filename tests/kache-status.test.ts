@@ -4,8 +4,9 @@ import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 
 import { describe, expect, it } from '@rstest/core';
+import * as Effect from 'effect/Effect';
 
-import { readKacheStatusSnapshot } from '../src/daemon/kache-status.js';
+import { createKacheStatus, readKacheStatusSnapshot } from '../src/daemon/kache-status.js';
 
 describe('readKacheStatusSnapshot', () => {
   it('aggregates one index scan and a bounded event tail into status and priors', () => {
@@ -112,6 +113,98 @@ describe('readKacheStatusSnapshot', () => {
       expect(snapshot.status.available).toBe(false);
       expect(snapshot.status.entryCount).toBe(0);
       expect(snapshot.status.topCrates).toEqual([]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('reports unavailable when the index file is not a SQLite database', () => {
+    const root = mkdtempSync(join(tmpdir(), 'cc-kache-status-corrupt-'));
+    const indexPath = join(root, 'index.db');
+    try {
+      writeFileSync(indexPath, 'not a sqlite database at all');
+      const snapshot = readKacheStatusSnapshot(indexPath, { nowMs: 1_000 });
+      expect(snapshot.status.available).toBe(false);
+      expect(snapshot.indexPriors.compileTimeMs('alpha', ['dev'])).toBeNull();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('reports unavailable on schema drift without losing event priors', () => {
+    const root = mkdtempSync(join(tmpdir(), 'cc-kache-status-schema-'));
+    const indexPath = join(root, 'index.db');
+    const nowMs = Date.parse('2026-09-01T12:00:00.000Z');
+    try {
+      const database = new DatabaseSync(indexPath);
+      database.exec('CREATE TABLE entries (crate_name TEXT)');
+      database.close();
+      writeFileSync(
+        join(root, 'events.jsonl'),
+        `${JSON.stringify({
+          ts: new Date(nowMs - 1_000).toISOString(),
+          crate_name: 'alpha',
+          profile: 'dev',
+          compile_time_ms: 3_000,
+        })}\n`,
+      );
+      const snapshot = readKacheStatusSnapshot(indexPath, { nowMs });
+      expect(snapshot.status.available).toBe(false);
+      expect(snapshot.indexPriors.compileTimeMs('alpha', ['dev'])).toBeNull();
+      // The events sidecar is independent of index health.
+      expect(snapshot.eventPriors.compileTimeMs('alpha', ['dev'])).toBe(3_000);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('createKacheStatus', () => {
+  it('serves null status and empty priors when disabled via an empty path', async () => {
+    const service = createKacheStatus({ indexPath: '' });
+    await Effect.runPromise(service.prewarm);
+    const status = await Effect.runPromise(service.current);
+    const priors = await Effect.runPromise(service.priors);
+    expect(status).toBeNull();
+    expect(priors.indexPriors.compileTimeMs('alpha', ['dev'])).toBeNull();
+    expect(priors.eventPriors.sampleCount).toBe(0);
+  });
+
+  it('degrades to unavailable when the index disappears after daemon start', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'cc-kache-status-midrun-'));
+    const indexPath = join(root, 'index.db');
+    try {
+      const database = new DatabaseSync(indexPath);
+      database.exec(
+        'CREATE TABLE entries (crate_name TEXT, profile TEXT, compile_time_ms INTEGER)',
+      );
+      database
+        .prepare('INSERT INTO entries (crate_name, profile, compile_time_ms) VALUES (?, ?, ?)')
+        .run('alpha', 'dev', 1_000);
+      database.close();
+
+      let nowMs = 0;
+      const service = createKacheStatus({
+        indexPath,
+        now: () => nowMs,
+        ttlMs: 100,
+      });
+      await Effect.runPromise(service.prewarm);
+      const healthy = await Effect.runPromise(service.current);
+      expect(healthy?.available).toBe(true);
+
+      rmSync(root, { recursive: true, force: true });
+      nowMs = 200;
+      // The first stale read serves the cached snapshot and forks a refresh.
+      await Effect.runPromise(service.current);
+      await new Promise<void>((resolve) => {
+        setImmediate(resolve);
+      });
+
+      const degraded = await Effect.runPromise(service.current);
+      expect(degraded?.available).toBe(false);
+      const priors = await Effect.runPromise(service.priors);
+      expect(priors.indexPriors.compileTimeMs('alpha', ['dev'])).toBeNull();
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

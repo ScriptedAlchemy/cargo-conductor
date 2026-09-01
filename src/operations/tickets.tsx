@@ -12,7 +12,7 @@ import {
   type TicketSocketError,
 } from '../client/tickets.js';
 import type { RequestRecord } from '../daemon/protocol.js';
-import { consumerRendersColor, describeRequestRecord, displayRequestRecord } from '../query.js';
+import { describeRequestRecord, displayRequestRecord } from '../query.js';
 import { ConductorResult } from '../result.js';
 
 import {
@@ -116,13 +116,14 @@ const runTicketEffect = async <A,>(
 };
 
 /**
- * Records cross from storage (ANSI kept) to a consumer here, in the process
- * that owns the consumer: the CLI's terminal or pipe, or an MCP server's
- * stdio transport (never a TTY, so MCP structured content is always
- * stripped).
+ * Records cross from storage (ANSI kept) to a structured result here. Both
+ * transports serialize the result to JSON — the CLI prints it, the MCP
+ * server ships it as structured content — so the projection always strips:
+ * an inherited FORCE_COLOR/CLICOLOR_FORCE must not leave ESC bytes to become
+ * literal `\u001b[…` in the JSON.
  */
 const requestForConsumer = (request: RequestRecord | null): RequestRecord | null =>
-  request === null ? null : displayRequestRecord(request, consumerRendersColor());
+  request === null ? null : displayRequestRecord(request);
 
 export const defaultTicketOperations: TicketOperations = {
   await: async (input, context) => {

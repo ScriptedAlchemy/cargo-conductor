@@ -10,6 +10,8 @@ export interface RenderShimOptions {
 export interface InstallShimOptions extends RenderShimOptions {
   readonly destDir?: string;
   readonly force?: boolean;
+  /** Overridable in tests; defaults to `process.platform`. */
+  readonly platform?: NodeJS.Platform;
 }
 
 export interface InstallShimResult {
@@ -124,6 +126,13 @@ export const shimPathStatus = (
 };
 
 export const installCargoShim = (options: InstallShimOptions): InstallShimResult => {
+  // The shim is a POSIX shell script; installing it as `cargo` on Windows
+  // would produce a file cmd.exe cannot execute. Refuse clearly instead.
+  if ((options.platform ?? process.platform) === 'win32') {
+    throw new Error(
+      'conductor install-shim is not supported on Windows: the shim is a POSIX shell script. Windows is not yet supported.',
+    );
+  }
   const destDir = options.destDir ?? defaultShimDir();
   mkdirSync(destDir, { recursive: true });
   const path = join(destDir, 'cargo');
