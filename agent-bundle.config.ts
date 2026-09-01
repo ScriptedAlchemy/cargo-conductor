@@ -13,8 +13,8 @@ import { defineConfig } from 'agent-bundle/config';
  */
 export default defineConfig({
   hooks: {
-    afterTool: { handler: './src/hooks/after-shell.ts', tools: ['shell'] },
-    beforeTool: { handler: './src/hooks/before-shell.ts', tools: ['shell'] },
+    afterTool: { handler: './src/hooks/after-shell.ts', timeout: 10, tools: ['shell'] },
+    beforeTool: { handler: './src/hooks/before-shell.ts', timeout: 10, tools: ['shell'] },
   },
   mcp: {
     servers: {

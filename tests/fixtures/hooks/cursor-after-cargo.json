@@ -1,0 +1,11 @@
+{
+  "conversation_id": "sess-cursor",
+  "cwd": "/tmp/ws",
+  "hook_event_name": "postToolUse",
+  "session_id": "sess-cursor",
+  "tool_input": { "command": "cargo test -p foo" },
+  "tool_name": "Shell",
+  "tool_output": "{\"exitCode\":0}",
+  "tool_use_id": "call_cursor",
+  "transcript_path": "/tmp/transcript.json"
+}

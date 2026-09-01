@@ -240,9 +240,14 @@ describe('conductor daemon', () => {
         expect(holder).toBeDefined();
         const holderTicket = holder?.ticket ?? '';
 
+        // A distinct package scope so the same-lane request queues behind the
+        // holder instead of coalescing onto it (identical requests attach now).
         const [sameLane, otherLane] = yield* Effect.all(
           [
-            execRequest(fixture, { cwd: fixture.ws1 }),
+            execRequest(fixture, {
+              cwd: fixture.ws1,
+              argv: ['cargo', 'check', '-p', 'serial-probe'],
+            }),
             execRequest(fixture, { cwd: fixture.ws2 }),
           ],
           { concurrency: 'unbounded' },
@@ -355,8 +360,11 @@ describe('conductor daemon', () => {
             (message): message is StartedMessage => message.type === 'started',
           )?.ticket ?? '';
 
+        // Scoped to a different package so it queues (identical requests
+        // would attach to the holder and survive the disconnect by design).
         const queuedMessages = yield* execRequest(fixture, {
           cwd: fixture.ws1,
+          argv: ['cargo', 'check', '-p', 'abandon-probe'],
           isTerminal: (message) => message.type === 'ack',
         });
         const queuedTicket =

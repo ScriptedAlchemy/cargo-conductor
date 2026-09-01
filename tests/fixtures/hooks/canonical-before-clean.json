@@ -1,0 +1,8 @@
+{
+  "cwd": "/tmp/ws",
+  "sessionId": "sess-clean",
+  "toolInput": { "command": "cargo clean" },
+  "toolName": "Bash",
+  "toolUseId": "toolu_clean",
+  "transcriptPath": "/tmp/transcript.json"
+}

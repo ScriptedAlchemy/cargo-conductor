@@ -100,6 +100,13 @@ export const makeConnectionHandler =
                         error: info.error,
                       });
                     }),
+                  onRequeued: (info) =>
+                    send({
+                      type: 'requeued',
+                      id: message.id,
+                      ticket: info.ticket,
+                      reason: info.reason,
+                    }),
                 },
               ),
             );
@@ -119,6 +126,12 @@ export const makeConnectionHandler =
               ticket: submitted.right.ticket,
               laneKey: submitted.right.laneKey,
               position: submitted.right.position,
+              ...(submitted.right.attachedTo === undefined
+                ? {}
+                : { attachedTo: submitted.right.attachedTo }),
+              ...(submitted.right.attachMode === undefined
+                ? {}
+                : { attachMode: submitted.right.attachMode }),
             });
           });
 

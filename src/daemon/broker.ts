@@ -9,11 +9,16 @@ import * as Queue from 'effect/Queue';
 import * as Ref from 'effect/Ref';
 
 import { DaemonConfig } from './config.js';
+import { attachModeFor } from './coverage.js';
 import { executeCargo } from './executor.js';
+import type { ExecutionResult } from './executor.js';
 import { normalizeCargoIntent } from './intent-normalizer.js';
+import type { NormalizedCargoIntent } from './intent-normalizer.js';
 import { Ledger } from './ledger.js';
 import type { LedgerApi } from './ledger.js';
-import type { FinishedStatus, LaneStatus, StatusReport } from './protocol.js';
+import type { AttachMode, FinishedStatus, LaneStatus, StatusReport } from './protocol.js';
+import { ReplayBuffer } from './replay.js';
+import type { ReplayChunk } from './replay.js';
 import { findConfiguredTargetDir, locateWorkspaceRoot } from './workspace.js';
 
 export interface SubmitInput {
@@ -46,6 +51,11 @@ export interface ExitInfo {
   readonly error: string | null;
 }
 
+export interface RequeuedInfo {
+  readonly ticket: string;
+  readonly reason: string;
+}
+
 /**
  * Callbacks are invoked from lane worker fibers, potentially after the
  * originating connection is gone; the broker guards every invocation so a
@@ -55,12 +65,15 @@ export interface SubmitCallbacks {
   readonly onStarted: (info: StartedInfo) => Effect.Effect<void>;
   readonly onOutput: (info: OutputInfo) => Effect.Effect<void>;
   readonly onExit: (info: ExitInfo) => Effect.Effect<void>;
+  readonly onRequeued?: (info: RequeuedInfo) => Effect.Effect<void>;
 }
 
 export interface SubmitResult {
   readonly ticket: string;
   readonly laneKey: string;
   readonly position: number;
+  readonly attachedTo?: string;
+  readonly attachMode?: AttachMode;
 }
 
 export interface KillOptions {
@@ -84,16 +97,41 @@ export class Broker extends Context.Tag('cargo-conductor/Broker')<Broker, Broker
 
 type JobState = 'queued' | 'running' | 'finished';
 
+interface Attachment {
+  readonly id: number;
+  readonly ticket: string;
+  /** Assigned by tryRegisterAttachment in the same frame that registers it. */
+  mode: AttachMode;
+  readonly input: SubmitInput;
+  readonly intent: NormalizedCargoIntent;
+  readonly callbacks: SubmitCallbacks;
+  readonly createdAtMs: number;
+  attachedAtMs: number;
+  /** True once the replay backlog is flushed; live output then flows directly. */
+  live: boolean;
+  startNotified: boolean;
+  readonly pendingLive: ReplayChunk[];
+}
+
 interface Job {
   readonly id: number;
   readonly ticket: string;
   readonly laneKey: string;
   readonly input: SubmitInput;
+  readonly intent: NormalizedCargoIntent;
   readonly callbacks: SubmitCallbacks;
   readonly killSignal: Deferred.Deferred<void>;
   readonly state: Ref.Ref<JobState>;
   readonly queuedAtMs: number;
+  readonly replay: ReplayBuffer;
+  readonly attachments: Map<string, Attachment>;
+  /** Closed (in the same sync frame as settlement) before exit fan-out begins. */
+  readonly attachGate: { open: boolean };
 }
+
+type InFlightEntry =
+  | { readonly kind: 'leader'; readonly job: Job }
+  | { readonly kind: 'attachment'; readonly leader: Job; readonly attachment: Attachment };
 
 interface Lane {
   readonly key: string;
@@ -112,19 +150,10 @@ const invalidLaneKey = 'invalid';
 const guarded = (effect: Effect.Effect<void>): Effect.Effect<void> =>
   Effect.catchAllCause(effect, () => Effect.void);
 
-const finishExit = (
-  ledger: LedgerApi,
-  lane: Lane | null,
-  inFlight: Map<string, Job>,
-  job: Job,
-): Effect.Effect<void> =>
-  Effect.gen(function* () {
-    yield* Ref.set(job.state, 'finished');
-    if (lane !== null) {
-      yield* Ref.update(lane.running, (current) => (current === job.ticket ? null : current));
-    }
-    yield* Effect.sync(() => inFlight.delete(job.ticket));
-  });
+const requeueReasonFor = (mode: AttachMode, status: FinishedStatus): string =>
+  mode === 'coverage'
+    ? `covering ${status === 'killed' ? 'run was killed' : 'run failed'}; running your request directly`
+    : 'coalesced run was killed; running your request directly';
 
 export const BrokerLive: Layer.Layer<
   Broker,
@@ -142,7 +171,341 @@ export const BrokerLive: Layer.Layer<
     const admission = yield* Effect.makeSemaphore(config.maxConcurrent);
     const laneCreation = yield* Effect.makeSemaphore(1);
     const lanes = new Map<string, Lane>();
-    const inFlight = new Map<string, Job>();
+    const inFlight = new Map<string, InFlightEntry>();
+
+    /** Fan one output chunk to the leader, the replay buffer, and every live attachment. */
+    const emitOutput = (
+      job: Job,
+      channel: 'stdout' | 'stderr',
+      data: Uint8Array,
+    ): Effect.Effect<void> =>
+      Effect.gen(function* () {
+        const liveAttachments = yield* Effect.sync(() => {
+          job.replay.push(channel, data);
+          const live: Attachment[] = [];
+          for (const attachment of job.attachments.values()) {
+            if (attachment.live) {
+              live.push(attachment);
+            } else {
+              attachment.pendingLive.push({ channel, data: Buffer.from(data) });
+            }
+          }
+          return live;
+        });
+        yield* guarded(job.callbacks.onOutput({ ticket: job.ticket, channel, data }));
+        yield* Effect.forEach(
+          liveAttachments,
+          (attachment) =>
+            guarded(
+              attachment.callbacks.onOutput({ ticket: attachment.ticket, channel, data }),
+            ),
+          { discard: true },
+        );
+      });
+
+    const emitChunks = (
+      attachment: Attachment,
+      chunks: readonly ReplayChunk[],
+    ): Effect.Effect<void> =>
+      Effect.forEach(
+        chunks,
+        (chunk) =>
+          guarded(
+            attachment.callbacks.onOutput({
+              ticket: attachment.ticket,
+              channel: chunk.channel,
+              data: chunk.data,
+            }),
+          ),
+        { discard: true },
+      );
+
+    /**
+     * Replay the leader's buffered output, then drain anything that arrived
+     * during the replay; `live` flips true in the same sync frame that
+     * observes an empty pending queue, so no chunk is lost or reordered.
+     */
+    const replayThenGoLive = (job: Job, attachment: Attachment): Effect.Effect<void> =>
+      Effect.gen(function* () {
+        const snapshot = job.replay.snapshot();
+        if (snapshot.droppedBytes > 0) {
+          yield* guarded(
+            attachment.callbacks.onOutput({
+              ticket: attachment.ticket,
+              channel: 'stderr',
+              data: Buffer.from(
+                `[cargo-conductor] replay truncated: ${snapshot.droppedBytes} earlier output bytes dropped\n`,
+              ),
+            }),
+          );
+        }
+        yield* emitChunks(attachment, snapshot.chunks);
+        while (true) {
+          const drained = yield* Effect.sync(() => {
+            const batch = [...attachment.pendingLive];
+            attachment.pendingLive.length = 0;
+            if (batch.length === 0) {
+              attachment.live = true;
+            }
+            return batch;
+          });
+          if (drained.length === 0) {
+            return;
+          }
+          yield* emitChunks(attachment, drained);
+        }
+      });
+
+    /**
+     * At-most-once start notification per attachment; returns whether this
+     * caller won. The winner owns the follow-up (replay for running-leader
+     * attachments, direct live flag for queued-leader ones), so replayed and
+     * live chunks can never interleave.
+     */
+    const notifyAttachmentStarted = (
+      attachment: Attachment,
+      atMs: number,
+    ): Effect.Effect<boolean> =>
+      Effect.gen(function* () {
+        const won = yield* Effect.sync(() => {
+          if (attachment.startNotified) {
+            return false;
+          }
+          attachment.startNotified = true;
+          return true;
+        });
+        if (won) {
+          yield* guarded(
+            attachment.callbacks.onStarted({
+              ticket: attachment.ticket,
+              waitMs: Math.max(0, atMs - attachment.createdAtMs),
+            }),
+          );
+        }
+        return won;
+      });
+
+    const finishAttachment = (
+      attachment: Attachment,
+      atMs: number,
+      exit: Omit<ExitInfo, 'ticket' | 'waitMs' | 'runMs'>,
+      outputTail: string | null,
+    ): Effect.Effect<void> =>
+      Effect.gen(function* () {
+        yield* ledger.markFinished(attachment.id, {
+          status: exit.status,
+          atMs,
+          exitCode: exit.exitCode,
+          signal: exit.signal,
+          outputTail,
+          error: exit.error,
+        });
+        const pending = yield* Effect.sync(() => {
+          const batch = [...attachment.pendingLive];
+          attachment.pendingLive.length = 0;
+          return batch;
+        });
+        yield* emitChunks(attachment, pending);
+        yield* guarded(
+          attachment.callbacks.onExit({
+            ticket: attachment.ticket,
+            status: exit.status,
+            exitCode: exit.exitCode,
+            signal: exit.signal,
+            waitMs: Math.max(0, attachment.attachedAtMs - attachment.createdAtMs),
+            runMs: Math.max(0, atMs - attachment.attachedAtMs),
+            error: exit.error,
+          }),
+        );
+      });
+
+    /**
+     * Atomically registers `attachment` on a compatible in-flight leader in
+     * the lane. Runs in one sync frame: the gate check and the registration
+     * cannot interleave with settlement.
+     */
+    const tryRegisterAttachment = (
+      laneKey: string,
+      attachment: Attachment,
+    ): Effect.Effect<{ readonly leader: Job; readonly mode: AttachMode } | null> =>
+      Effect.sync(() => {
+        const register = (job: Job, mode: AttachMode): { leader: Job; mode: AttachMode } => {
+          attachment.mode = mode;
+          attachment.attachedAtMs = Date.now();
+          job.attachments.set(attachment.ticket, attachment);
+          inFlight.set(attachment.ticket, { kind: 'attachment', leader: job, attachment });
+          return { leader: job, mode };
+        };
+        let coverageCandidate: Job | null = null;
+        for (const entry of inFlight.values()) {
+          if (entry.kind !== 'leader') {
+            continue;
+          }
+          const job = entry.job;
+          if (job.laneKey !== laneKey || !job.attachGate.open) {
+            continue;
+          }
+          const mode = attachModeFor(job.intent, attachment.intent);
+          if (mode === 'identity') {
+            return register(job, 'identity');
+          }
+          if (mode === 'coverage' && coverageCandidate === null) {
+            coverageCandidate = job;
+          }
+        }
+        return coverageCandidate === null ? null : register(coverageCandidate, 'coverage');
+      });
+
+    const makeJob = (
+      id: number,
+      ticket: string,
+      laneKey: string,
+      input: SubmitInput,
+      intent: NormalizedCargoIntent,
+      callbacks: SubmitCallbacks,
+      queuedAtMs: number,
+    ): Effect.Effect<Job> =>
+      Effect.gen(function* () {
+        const killSignal = yield* Deferred.make<void>();
+        const state = yield* Ref.make<JobState>('queued');
+        return {
+          id,
+          ticket,
+          laneKey,
+          input,
+          intent,
+          callbacks,
+          killSignal,
+          state,
+          queuedAtMs,
+          replay: new ReplayBuffer(config.replayBufferBytes),
+          attachments: new Map<string, Attachment>(),
+          attachGate: { open: true },
+        };
+      });
+
+    /**
+     * Closes the attachment gate and detaches every attachment in one sync
+     * frame; nothing can attach to `job` afterwards.
+     */
+    const detachAll = (job: Job): Effect.Effect<readonly Attachment[]> =>
+      Effect.sync(() => {
+        job.attachGate.open = false;
+        const detached = [...job.attachments.values()];
+        job.attachments.clear();
+        for (const attachment of detached) {
+          inFlight.delete(attachment.ticket);
+        }
+        return detached;
+      });
+
+    /**
+     * Puts a detached attachment back on its lane as an independent job,
+     * first trying to re-attach to another in-flight leader so a killed
+     * leader with N identity followers becomes one rerun, not N.
+     */
+    const requeueAttachment = (
+      lane: Lane,
+      attachment: Attachment,
+      reason: string,
+    ): Effect.Effect<void> =>
+      Effect.gen(function* () {
+        const atMs = Date.now();
+        yield* ledger.markRequeued(attachment.id, atMs);
+        const onRequeued = attachment.callbacks.onRequeued;
+        if (onRequeued !== undefined) {
+          yield* guarded(onRequeued({ ticket: attachment.ticket, reason }));
+        }
+        const revived: Attachment = {
+          id: attachment.id,
+          ticket: attachment.ticket,
+          mode: attachment.mode,
+          input: attachment.input,
+          intent: attachment.intent,
+          callbacks: attachment.callbacks,
+          createdAtMs: attachment.createdAtMs,
+          attachedAtMs: atMs,
+          live: false,
+          startNotified: false,
+          pendingLive: [],
+        };
+        const reattached = yield* tryRegisterAttachment(lane.key, revived);
+        if (reattached !== null) {
+          yield* ledger.markAttached(attachment.id, {
+            atMs,
+            leaderTicket: reattached.leader.ticket,
+            mode: reattached.mode,
+          });
+          const leaderState = yield* Ref.get(reattached.leader.state);
+          if (leaderState === 'running') {
+            const won = yield* notifyAttachmentStarted(revived, atMs);
+            if (won) {
+              yield* replayThenGoLive(reattached.leader, revived);
+            }
+          }
+          return;
+        }
+        const job = yield* makeJob(
+          attachment.id,
+          attachment.ticket,
+          lane.key,
+          attachment.input,
+          attachment.intent,
+          attachment.callbacks,
+          atMs,
+        );
+        yield* Effect.sync(() => inFlight.set(job.ticket, { kind: 'leader', job }));
+        yield* Queue.offer(lane.queue, job);
+      });
+
+    /** Mirrors or requeues every attachment after the leader reached `status`. */
+    const settleAttachments = (
+      lane: Lane | null,
+      job: Job,
+      status: FinishedStatus,
+      exitCode: number | null,
+      signal: string | null,
+      error: string | null,
+      outputTail: string | null,
+    ): Effect.Effect<void> =>
+      Effect.gen(function* () {
+        const detached = yield* detachAll(job);
+        if (detached.length === 0) {
+          return;
+        }
+        const atMs = Date.now();
+        for (const attachment of detached) {
+          const mirrors =
+            status === 'done' || (status === 'failed' && attachment.mode === 'identity');
+          if (mirrors) {
+            yield* notifyAttachmentStarted(attachment, atMs);
+            yield* finishAttachment(
+              attachment,
+              atMs,
+              { status, exitCode, signal, error },
+              outputTail,
+            );
+          } else if (lane !== null) {
+            yield* requeueAttachment(lane, attachment, requeueReasonFor(attachment.mode, status));
+          } else {
+            yield* finishAttachment(
+              attachment,
+              atMs,
+              { status: 'killed', exitCode: null, signal: null, error: 'daemon shutdown' },
+              null,
+            );
+          }
+        }
+      });
+
+    const finishExit = (lane: Lane | null, job: Job): Effect.Effect<void> =>
+      Effect.gen(function* () {
+        yield* Ref.set(job.state, 'finished');
+        if (lane !== null) {
+          yield* Ref.update(lane.running, (current) => (current === job.ticket ? null : current));
+        }
+        yield* Effect.sync(() => inFlight.delete(job.ticket));
+      });
 
     const finishKilledBeforeRun = (lane: Lane, job: Job): Effect.Effect<void> =>
       Effect.gen(function* () {
@@ -152,7 +515,7 @@ export const BrokerLive: Layer.Layer<
           atMs,
           error: 'killed while queued',
         });
-        yield* finishExit(ledger, lane, inFlight, job);
+        yield* finishExit(lane, job);
         yield* guarded(
           job.callbacks.onExit({
             ticket: job.ticket,
@@ -164,6 +527,7 @@ export const BrokerLive: Layer.Layer<
             error: 'killed while queued',
           }),
         );
+        yield* settleAttachments(lane, job, 'killed', null, null, 'killed while queued', null);
       });
 
     // Runs with an admission permit held; interruption here means daemon
@@ -181,14 +545,29 @@ export const BrokerLive: Layer.Layer<
         yield* ledger.markRunning(job.id, runStartedAtMs);
         const waitMs = runStartedAtMs - job.queuedAtMs;
         yield* guarded(job.callbacks.onStarted({ ticket: job.ticket, waitMs }));
-        const result = yield* executeCargo({
+        const queuedAttachments = yield* Effect.sync(() => [...job.attachments.values()]);
+        yield* Effect.forEach(
+          queuedAttachments,
+          (attachment) =>
+            Effect.gen(function* () {
+              const won = yield* notifyAttachmentStarted(attachment, runStartedAtMs);
+              if (won) {
+                // The winner attached while the leader was queued: no output
+                // exists yet, so it goes live directly (no replay needed).
+                yield* Effect.sync(() => {
+                  attachment.live = true;
+                });
+              }
+            }),
+          { discard: true },
+        );
+        const result: ExecutionResult = yield* executeCargo({
           argv: job.input.argv,
           cwd: job.input.cwd,
           env: job.input.env,
           killSignal: job.killSignal,
           tailBytes: config.outputTailBytes,
-          onOutput: (channel, data) =>
-            guarded(job.callbacks.onOutput({ ticket: job.ticket, channel, data })),
+          onOutput: (channel, data) => emitOutput(job, channel, data),
         }).pipe(
           Effect.provideService(CommandExecutor.CommandExecutor, commandExecutor),
           Effect.onInterrupt(() =>
@@ -199,7 +578,13 @@ export const BrokerLive: Layer.Layer<
                 signal: 'SIGTERM',
                 error: 'daemon shutdown',
               })
-              .pipe(Effect.zipRight(finishExit(ledger, lane, inFlight, job)), Effect.ignore),
+              .pipe(
+                Effect.zipRight(finishExit(lane, job)),
+                Effect.zipRight(
+                  settleAttachments(null, job, 'killed', null, 'SIGTERM', 'daemon shutdown', null),
+                ),
+                Effect.ignore,
+              ),
           ),
         );
         const finishedAtMs = Date.now();
@@ -211,7 +596,7 @@ export const BrokerLive: Layer.Layer<
           outputTail: result.outputTail,
           error: result.error,
         });
-        yield* finishExit(ledger, lane, inFlight, job);
+        yield* finishExit(lane, job);
         yield* guarded(
           job.callbacks.onExit({
             ticket: job.ticket,
@@ -222,6 +607,15 @@ export const BrokerLive: Layer.Layer<
             runMs: finishedAtMs - runStartedAtMs,
             error: result.error,
           }),
+        );
+        yield* settleAttachments(
+          lane,
+          job,
+          result.outcome,
+          result.exitCode,
+          result.signal,
+          result.error,
+          result.outputTail,
         );
       });
 
@@ -242,17 +636,19 @@ export const BrokerLive: Layer.Layer<
           yield* processJob(lane, job).pipe(
             Effect.catchAllCause((cause) =>
               Effect.gen(function* () {
-                yield* Effect.logError(
-                  `lane ${lane.key} job ${job.ticket} crashed: ${Cause.pretty(cause)}`,
-                );
+                const message = Cause.pretty(cause);
+                yield* Effect.logError(`lane ${lane.key} job ${job.ticket} crashed: ${message}`);
                 yield* ledger
                   .markFinished(job.id, {
                     status: 'failed',
                     atMs: Date.now(),
-                    error: Cause.pretty(cause),
+                    error: message,
                   })
                   .pipe(Effect.ignore);
-                yield* finishExit(ledger, lane, inFlight, job);
+                yield* finishExit(lane, job);
+                yield* settleAttachments(lane, job, 'failed', null, null, message, null).pipe(
+                  Effect.ignore,
+                );
               }),
             ),
           );
@@ -309,8 +705,9 @@ export const BrokerLive: Layer.Layer<
     // worker inside an uninterruptible region would make the worker fiber
     // inherit uninterruptibility, which hangs the executor's internal race
     // (the winner can never interrupt the loser) and blocks daemon teardown.
-    // Only the ledger-insert + enqueue section is atomic, so a connection
-    // dying mid-submit can never leave a ledger row without a queued job.
+    // Only the ledger-insert + attach/enqueue section is atomic, so a
+    // connection dying mid-submit can never leave a ledger row without a
+    // queued job or a registered attachment.
     const submit = (
       input: SubmitInput,
       callbacks: SubmitCallbacks,
@@ -360,19 +757,52 @@ export const BrokerLive: Layer.Layer<
               intentKey: normalized.key,
               intentJson: JSON.stringify(normalized),
             });
-            const killSignal = yield* Deferred.make<void>();
-            const state = yield* Ref.make<JobState>('queued');
-            const job: Job = {
+            const attachment: Attachment = {
               id: created.id,
               ticket: created.ticket,
+              mode: 'identity',
+              input,
+              intent: normalized,
+              callbacks,
+              createdAtMs,
+              attachedAtMs: createdAtMs,
+              live: false,
+              startNotified: false,
+              pendingLive: [],
+            };
+            const registered = yield* tryRegisterAttachment(laneKey, attachment);
+            if (registered !== null) {
+              const mode = registered.mode;
+              yield* ledger.markAttached(created.id, {
+                atMs: Date.now(),
+                leaderTicket: registered.leader.ticket,
+                mode,
+              });
+              const leaderState = yield* Ref.get(registered.leader.state);
+              if (leaderState === 'running') {
+                const won = yield* notifyAttachmentStarted(attachment, Date.now());
+                if (won) {
+                  yield* replayThenGoLive(registered.leader, attachment);
+                }
+              }
+              return {
+                ticket: created.ticket,
+                laneKey,
+                position: 0,
+                attachedTo: registered.leader.ticket,
+                attachMode: mode,
+              };
+            }
+            const job = yield* makeJob(
+              created.id,
+              created.ticket,
               laneKey,
               input,
+              normalized,
               callbacks,
-              killSignal,
-              state,
-              queuedAtMs: createdAtMs,
-            };
-            yield* Effect.sync(() => inFlight.set(job.ticket, job));
+              createdAtMs,
+            );
+            yield* Effect.sync(() => inFlight.set(job.ticket, { kind: 'leader', job }));
             yield* ledger.markQueued(created.id, createdAtMs);
             const position = yield* Queue.size(lane.queue);
             yield* Queue.offer(lane.queue, job);
@@ -381,12 +811,43 @@ export const BrokerLive: Layer.Layer<
         );
       });
 
-    const kill = (ticket: string, options?: KillOptions): Effect.Effect<boolean> =>
+    const killAttachment = (entry: {
+      readonly leader: Job;
+      readonly attachment: Attachment;
+    }): Effect.Effect<boolean> =>
       Effect.gen(function* () {
-        const job = inFlight.get(ticket);
-        if (job === undefined) {
+        const removed = yield* Effect.sync(() => {
+          const present = entry.leader.attachments.delete(entry.attachment.ticket);
+          inFlight.delete(entry.attachment.ticket);
+          return present;
+        });
+        if (!removed) {
           return false;
         }
+        yield* finishAttachment(
+          entry.attachment,
+          Date.now(),
+          { status: 'killed', exitCode: null, signal: null, error: 'detached by kill' },
+          null,
+        );
+        return true;
+      });
+
+    const kill = (ticket: string, options?: KillOptions): Effect.Effect<boolean> =>
+      Effect.gen(function* () {
+        const entry = inFlight.get(ticket);
+        if (entry === undefined) {
+          return false;
+        }
+        if (entry.kind === 'attachment') {
+          // Attachments hold no compute; disconnect cleanup (onlyIfQueued)
+          // leaves them alive so their result still lands in the ledger.
+          if (options?.onlyIfQueued === true) {
+            return false;
+          }
+          return yield* killAttachment(entry);
+        }
+        const job = entry.job;
         const state = yield* Ref.get(job.state);
         if (state === 'finished') {
           return false;

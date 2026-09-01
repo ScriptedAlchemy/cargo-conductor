@@ -12,6 +12,9 @@ export type RequestStatus = 'requested' | 'queued' | 'running' | 'done' | 'faile
 /** Terminal statuses a request can end in. */
 export type FinishedStatus = 'done' | 'failed' | 'killed';
 
+/** How an attached request rides its leader (see daemon/coverage.ts). */
+export type AttachMode = 'identity' | 'coverage';
+
 /** One ledgered cargo request, as stored in SQLite and reported over the socket. */
 export interface RequestRecord {
   readonly id: number;
@@ -36,6 +39,9 @@ export interface RequestRecord {
   readonly signal: string | null;
   readonly outputTail: string | null;
   readonly error: string | null;
+  /** Leader ticket when this request was served by attaching to another run. */
+  readonly attachedTo: string | null;
+  readonly attachMode: AttachMode | null;
 }
 
 export interface TransitionRecord {
@@ -123,6 +129,20 @@ export interface AckMessage {
   readonly laneKey: string;
   /** Jobs ahead of this one in its lane queue at submission time. */
   readonly position: number;
+  /** Present when the request attached to an in-flight leader instead of queueing. */
+  readonly attachedTo?: string;
+  readonly attachMode?: AttachMode;
+}
+
+/**
+ * Sent when an attached request loses its leader (failed or killed stronger
+ * run) and goes back to the lane queue to execute on its own.
+ */
+export interface RequeuedMessage {
+  readonly type: 'requeued';
+  readonly id: string;
+  readonly ticket: string;
+  readonly reason: string;
 }
 
 export interface StartedMessage {
@@ -188,6 +208,7 @@ export interface ErrorMessage {
 
 export type ServerMessage =
   | AckMessage
+  | RequeuedMessage
   | StartedMessage
   | OutputMessage
   | ExitMessage

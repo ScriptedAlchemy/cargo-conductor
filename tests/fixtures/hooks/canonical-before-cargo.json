@@ -1,0 +1,9 @@
+{
+  "cwd": "/tmp/ws",
+  "sessionId": "sess-canonical",
+  "toolInput": { "command": "cargo test -p foo" },
+  "toolName": "Bash",
+  "toolResponse": { "exitCode": 0 },
+  "toolUseId": "toolu_canonical",
+  "transcriptPath": "/tmp/transcript.json"
+}

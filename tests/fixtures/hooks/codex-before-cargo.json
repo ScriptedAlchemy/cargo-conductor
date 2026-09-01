@@ -1,0 +1,9 @@
+{
+  "cwd": "/tmp/ws",
+  "hook_event_name": "PreToolUse",
+  "session_id": "sess-codex",
+  "tool_input": { "command": "cargo check -p foo" },
+  "tool_name": "Bash",
+  "tool_use_id": "call_codex",
+  "transcript_path": "/tmp/transcript.json"
+}

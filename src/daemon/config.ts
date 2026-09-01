@@ -18,6 +18,8 @@ export interface DaemonConfigShape {
   readonly maxConcurrent: number;
   /** Bytes of combined stdout+stderr retained per request in the ledger. */
   readonly outputTailBytes: number;
+  /** Bytes of leader output retained in memory for late-attacher replay. */
+  readonly replayBufferBytes: number;
 }
 
 export class DaemonConfig extends Context.Tag('cargo-conductor/DaemonConfig')<
@@ -32,6 +34,7 @@ export const resolveDaemonConfig = (
 ): DaemonConfigShape => {
   const stateDir = env.CARGO_CONDUCTOR_STATE_DIR ?? conductorStateRoot;
   const parsedMax = Number.parseInt(env.CARGO_CONDUCTOR_MAX_CONCURRENT ?? '', 10);
+  const parsedReplay = Number.parseInt(env.CARGO_CONDUCTOR_REPLAY_BUFFER_BYTES ?? '', 10);
   return {
     stateDir,
     socketPath: join(stateDir, 'daemon.sock'),
@@ -40,6 +43,8 @@ export const resolveDaemonConfig = (
     logPath: join(stateDir, 'daemon.log'),
     maxConcurrent: Number.isInteger(parsedMax) && parsedMax > 0 ? parsedMax : defaultMaxConcurrent,
     outputTailBytes: 16 * 1024,
+    replayBufferBytes:
+      Number.isInteger(parsedReplay) && parsedReplay >= 0 ? parsedReplay : 4 * 1024 * 1024,
   };
 };
 

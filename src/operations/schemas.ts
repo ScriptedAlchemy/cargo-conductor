@@ -11,9 +11,13 @@ export const requestStatusSchema = z.enum([
   'killed',
 ]);
 
+export const attachModeSchema = z.enum(['identity', 'coverage']);
+
 export const requestRecordSchema = z
   .object({
     argv: z.array(z.string()),
+    attachMode: attachModeSchema.nullable(),
+    attachedTo: z.string().nullable(),
     createdAtMs: z.number(),
     cwd: z.string(),
     error: z.string().nullable(),

@@ -122,12 +122,26 @@ const handleServerMessage = (
         yield* Ref.set(ticket, message.ticket);
         writeProgress(
           options.io,
-          formatProgressLine({
-            kind: 'queued',
-            laneKey: message.laneKey,
-            position: message.position,
-            ticket: message.ticket,
-          }),
+          message.attachedTo !== undefined
+            ? formatProgressLine({
+                kind: 'attached',
+                leaderTicket: message.attachedTo,
+                mode: message.attachMode ?? 'identity',
+                ticket: message.ticket,
+              })
+            : formatProgressLine({
+                kind: 'queued',
+                laneKey: message.laneKey,
+                position: message.position,
+                ticket: message.ticket,
+              }),
+        );
+        return;
+      case 'requeued':
+        yield* Ref.set(phase, 'queued');
+        writeProgress(
+          options.io,
+          formatProgressLine({ kind: 'requeued', reason: message.reason, ticket: message.ticket }),
         );
         return;
       case 'started':

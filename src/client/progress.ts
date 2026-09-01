@@ -6,6 +6,17 @@ export type ProgressEvent =
       readonly ticket: string;
     }
   | {
+      readonly kind: 'attached';
+      readonly leaderTicket: string;
+      readonly mode: 'identity' | 'coverage';
+      readonly ticket: string;
+    }
+  | {
+      readonly kind: 'requeued';
+      readonly reason: string;
+      readonly ticket: string;
+    }
+  | {
       readonly kind: 'started';
       readonly ticket: string;
       readonly waitMs: number;
@@ -29,6 +40,12 @@ export const formatProgressLine = (event: ProgressEvent): string => {
   switch (event.kind) {
     case 'queued':
       return `${prefix} ticket ${event.ticket} queued (${event.position} ahead)\n`;
+    case 'attached':
+      return event.mode === 'identity'
+        ? `${prefix} ticket ${event.ticket} attached to ${event.leaderTicket} (identical run in flight; replaying its output)\n`
+        : `${prefix} ticket ${event.ticket} attached to ${event.leaderTicket} (covered by a larger run in flight)\n`;
+    case 'requeued':
+      return `${prefix} ticket ${event.ticket} requeued: ${event.reason}\n`;
     case 'started':
       return `${prefix} ticket ${event.ticket} started (waited ${event.waitMs}ms)\n`;
     case 'heartbeat':

@@ -9,6 +9,7 @@ import * as Layer from 'effect/Layer';
 import { DaemonConfig } from './config.js';
 import { formatTicket } from './protocol.js';
 import type {
+  AttachMode,
   FinishedStatus,
   RequestRecord,
   RequestStatus,
@@ -37,12 +38,20 @@ export interface FinishRequestInput {
   readonly error?: string | null;
 }
 
+export interface AttachRequestInput {
+  readonly atMs: number;
+  readonly leaderTicket: string;
+  readonly mode: AttachMode;
+}
+
 export interface LedgerApi {
   readonly createRequest: (
     input: CreateRequestInput,
   ) => Effect.Effect<{ readonly id: number; readonly ticket: string }>;
   readonly markQueued: (id: number, atMs: number) => Effect.Effect<void>;
   readonly markRunning: (id: number, atMs: number) => Effect.Effect<void>;
+  readonly markAttached: (id: number, input: AttachRequestInput) => Effect.Effect<void>;
+  readonly markRequeued: (id: number, atMs: number) => Effect.Effect<void>;
   readonly markFinished: (id: number, input: FinishRequestInput) => Effect.Effect<void>;
   readonly getRequest: (id: number) => Effect.Effect<RequestRecord | null>;
   readonly getRequestByTicket: (ticket: string) => Effect.Effect<RequestRecord | null>;
@@ -92,7 +101,13 @@ CREATE INDEX IF NOT EXISTS transitions_request_id_idx ON transitions (request_id
 
 const requestColumns = `id, created_at_ms, session, host, cwd, workspace_root, target_dir, lane_key,
   argv_json, intent_key, intent_json, status, queued_at_ms, started_at_ms, finished_at_ms, wait_ms,
-  run_ms, exit_code, signal, output_tail, error`;
+  run_ms, exit_code, signal, output_tail, error, attached_to, attach_mode`;
+
+/** Additive column migrations for databases created by earlier builds. */
+const columnMigrations: readonly (readonly [column: string, ddl: string])[] = [
+  ['attached_to', 'ALTER TABLE requests ADD COLUMN attached_to TEXT'],
+  ['attach_mode', 'ALTER TABLE requests ADD COLUMN attach_mode TEXT'],
+];
 
 const activeStatusFilter = "status IN ('requested', 'queued', 'running')";
 
@@ -135,6 +150,8 @@ const toRequestRecord = (row: Row): RequestRecord => {
     signal: toNullableText(row.signal),
     outputTail: toNullableText(row.output_tail),
     error: toNullableText(row.error),
+    attachedTo: toNullableText(row.attached_to),
+    attachMode: toNullableText(row.attach_mode) as AttachMode | null,
   };
 };
 
@@ -179,6 +196,17 @@ export const openLedgerDatabase = (databasePath: string): DatabaseSync => {
   db.exec('PRAGMA synchronous = NORMAL;');
   db.exec('PRAGMA busy_timeout = 5000;');
   db.exec(schemaStatements);
+  const existingColumns = new Set(
+    db
+      .prepare('PRAGMA table_info(requests)')
+      .all()
+      .map((row) => String((row as Row).name)),
+  );
+  for (const [column, ddl] of columnMigrations) {
+    if (!existingColumns.has(column)) {
+      db.exec(ddl);
+    }
+  }
   return db;
 };
 
@@ -230,6 +258,37 @@ export const createLedgerApi = (db: DatabaseSync): LedgerApi => ({
          WHERE id = ?`,
       ).run('running', atMs, atMs, id);
       recordTransition(db, id, atMs, 'queued', 'running');
+    }),
+
+  markAttached: (id, input) =>
+    Effect.sync(() => {
+      const fromStatus = readStatus(db, id);
+      db.prepare(
+        `UPDATE requests
+         SET status = 'running',
+             started_at_ms = ?,
+             wait_ms = ? - created_at_ms,
+             attached_to = ?,
+             attach_mode = ?
+         WHERE id = ?`,
+      ).run(input.atMs, input.atMs, input.leaderTicket, input.mode, id);
+      recordTransition(db, id, input.atMs, fromStatus, 'running');
+    }),
+
+  markRequeued: (id, atMs) =>
+    Effect.sync(() => {
+      const fromStatus = readStatus(db, id);
+      db.prepare(
+        `UPDATE requests
+         SET status = 'queued',
+             queued_at_ms = ?,
+             started_at_ms = NULL,
+             wait_ms = NULL,
+             attached_to = NULL,
+             attach_mode = NULL
+         WHERE id = ?`,
+      ).run(atMs, id);
+      recordTransition(db, id, atMs, fromStatus, 'queued');
     }),
 
   markFinished: (id, input) =>
