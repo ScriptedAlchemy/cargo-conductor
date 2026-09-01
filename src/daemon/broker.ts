@@ -479,8 +479,8 @@ export const BrokerLive: Layer.Layer<
         });
         yield* ledger.ingestPassthroughSpool(config.stateDir);
         const laneStatuses: readonly LaneStatus[] = yield* lanesRuntime.laneStatuses();
-        const active = yield* ledger.activeRequests();
-        const recent = yield* ledger.recentRequests(recentLimit);
+        const active = yield* ledger.activeStatusRequests();
+        const recent = yield* ledger.recentStatusRequests(recentLimit);
         const cargoRun = yield* Metric.value(cargoRunMetric);
         const cargoRunByKind = yield* Effect.forEach(
           cargoRunKinds,
@@ -493,9 +493,7 @@ export const BrokerLive: Layer.Layer<
         const attachMode = yield* Metric.value(attachModeMetric);
         const waitSummary = yield* Metric.value(waitMsSummary);
         const nowMs = Date.now();
-        const hourWindow = yield* ledger.metricsWindow(nowMs - 3_600_000);
-        const dayWindow = yield* ledger.metricsWindow(nowMs - 86_400_000);
-        const allWindow = yield* ledger.metricsWindow(null);
+        const metricWindows = yield* ledger.metricsWindows(nowMs);
         const kache = yield* costModel.kacheStatus;
         const savings = yield* ledger.attachmentSavings();
         // Devices worth watching right now: the conductor's own state disk
@@ -514,8 +512,8 @@ export const BrokerLive: Layer.Layer<
           socketPath: config.socketPath,
           maxConcurrent: config.maxConcurrent,
           lanes: laneStatuses,
-          active: active.map((record) => ({ ...record, outputTail: null })),
-          recent: recent.map((record) => ({ ...record, outputTail: null })),
+          active,
+          recent,
           kache,
           system: {
             loadAvg1: loadavg()[0],
@@ -544,9 +542,9 @@ export const BrokerLive: Layer.Layer<
               ] as const),
             },
             windows: [
-              { id: 'hour', ...hourWindow },
-              { id: 'day', ...dayWindow },
-              { id: 'all', ...allWindow },
+              { id: 'hour', ...metricWindows.hour },
+              { id: 'day', ...metricWindows.day },
+              { id: 'all', ...metricWindows.all },
             ],
           },
           savings,

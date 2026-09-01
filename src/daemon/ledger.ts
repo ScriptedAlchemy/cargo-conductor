@@ -109,6 +109,12 @@ export interface MetricsWindowReport {
   readonly bySubcommand: readonly MetricsWindowBySubcommand[];
 }
 
+export interface MetricsWindowsReport {
+  readonly hour: MetricsWindowReport;
+  readonly day: MetricsWindowReport;
+  readonly all: MetricsWindowReport;
+}
+
 export interface LedgerApi {
   readonly createRequest: (
     input: CreateRequestInput,
@@ -143,10 +149,15 @@ export interface LedgerApi {
   ) => Effect.Effect<readonly SessionCompletedRecord[]>;
   readonly recentRequests: (limit: number) => Effect.Effect<readonly RequestRecord[]>;
   readonly activeRequests: () => Effect.Effect<readonly RequestRecord[]>;
+  /** Dashboard status rows deliberately omit captured output blobs. */
+  readonly recentStatusRequests: (limit: number) => Effect.Effect<readonly RequestRecord[]>;
+  readonly activeStatusRequests: () => Effect.Effect<readonly RequestRecord[]>;
   readonly transitionsFor: (id: number) => Effect.Effect<readonly TransitionRecord[]>;
   readonly reapOrphans: (atMs: number, error: string) => Effect.Effect<number>;
   readonly attachmentSavings: () => Effect.Effect<AttachmentSavingsReport>;
   readonly metricsWindow: (sinceMs: number | null) => Effect.Effect<MetricsWindowReport>;
+  /** One cached scan supplies all dashboard windows. */
+  readonly metricsWindows: (nowMs: number) => Effect.Effect<MetricsWindowsReport>;
 }
 
 export class Ledger extends Context.Service<Ledger, LedgerApi>()('cargo-conductor/Ledger') {}
@@ -194,6 +205,12 @@ CREATE INDEX IF NOT EXISTS transitions_request_id_idx ON transitions (request_id
 const requestColumns = `id, created_at_ms, session, host, cwd, workspace_root, target_dir, lane_key,
   argv_json, intent_key, intent_json, status, queued_at_ms, started_at_ms, finished_at_ms, wait_ms,
   run_ms, exit_code, signal, output_tail, error, attached_to, attach_mode, background, hold_stop,
+  estimate_ms, exec_argv_json, error_count, warning_count, diagnostics_json, saved_compute_ms,
+  saved_compute_source, saved_latency_ms`;
+
+const statusRequestColumns = `id, created_at_ms, session, host, cwd, workspace_root, target_dir, lane_key,
+  argv_json, intent_key, intent_json, status, queued_at_ms, started_at_ms, finished_at_ms, wait_ms,
+  run_ms, exit_code, signal, NULL AS output_tail, error, attached_to, attach_mode, background, hold_stop,
   estimate_ms, exec_argv_json, error_count, warning_count, diagnostics_json, saved_compute_ms,
   saved_compute_source, saved_latency_ms`;
 
@@ -532,9 +549,13 @@ export const createLedgerApi = (db: DatabaseSync): LedgerApi => {
   const selectRecentRequests = db.prepare(
     `SELECT ${requestColumns} FROM requests ORDER BY created_at_ms DESC, id DESC LIMIT ?`,
   );
+  const selectRecentStatusRequests = db.prepare(
+    `SELECT ${statusRequestColumns} FROM requests ORDER BY created_at_ms DESC, id DESC LIMIT ?`,
+  );
   const selectMetricsWindowAll = db.prepare(
     `SELECT
        status,
+       finished_at_ms,
        run_ms,
        wait_ms,
        COALESCE(json_extract(intent_json, '$.subcommand'), 'unknown') AS subcommand
@@ -547,6 +568,7 @@ export const createLedgerApi = (db: DatabaseSync): LedgerApi => {
   const selectMetricsWindowSince = db.prepare(
     `SELECT
        status,
+       finished_at_ms,
        run_ms,
        wait_ms,
        COALESCE(json_extract(intent_json, '$.subcommand'), 'unknown') AS subcommand
@@ -559,6 +581,11 @@ export const createLedgerApi = (db: DatabaseSync): LedgerApi => {
   );
   const selectActiveRequests = db.prepare(
     `SELECT ${requestColumns} FROM requests
+     WHERE ${activeStatusFilter}
+     ORDER BY created_at_ms ASC, id ASC`,
+  );
+  const selectActiveStatusRequests = db.prepare(
+    `SELECT ${statusRequestColumns} FROM requests
      WHERE ${activeStatusFilter}
      ORDER BY created_at_ms ASC, id ASC`,
   );
@@ -646,12 +673,7 @@ export const createLedgerApi = (db: DatabaseSync): LedgerApi => {
    * spawned work, and rows without run_ms never actually started, so both are
    * excluded for honest run/wait distributions.
    */
-  const metricsWindow = (sinceMs: number | null): MetricsWindowReport => {
-    const rows = (
-      sinceMs === null
-        ? selectMetricsWindowAll.all(metricsWindowScanLimit)
-        : selectMetricsWindowSince.all(sinceMs, metricsWindowScanLimit)
-    ) as readonly Row[];
+  const summarizeMetricsRows = (rows: readonly Row[]): MetricsWindowReport => {
     const runMs: number[] = [];
     const waitMs: number[] = [];
     const bySubcommand = new Map<string, number[]>();
@@ -718,6 +740,33 @@ export const createLedgerApi = (db: DatabaseSync): LedgerApi => {
       waitP95Ms: percentileFromSorted(waitMs, 0.95),
       bySubcommand: bySubcommandRows,
     };
+  };
+
+  const metricsWindow = (sinceMs: number | null): MetricsWindowReport =>
+    summarizeMetricsRows(
+      (sinceMs === null
+        ? selectMetricsWindowAll.all(metricsWindowScanLimit)
+        : selectMetricsWindowSince.all(sinceMs, metricsWindowScanLimit)) as readonly Row[],
+    );
+
+  let metricsWindowsCache:
+    | { readonly expiresAtMs: number; readonly value: MetricsWindowsReport }
+    | undefined;
+  const metricsWindows = (nowMs: number): MetricsWindowsReport => {
+    if (metricsWindowsCache !== undefined && metricsWindowsCache.expiresAtMs > nowMs) {
+      return metricsWindowsCache.value;
+    }
+    const rows = selectMetricsWindowAll.all(metricsWindowScanLimit) as readonly Row[];
+    const sinceHour = nowMs - 3_600_000;
+    const sinceDay = nowMs - 86_400_000;
+    const finishedAt = (row: Row): number => toNullableNumber(row.finished_at_ms) ?? 0;
+    const value = {
+      hour: summarizeMetricsRows(rows.filter((row) => finishedAt(row) >= sinceHour)),
+      day: summarizeMetricsRows(rows.filter((row) => finishedAt(row) >= sinceDay)),
+      all: summarizeMetricsRows(rows),
+    };
+    metricsWindowsCache = { expiresAtMs: nowMs + 5_000, value };
+    return value;
   };
 
   const insertAttempt = (
@@ -933,6 +982,12 @@ export const createLedgerApi = (db: DatabaseSync): LedgerApi => {
     activeRequests: () =>
       Effect.sync(() => selectActiveRequests.all().map(toRequestRecord)),
 
+    recentStatusRequests: (limit) =>
+      Effect.sync(() => selectRecentStatusRequests.all(limit).map(toRequestRecord)),
+
+    activeStatusRequests: () =>
+      Effect.sync(() => selectActiveStatusRequests.all().map(toRequestRecord)),
+
     transitionsFor: (id) =>
       Effect.sync(() => selectTransitions.all(id).map(toTransitionRecord)),
 
@@ -956,6 +1011,7 @@ export const createLedgerApi = (db: DatabaseSync): LedgerApi => {
     attachmentSavings: () => Effect.sync(() => attachmentSavings()),
 
     metricsWindow: (sinceMs) => Effect.sync(() => metricsWindow(sinceMs)),
+    metricsWindows: (nowMs) => Effect.sync(() => metricsWindows(nowMs)),
   };
 };
 
