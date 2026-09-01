@@ -733,15 +733,15 @@ describe('laneIsActive (idle lanes collapse)', () => {
 });
 
 describe('attachSavings (runs avoided is attach coalescing, not kache)', () => {
-  it('credits the leader real runtime once per follower when the leader finished', () => {
+  it('bounds coverage credit by the follower estimate', () => {
     const savings = attachSavings([
       { attachedTo: null, runMs: 42_000, ticket: 'cc-1' },
       { attachMode: 'identity', attachedTo: 'cc-1', estimateMs: 39_000, ticket: 'cc-2' },
       { attachMode: 'coverage', attachedTo: 'cc-1', estimateMs: 10_000, ticket: 'cc-3' },
     ]);
     expect(savings.avoidedRuns).toBe(2);
-    expect(savings.savedExactMs).toBe(84_000);
-    expect(savings.savedEstimatedMs).toBe(0);
+    expect(savings.savedExactMs).toBe(42_000);
+    expect(savings.savedEstimatedMs).toBe(10_000);
   });
 
   it('falls back to the follower estimate, kept separate as estimated', () => {
@@ -753,6 +753,18 @@ describe('attachSavings (runs avoided is attach coalescing, not kache)', () => {
     expect(savings.savedExactMs).toBe(0);
     expect(savings.savedEstimatedMs).toBe(44_000);
     expect(savings.avoidedRuns).toBe(2);
+  });
+
+  it('deduplicates active/recent overlap by ticket before totaling', () => {
+    const savings = attachSavings([
+      { attachedTo: null, runMs: 20_000, ticket: 'cc-1' },
+      { attachMode: 'identity', attachedTo: 'cc-1', estimateMs: 20_000, ticket: 'cc-2' },
+      // Same ticket appears in the second list (active + recent concat overlap).
+      { attachMode: 'identity', attachedTo: 'cc-1', estimateMs: 20_000, ticket: 'cc-2' },
+    ]);
+    expect(savings.avoidedRuns).toBe(1);
+    expect(savings.savedExactMs).toBe(20_000);
+    expect(savings.savedEstimatedMs).toBe(0);
   });
 
   it('counts packages folded into visible batch leaders', () => {

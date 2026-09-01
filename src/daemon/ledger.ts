@@ -9,11 +9,15 @@ import * as Layer from 'effect/Layer';
 import { DaemonConfig } from './config.js';
 import { formatTicket } from './protocol.js';
 import type {
+  AttachmentSavingsModeReport,
+  AttachmentSavingsReport,
+  AttachmentSavingsTotalsReport,
   AttachMode,
   FinishedStatus,
   PassthroughSpoolRecord,
   RequestRecord,
   RequestStatus,
+  SavedComputeSource,
   TransitionRecord,
 } from './protocol.js';
 import { passthroughSpoolFileName } from './protocol.js';
@@ -44,6 +48,9 @@ export interface FinishRequestInput {
   readonly errorCount?: number | null;
   readonly warningCount?: number | null;
   readonly diagnostics?: readonly string[] | null;
+  readonly savedComputeMs?: number | null;
+  readonly savedComputeSource?: SavedComputeSource | null;
+  readonly savedLatencyMs?: number | null;
 }
 
 export interface RecordAttemptInput {
@@ -118,6 +125,7 @@ export interface LedgerApi {
   readonly activeRequests: () => Effect.Effect<readonly RequestRecord[]>;
   readonly transitionsFor: (id: number) => Effect.Effect<readonly TransitionRecord[]>;
   readonly reapOrphans: (atMs: number, error: string) => Effect.Effect<number>;
+  readonly attachmentSavings: () => Effect.Effect<AttachmentSavingsReport>;
 }
 
 export class Ledger extends Context.Service<Ledger, LedgerApi>()('cargo-conductor/Ledger') {}
@@ -165,7 +173,8 @@ CREATE INDEX IF NOT EXISTS transitions_request_id_idx ON transitions (request_id
 const requestColumns = `id, created_at_ms, session, host, cwd, workspace_root, target_dir, lane_key,
   argv_json, intent_key, intent_json, status, queued_at_ms, started_at_ms, finished_at_ms, wait_ms,
   run_ms, exit_code, signal, output_tail, error, attached_to, attach_mode, background, hold_stop,
-  estimate_ms, exec_argv_json, error_count, warning_count, diagnostics_json`;
+  estimate_ms, exec_argv_json, error_count, warning_count, diagnostics_json, saved_compute_ms,
+  saved_compute_source, saved_latency_ms`;
 
 /** Additive column migrations for databases created by earlier builds. */
 const columnMigrations: readonly (readonly [column: string, ddl: string])[] = [
@@ -178,6 +187,9 @@ const columnMigrations: readonly (readonly [column: string, ddl: string])[] = [
   ['error_count', 'ALTER TABLE requests ADD COLUMN error_count INTEGER'],
   ['warning_count', 'ALTER TABLE requests ADD COLUMN warning_count INTEGER'],
   ['diagnostics_json', 'ALTER TABLE requests ADD COLUMN diagnostics_json TEXT'],
+  ['saved_compute_ms', 'ALTER TABLE requests ADD COLUMN saved_compute_ms INTEGER'],
+  ['saved_compute_source', 'ALTER TABLE requests ADD COLUMN saved_compute_source TEXT'],
+  ['saved_latency_ms', 'ALTER TABLE requests ADD COLUMN saved_latency_ms INTEGER'],
   ['source_attempt_id', 'ALTER TABLE requests ADD COLUMN source_attempt_id TEXT'],
 ];
 
@@ -196,6 +208,13 @@ const toText = (value: unknown): string => String(value);
 
 const toNullableText = (value: unknown): string | null =>
   value === null || value === undefined ? null : String(value);
+
+const asSavedComputeSource = (value: unknown): SavedComputeSource | null => {
+  if (value === 'exact' || value === 'estimate') {
+    return value;
+  }
+  return null;
+};
 
 const toNullableStringArray = (value: unknown): readonly string[] | null => {
   if (value === null || value === undefined) {
@@ -237,6 +256,9 @@ const toRequestRecord = (row: Row): RequestRecord => {
     diagnostics: toNullableStringArray(row.diagnostics_json),
     attachedTo: toNullableText(row.attached_to),
     attachMode: toNullableText(row.attach_mode) as AttachMode | null,
+    savedComputeMs: toNullableNumber(row.saved_compute_ms),
+    savedComputeSource: asSavedComputeSource(row.saved_compute_source),
+    savedLatencyMs: toNullableNumber(row.saved_latency_ms),
     background: toNumber(row.background ?? 0) !== 0,
     holdStop: toNumber(row.hold_stop ?? 0) !== 0,
     estimateMs: toNullableNumber(row.estimate_ms),
@@ -311,6 +333,13 @@ export const openLedgerDatabase = (databasePath: string): DatabaseSync => {
   }
   db.exec(
     'CREATE UNIQUE INDEX IF NOT EXISTS requests_source_attempt_id_idx ON requests (source_attempt_id) WHERE source_attempt_id IS NOT NULL',
+  );
+  db.exec(
+    `CREATE INDEX IF NOT EXISTS requests_attachment_savings_idx
+     ON requests (attach_mode, saved_compute_source, saved_latency_ms)
+     WHERE attached_to IS NOT NULL
+       AND saved_compute_ms IS NOT NULL
+       AND saved_latency_ms IS NOT NULL`,
   );
   return db;
 };
@@ -413,8 +442,27 @@ export const createLedgerApi = (db: DatabaseSync): LedgerApi => {
          error = ?,
          error_count = ?,
          warning_count = ?,
-         diagnostics_json = ?
+         diagnostics_json = ?,
+         saved_compute_ms = ?,
+         saved_compute_source = ?,
+         saved_latency_ms = ?
      WHERE id = ?`,
+  );
+  const selectAttachmentSavingsByMode = db.prepare(
+    `SELECT
+       attach_mode AS mode,
+       COUNT(*) AS riders_served,
+       SUM(saved_compute_ms) AS saved_compute_ms,
+       SUM(CASE WHEN saved_compute_source = 'exact' THEN saved_compute_ms ELSE 0 END) AS saved_compute_exact_ms,
+       SUM(CASE WHEN saved_compute_source = 'estimate' THEN saved_compute_ms ELSE 0 END) AS saved_compute_estimated_ms,
+       SUM(saved_latency_ms) AS saved_latency_ms,
+       SUM(CASE WHEN saved_latency_ms < 0 THEN 1 ELSE 0 END) AS negative_latency_riders
+     FROM requests
+     WHERE attached_to IS NOT NULL
+       AND attach_mode IS NOT NULL
+       AND saved_compute_ms IS NOT NULL
+       AND saved_latency_ms IS NOT NULL
+     GROUP BY attach_mode`,
   );
   const selectRecentDurations = db.prepare(
     `SELECT run_ms FROM requests
@@ -454,6 +502,73 @@ export const createLedgerApi = (db: DatabaseSync): LedgerApi => {
   const updateOrphan = db.prepare(
     'UPDATE requests SET status = ?, finished_at_ms = ?, error = ? WHERE id = ?',
   );
+
+  const withAllModes = (
+    rows: readonly AttachmentSavingsModeReport[],
+  ): readonly AttachmentSavingsModeReport[] => {
+    const byMode = new Map(rows.map((row) => [row.mode, row] as const));
+    return (['identity', 'coverage', 'batch'] as const).map((mode) => {
+      const row = byMode.get(mode);
+      return (
+        row ?? {
+          mode,
+          ridersServed: 0,
+          savedComputeMs: 0,
+          savedComputeExactMs: 0,
+          savedComputeEstimatedMs: 0,
+          savedLatencyMs: 0,
+          negativeLatencyRiders: 0,
+        }
+      );
+    });
+  };
+
+  const totalsFrom = (
+    byMode: readonly AttachmentSavingsModeReport[],
+  ): AttachmentSavingsTotalsReport =>
+    byMode.reduce<AttachmentSavingsTotalsReport>(
+      (totals, row) => ({
+        ridersServed: totals.ridersServed + row.ridersServed,
+        savedComputeMs: totals.savedComputeMs + row.savedComputeMs,
+        savedComputeExactMs: totals.savedComputeExactMs + row.savedComputeExactMs,
+        savedComputeEstimatedMs: totals.savedComputeEstimatedMs + row.savedComputeEstimatedMs,
+        savedLatencyMs: totals.savedLatencyMs + row.savedLatencyMs,
+        negativeLatencyRiders: totals.negativeLatencyRiders + row.negativeLatencyRiders,
+      }),
+      {
+        ridersServed: 0,
+        savedComputeMs: 0,
+        savedComputeExactMs: 0,
+        savedComputeEstimatedMs: 0,
+        savedLatencyMs: 0,
+        negativeLatencyRiders: 0,
+      },
+    );
+
+  const attachmentSavings = (): AttachmentSavingsReport => {
+    const byMode = withAllModes(
+      selectAttachmentSavingsByMode
+        .all()
+        .flatMap((row): readonly AttachmentSavingsModeReport[] => {
+          const mode = toNullableText(row.mode);
+          if (mode !== 'identity' && mode !== 'coverage' && mode !== 'batch') {
+            return [];
+          }
+          return [
+            {
+              mode,
+              ridersServed: toNumber(row.riders_served),
+              savedComputeMs: toNumber(row.saved_compute_ms),
+              savedComputeExactMs: toNumber(row.saved_compute_exact_ms),
+              savedComputeEstimatedMs: toNumber(row.saved_compute_estimated_ms),
+              savedLatencyMs: toNumber(row.saved_latency_ms),
+              negativeLatencyRiders: toNumber(row.negative_latency_riders),
+            },
+          ];
+        }),
+    );
+    return { byMode, totals: totalsFrom(byMode) };
+  };
 
   const insertAttempt = (
     input: RecordAttemptInput,
@@ -607,6 +722,9 @@ export const createLedgerApi = (db: DatabaseSync): LedgerApi => {
           input.errorCount ?? null,
           input.warningCount ?? null,
           input.diagnostics == null ? null : JSON.stringify(input.diagnostics),
+          input.savedComputeMs ?? null,
+          input.savedComputeSource ?? null,
+          input.savedLatencyMs ?? null,
           id,
         );
         recordTransition(insertTransition, id, input.atMs, fromStatus, input.status);
@@ -684,6 +802,8 @@ export const createLedgerApi = (db: DatabaseSync): LedgerApi => {
         }
         return orphans.length;
       }),
+
+    attachmentSavings: () => Effect.sync(() => attachmentSavings()),
   };
 };
 

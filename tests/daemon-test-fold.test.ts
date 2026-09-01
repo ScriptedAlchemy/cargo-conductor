@@ -187,6 +187,8 @@ describe('test batch folding', () => {
           expect(leader).toBeDefined();
           expect(follower?.attachMode).toBe('batch');
           expect(follower?.attachedTo).toBe(leader?.ticket);
+          expect(follower?.savedComputeSource).toBe('estimate');
+          expect(follower?.savedComputeMs).toBe(follower?.estimateMs);
           expect(follower?.execArgv).toBeNull();
           expect(leader?.execArgv).toContain('--no-fail-fast');
           expect(leader?.execArgv).toContain('--');

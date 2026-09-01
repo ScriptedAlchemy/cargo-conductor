@@ -17,7 +17,7 @@ import {
 } from './job-state.js';
 import type { Attachment, ExitInfo, Job } from './job-state.js';
 import type { LedgerApi } from './ledger.js';
-import type { AttachMode, FinishedStatus } from './protocol.js';
+import type { AttachMode, FinishedStatus, SavedComputeSource } from './protocol.js';
 import type { ReplayAudience, ReplayChunk } from './replay.js';
 import type { TicketDirectory } from './ticket-directory.js';
 
@@ -77,6 +77,59 @@ export interface AttachmentRuntime {
     atMs: number,
   ) => Effect.Effect<void>;
 }
+
+interface AttachmentSavings {
+  readonly savedComputeMs: number;
+  readonly savedComputeSource: SavedComputeSource;
+  readonly savedLatencyMs: number;
+}
+
+const nonNegativeMs = (value: number): number => Math.max(0, Math.round(value));
+
+const leaderRunMsAt = (job: Job, atMs: number): number | null =>
+  job.startedAtMs === null ? null : nonNegativeMs(atMs - job.startedAtMs);
+
+const savedComputeFor = (
+  attachment: Attachment,
+  leaderRunMs: number | null,
+): { readonly savedComputeMs: number; readonly savedComputeSource: SavedComputeSource } => {
+  const estimateMs = nonNegativeMs(attachment.estimateMs);
+  switch (attachment.mode) {
+    case 'identity':
+      return leaderRunMs === null
+        ? { savedComputeMs: estimateMs, savedComputeSource: 'estimate' }
+        : { savedComputeMs: leaderRunMs, savedComputeSource: 'exact' };
+    case 'coverage': {
+      if (leaderRunMs === null) {
+        return { savedComputeMs: estimateMs, savedComputeSource: 'estimate' };
+      }
+      const bounded = Math.min(estimateMs, leaderRunMs);
+      return {
+        savedComputeMs: bounded,
+        savedComputeSource: bounded === leaderRunMs ? 'exact' : 'estimate',
+      };
+    }
+    case 'batch':
+      return { savedComputeMs: estimateMs, savedComputeSource: 'estimate' };
+    default: {
+      const exhaustive: never = attachment.mode;
+      return exhaustive;
+    }
+  }
+};
+
+const servedSavings = (
+  attachment: Attachment,
+  atMs: number,
+  leaderRunMs: number | null,
+): AttachmentSavings => {
+  const compute = savedComputeFor(attachment, leaderRunMs);
+  const actualLatencyMs = Math.round(atMs - attachment.createdAtMs);
+  return {
+    ...compute,
+    savedLatencyMs: Math.round(attachment.estimateMs - actualLatencyMs),
+  };
+};
 
 export const makeAttachmentRuntime = (deps: AttachmentRuntimeDeps): AttachmentRuntime => {
   const { ledger, directory } = deps;
@@ -234,6 +287,7 @@ export const makeAttachmentRuntime = (deps: AttachmentRuntimeDeps): AttachmentRu
     attachment: Attachment,
     atMs: number,
     exit: Omit<ExitInfo, 'ticket' | 'waitMs' | 'runMs'>,
+    savings: AttachmentSavings | null = null,
   ): Effect.Effect<void> =>
     Effect.gen(function* () {
       const startedAtMs = attachment.startedAtMs;
@@ -244,6 +298,7 @@ export const makeAttachmentRuntime = (deps: AttachmentRuntimeDeps): AttachmentRu
         signal: exit.signal,
         outputTail: attachment.tail.toString(),
         error: exit.error,
+        ...(savings === null ? {} : savings),
         ...diagnosticFinishFields(attachment.diagnostics),
       });
       yield* Metric.update(jobOutcomeMetric, exit.status);
@@ -276,6 +331,7 @@ export const makeAttachmentRuntime = (deps: AttachmentRuntimeDeps): AttachmentRu
     atMs: number,
     note: string,
     exit: Omit<ExitInfo, 'ticket' | 'waitMs' | 'runMs'>,
+    savings: AttachmentSavings | null = null,
   ): Effect.Effect<void> =>
     Effect.gen(function* () {
       yield* notifyAttachmentStarted(attachment, atMs);
@@ -289,7 +345,7 @@ export const makeAttachmentRuntime = (deps: AttachmentRuntimeDeps): AttachmentRu
           data: encodedNote,
         }),
       );
-      yield* finishAttachment(attachment, atMs, exit);
+      yield* finishAttachment(attachment, atMs, exit, savings);
     });
 
   /**
@@ -394,6 +450,7 @@ export const makeAttachmentRuntime = (deps: AttachmentRuntimeDeps): AttachmentRu
                   signal: null,
                   error: `compile errors in ${failed}`,
                 },
+            servedSavings(attachment, atMs, null),
           ),
         { discard: true },
       );
@@ -549,6 +606,7 @@ export const makeAttachmentRuntime = (deps: AttachmentRuntimeDeps): AttachmentRu
       if (detached.length === 0) {
         return;
       }
+      const leaderRunMs = leaderRunMsAt(job, atMs);
       for (const attachment of detached) {
         // A failed leader can still prove a coverage demand: the demanded
         // units may have compiled cleanly before an unrelated unit failed.
@@ -571,10 +629,16 @@ export const makeAttachmentRuntime = (deps: AttachmentRuntimeDeps): AttachmentRu
             atMs,
             `[cargo-conductor] ${job.ticket} failed elsewhere, but your requested packages compiled cleanly\n`,
             { status: 'done', exitCode: 0, signal: null, error: null },
+            servedSavings(attachment, atMs, leaderRunMs),
           );
         } else if (mirrors) {
           yield* notifyAttachmentStarted(attachment, atMs);
-          yield* finishAttachment(attachment, atMs, { status, exitCode, signal, error });
+          yield* finishAttachment(
+            attachment,
+            atMs,
+            { status, exitCode, signal, error },
+            servedSavings(attachment, atMs, leaderRunMs),
+          );
         } else if (requeue !== null) {
           yield* requeue(attachment, requeueReasonFor(attachment.mode, status));
         } else {

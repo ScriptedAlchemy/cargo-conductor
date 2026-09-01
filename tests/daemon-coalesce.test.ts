@@ -77,6 +77,16 @@ describe('identity coalescing', () => {
         expect(followerRecord?.attachMode).toBe('identity');
         expect(followerRecord?.startedAtMs).toBe(leaderRecord?.startedAtMs);
         expect(followerRecord?.runMs).toBe(leaderRecord?.runMs);
+        expect(followerRecord?.savedComputeSource).toBe('exact');
+        expect(followerRecord?.savedComputeMs).toBe(leaderRecord?.runMs);
+        if (
+          typeof followerRecord?.estimateMs === 'number' &&
+          typeof followerRecord?.finishedAtMs === 'number'
+        ) {
+          expect(followerRecord.savedLatencyMs).toBe(
+            followerRecord.estimateMs - (followerRecord.finishedAtMs - followerRecord.createdAtMs),
+          );
+        }
 
         // The follower is queued against the leader, then inherits the
         // leader's real running phase instead of starting at attach time.
@@ -157,6 +167,23 @@ describe('coverage subsumption', () => {
 
         const leaderExit = findExit(yield* Fiber.join(leaderFiber));
         expect(leaderExit.status).toBe('done');
+
+        const report = yield* pollReport(fixture, (candidate) =>
+          candidate.recent.some((record) => record.ticket === followerExit.ticket),
+        );
+        const followerRecord = report.recent.find((record) => record.ticket === followerExit.ticket);
+        const leaderRecord = report.recent.find((record) => record.ticket === ack.attachedTo);
+        expect(followerRecord?.attachMode).toBe('coverage');
+        if (
+          typeof followerRecord?.estimateMs === 'number' &&
+          typeof leaderRecord?.runMs === 'number'
+        ) {
+          const bounded = Math.min(followerRecord.estimateMs, leaderRecord.runMs);
+          expect(followerRecord.savedComputeMs).toBe(bounded);
+          expect(followerRecord.savedComputeSource).toBe(
+            bounded === leaderRecord.runMs ? 'exact' : 'estimate',
+          );
+        }
       }),
     ));
 
@@ -218,6 +245,50 @@ describe('coverage subsumption', () => {
           'running',
           'done',
         ]);
+        const report = yield* pollReport(fixture, (candidate) =>
+          candidate.recent.some((record) => record.ticket === followerExit.ticket),
+        );
+        const followerRecord = report.recent.find((record) => record.ticket === followerExit.ticket);
+        expect(followerRecord?.savedComputeMs).toBeNull();
+        expect(followerRecord?.savedComputeSource).toBeNull();
+        expect(followerRecord?.savedLatencyMs).toBeNull();
+      }),
+    ));
+
+  it('records negative saved latency when an attached rider waits longer than its estimate', () =>
+    withDaemon(5, (fixture) =>
+      Effect.gen(function* () {
+        // Warm a fast sample so the follower estimate reflects a short solo run.
+        yield* execRequest(fixture, {
+          cwd: fixture.ws1,
+          sleep: '0.05',
+          timeoutMs: 12_000,
+        });
+        const leaderFiber = yield* Effect.forkChild(
+          execRequest(fixture, {
+            cwd: fixture.ws1,
+            sleep: '1.2',
+            timeoutMs: 12_000,
+          }),
+        );
+        yield* pollReport(fixture, (report) =>
+          report.active.some((record) => record.status === 'running'),
+        );
+        const followerMessages = yield* execRequest(fixture, {
+          cwd: fixture.ws1,
+          sleep: '1.2',
+          timeoutMs: 12_000,
+        });
+        const followerExit = findExit(followerMessages);
+        expect(followerExit.status).toBe('done');
+        yield* Fiber.join(leaderFiber);
+        const report = yield* pollReport(fixture, (candidate) =>
+          candidate.recent.some((record) => record.ticket === followerExit.ticket),
+        );
+        const followerRecord = report.recent.find((record) => record.ticket === followerExit.ticket);
+        expect(followerRecord?.savedComputeSource).toBe('exact');
+        expect(typeof followerRecord?.savedLatencyMs).toBe('number');
+        expect((followerRecord?.savedLatencyMs ?? 0) < 0).toBe(true);
       }),
     ));
 

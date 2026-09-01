@@ -473,6 +473,7 @@ export const BrokerLive: Layer.Layer<
         const attachMode = yield* Metric.value(attachModeMetric);
         const waitSummary = yield* Metric.value(waitMsSummary);
         const kache = yield* costModel.kacheStatus;
+        const savings = yield* ledger.attachmentSavings();
         // Devices worth watching right now: the conductor's own state disk
         // plus whatever disks the in-flight builds are writing to.
         const ioSample = yield* Effect.sync(() =>
@@ -519,6 +520,7 @@ export const BrokerLive: Layer.Layer<
               ] as const),
             },
           },
+          savings,
         };
       });
 

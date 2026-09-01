@@ -42,6 +42,49 @@ const baseRecord = {
   holdStop: false,
   estimateMs: null,
   execArgv: null,
+  savedComputeMs: null,
+  savedComputeSource: null,
+  savedLatencyMs: null,
+};
+
+const savings = {
+  byMode: [
+    {
+      mode: 'identity',
+      ridersServed: 3,
+      savedComputeMs: 12_000,
+      savedComputeExactMs: 12_000,
+      savedComputeEstimatedMs: 0,
+      savedLatencyMs: 2_000,
+      negativeLatencyRiders: 0,
+    },
+    {
+      mode: 'coverage',
+      ridersServed: 2,
+      savedComputeMs: 4_000,
+      savedComputeExactMs: 1_000,
+      savedComputeEstimatedMs: 3_000,
+      savedLatencyMs: -500,
+      negativeLatencyRiders: 1,
+    },
+    {
+      mode: 'batch',
+      ridersServed: 1,
+      savedComputeMs: 800,
+      savedComputeExactMs: 0,
+      savedComputeEstimatedMs: 800,
+      savedLatencyMs: 300,
+      negativeLatencyRiders: 0,
+    },
+  ],
+  totals: {
+    ridersServed: 6,
+    savedComputeMs: 16_800,
+    savedComputeExactMs: 13_000,
+    savedComputeEstimatedMs: 3_800,
+    savedLatencyMs: 1_800,
+    negativeLatencyRiders: 1,
+  },
 };
 
 describe('status/result contract completeness (issue #16)', () => {
@@ -115,6 +158,18 @@ describe('status/result contract completeness (issue #16)', () => {
     });
     expect(parsed.recent[0]?.diagnostics).toHaveLength(1);
     expect(parsed.active[0]?.status).toBe('running');
+  });
+
+  it('accepts follower savings fields on request records', () => {
+    const parsed = requestRecordSchema.parse({
+      ...diagnosedRecord,
+      savedComputeMs: 2_000,
+      savedComputeSource: 'estimate',
+      savedLatencyMs: -300,
+    });
+    expect(parsed.savedComputeMs).toBe(2_000);
+    expect(parsed.savedComputeSource).toBe('estimate');
+    expect(parsed.savedLatencyMs).toBe(-300);
   });
 });
 
@@ -240,6 +295,29 @@ describe('schema forward compatibility (issue #4)', () => {
     expect(result.kache).toEqual(report.kache);
     const oldClient = statusReportSchema.omit({ kache: true }).parse(report);
     expect('kache' in oldClient).toBe(false);
+  });
+
+  it('accepts additive savings aggregates and lets old schemas omit them', () => {
+    const report = {
+      active: [],
+      lanes: [],
+      maxConcurrent: 5,
+      pid: 42,
+      recent: [],
+      savings,
+      socketPath: '/tmp/cc/daemon.sock',
+      startedAtMs: 1,
+    };
+    const result = statusResultSchema.parse({
+      ...report,
+      daemon: 'running',
+      operation: 'status',
+      stateRoot: '/tmp/cc',
+      summary: 'running',
+    });
+    expect(result.savings?.totals.savedComputeMs).toBe(16_800);
+    const oldClient = statusReportSchema.omit({ savings: true }).parse(report);
+    expect('savings' in oldClient).toBe(false);
   });
 
   it('round-trips disk/io pressure fields and tolerates their absence', () => {

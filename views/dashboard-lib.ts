@@ -761,6 +761,9 @@ export interface AttachSavings {
   readonly batchExtraPackages: number;
 }
 
+const isAttachMode = (value: unknown): value is 'identity' | 'coverage' | 'batch' =>
+  value === 'identity' || value === 'coverage' || value === 'batch';
+
 export const attachSavings = (
   rows: readonly {
     readonly ticket?: unknown;
@@ -772,8 +775,21 @@ export const attachSavings = (
     readonly execArgv?: unknown;
   }[],
 ): AttachSavings => {
-  const leadersByTicket = new Map<string, (typeof rows)[number]>();
+  const deduped: Array<(typeof rows)[number]> = [];
+  const seenTickets = new Set<string>();
   for (const row of rows) {
+    if (typeof row.ticket !== 'string') {
+      deduped.push(row);
+      continue;
+    }
+    if (seenTickets.has(row.ticket)) {
+      continue;
+    }
+    seenTickets.add(row.ticket);
+    deduped.push(row);
+  }
+  const leadersByTicket = new Map<string, (typeof rows)[number]>();
+  for (const row of deduped) {
     if (typeof row.ticket === 'string' && row.attachedTo == null) {
       leadersByTicket.set(row.ticket, row);
     }
@@ -782,21 +798,54 @@ export const attachSavings = (
   let savedExactMs = 0;
   let savedEstimatedMs = 0;
   let batchExtraPackages = 0;
-  for (const row of rows) {
+  for (const row of deduped) {
     if (row.attachedTo == null) {
       // Leaders (not followers) carry the batch-folded packages in execArgv.
       batchExtraPackages += ranAsFor(row.argv, row.execArgv)?.extraPackages ?? 0;
       continue;
     }
-    if (typeof row.attachedTo !== 'string' || typeof row.attachMode !== 'string') {
+    if (typeof row.attachedTo !== 'string' || !isAttachMode(row.attachMode)) {
       continue;
     }
     avoidedRuns += 1;
+    const estimateMs =
+      typeof row.estimateMs === 'number' && row.estimateMs > 0 ? row.estimateMs : null;
     const leader = leadersByTicket.get(row.attachedTo);
-    if (leader !== undefined && typeof leader.runMs === 'number' && leader.runMs > 0) {
-      savedExactMs += leader.runMs;
-    } else if (typeof row.estimateMs === 'number' && row.estimateMs > 0) {
-      savedEstimatedMs += row.estimateMs;
+    const leaderRunMs =
+      leader !== undefined && typeof leader.runMs === 'number' && leader.runMs > 0
+        ? leader.runMs
+        : null;
+    switch (row.attachMode) {
+      case 'identity':
+        if (leaderRunMs !== null) {
+          savedExactMs += leaderRunMs;
+        } else if (estimateMs !== null) {
+          savedEstimatedMs += estimateMs;
+        }
+        break;
+      case 'coverage':
+        if (leaderRunMs !== null && estimateMs !== null) {
+          const bounded = Math.min(leaderRunMs, estimateMs);
+          if (bounded === leaderRunMs) {
+            savedExactMs += bounded;
+          } else {
+            savedEstimatedMs += bounded;
+          }
+        } else if (leaderRunMs !== null) {
+          savedExactMs += leaderRunMs;
+        } else if (estimateMs !== null) {
+          savedEstimatedMs += estimateMs;
+        }
+        break;
+      case 'batch':
+        if (estimateMs !== null) {
+          savedEstimatedMs += estimateMs;
+        }
+        break;
+      default: {
+        const exhaustive: never = row.attachMode;
+        return exhaustive;
+      }
     }
   }
   return { avoidedRuns, batchExtraPackages, savedEstimatedMs, savedExactMs };

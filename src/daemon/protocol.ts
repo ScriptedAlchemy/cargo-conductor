@@ -30,6 +30,7 @@ export type FinishedStatus = 'done' | 'failed' | 'killed';
  * folded test/nextest batches mirror the composite's shared exit.
  */
 export type AttachMode = 'identity' | 'coverage' | 'batch';
+export type SavedComputeSource = 'exact' | 'estimate';
 
 /** One ledgered cargo request, as stored in SQLite and reported over the socket. */
 export interface RequestRecord {
@@ -61,6 +62,23 @@ export interface RequestRecord {
   /** Leader ticket when this request was served by attaching to another run. */
   readonly attachedTo: string | null;
   readonly attachMode: AttachMode | null;
+  /**
+   * Counterfactual machine time this follower did not burn because it rode a
+   * leader. Null means "no served follower savings recorded" (leaders,
+   * requeued riders, detached/killed before service).
+   */
+  readonly savedComputeMs?: number | null;
+  /**
+   * Provenance of `savedComputeMs`: `exact` means the leader's measured run
+   * time anchored the value; `estimate` means a follower estimate supplied it.
+   */
+  readonly savedComputeSource?: SavedComputeSource | null;
+  /**
+   * Counterfactual latency savings for the follower:
+   * `estimateMs - (settledAtMs - createdAtMs)`. Negative values are expected
+   * and honest: they mean the rider waited longer than its own solo estimate.
+   */
+  readonly savedLatencyMs?: number | null;
   /** The invocation actually spawned (demux flag, batch-folded -p packages); null until run. */
   readonly execArgv: readonly string[] | null;
   readonly background: boolean;
@@ -235,6 +253,30 @@ export interface KacheStatusReport {
   readonly topCrates: readonly KacheTopCrate[];
 }
 
+export interface AttachmentSavingsModeReport {
+  readonly mode: AttachMode;
+  readonly ridersServed: number;
+  readonly savedComputeMs: number;
+  readonly savedComputeExactMs: number;
+  readonly savedComputeEstimatedMs: number;
+  readonly savedLatencyMs: number;
+  readonly negativeLatencyRiders: number;
+}
+
+export interface AttachmentSavingsTotalsReport {
+  readonly ridersServed: number;
+  readonly savedComputeMs: number;
+  readonly savedComputeExactMs: number;
+  readonly savedComputeEstimatedMs: number;
+  readonly savedLatencyMs: number;
+  readonly negativeLatencyRiders: number;
+}
+
+export interface AttachmentSavingsReport {
+  readonly byMode: readonly AttachmentSavingsModeReport[];
+  readonly totals: AttachmentSavingsTotalsReport;
+}
+
 export interface StatusReport {
   readonly pid: number;
   readonly startedAtMs: number;
@@ -244,6 +286,7 @@ export interface StatusReport {
   readonly active: readonly RequestRecord[];
   readonly recent: readonly RequestRecord[];
   readonly metrics?: StatusMetrics;
+  readonly savings?: AttachmentSavingsReport;
   readonly kache?: KacheStatusReport | null;
   readonly system?: SystemLoadReport;
 }

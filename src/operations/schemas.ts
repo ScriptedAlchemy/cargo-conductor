@@ -2,6 +2,7 @@ import { z } from 'zod';
 
 import { awaitCeilingMs } from '../daemon/protocol.js';
 import type {
+  AttachmentSavingsReport,
   SystemLoadReport,
   KacheStatusReport,
   LaneStatus,
@@ -22,6 +23,7 @@ const requestStatusSchema = z.enum([
 ]);
 
 const attachModeSchema = z.enum(['identity', 'coverage', 'batch']);
+const savedComputeSourceSchema = z.enum(['exact', 'estimate']);
 const daemonStatusSchema = z.enum(['running', 'stopped']);
 
 // Daemon-sourced payloads deliberately STRIP unknown keys instead of
@@ -31,6 +33,9 @@ const daemonStatusSchema = z.enum(['running', 'stopped']);
 export const requestRecordSchema = z.object({
   argv: z.array(z.string()),
   attachMode: attachModeSchema.nullable(),
+  savedComputeMs: z.number().int().nonnegative().nullable().optional(),
+  savedComputeSource: savedComputeSourceSchema.nullable().optional(),
+  savedLatencyMs: z.number().int().nullable().optional(),
   attachedTo: z.string().nullable(),
   createdAtMs: z.number(),
   cwd: z.string(),
@@ -128,9 +133,34 @@ const kacheStatusSchema = z.object({
   })),
 }) satisfies z.ZodType<KacheStatusReport>;
 
+const savingsModeSchema = z.object({
+  mode: attachModeSchema,
+  ridersServed: z.number().int().nonnegative(),
+  savedComputeMs: z.number().int().nonnegative(),
+  savedComputeExactMs: z.number().int().nonnegative(),
+  savedComputeEstimatedMs: z.number().int().nonnegative(),
+  savedLatencyMs: z.number().int(),
+  negativeLatencyRiders: z.number().int().nonnegative(),
+});
+
+const savingsTotalsSchema = z.object({
+  ridersServed: z.number().int().nonnegative(),
+  savedComputeMs: z.number().int().nonnegative(),
+  savedComputeExactMs: z.number().int().nonnegative(),
+  savedComputeEstimatedMs: z.number().int().nonnegative(),
+  savedLatencyMs: z.number().int(),
+  negativeLatencyRiders: z.number().int().nonnegative(),
+});
+
+const savingsSchema = z.object({
+  byMode: z.array(savingsModeSchema),
+  totals: savingsTotalsSchema,
+});
+
 export const statusReportSchema = z.object({
   active: z.array(requestRecordSchema),
   kache: kacheStatusSchema.nullable().optional(),
+  savings: savingsSchema.optional(),
   system: systemLoadSchema.optional(),
   lanes: z.array(laneStatusSchema),
   maxConcurrent: z.number().int(),
@@ -152,6 +182,7 @@ export interface StatusResult {
   readonly active: readonly RequestRecord[];
   readonly daemon: 'running' | 'stopped';
   readonly kache?: KacheStatusReport | null;
+  readonly savings?: AttachmentSavingsReport;
   readonly system?: SystemLoadReport;
   readonly lanes: readonly LaneStatus[];
   readonly maxConcurrent: number | null;
@@ -194,7 +225,8 @@ export const statusResultSchema = z
     active: z.array(requestRecordSchema),
     daemon: daemonStatusSchema,
     kache: kacheStatusSchema.nullable().optional(),
-  system: systemLoadSchema.optional(),
+    savings: savingsSchema.optional(),
+    system: systemLoadSchema.optional(),
     lanes: z.array(laneStatusSchema),
     maxConcurrent: z.number().int().nullable(),
     metrics: statusMetricsSchema.optional(),

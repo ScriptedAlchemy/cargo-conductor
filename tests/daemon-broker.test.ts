@@ -87,6 +87,12 @@ describe('conductor daemon', () => {
         });
         expect(report.metrics?.cargo_run_ms_by_kind?.check?.count ?? 0).toBeGreaterThanOrEqual(1);
         expect(report.metrics?.wait_ms_summary?.count ?? 0).toBeGreaterThanOrEqual(1);
+        expect(report.savings?.byMode.map((row) => row.mode)).toEqual([
+          'identity',
+          'coverage',
+          'batch',
+        ]);
+        expect(report.savings?.totals.ridersServed ?? 0).toBeGreaterThanOrEqual(0);
 
         const db = openLedgerDatabase(fixture.config.databasePath);
         const ledger = createLedgerApi(db);

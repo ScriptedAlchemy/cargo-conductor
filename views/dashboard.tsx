@@ -78,6 +78,7 @@ interface StructuredContent {
   readonly request?: unknown;
   readonly structuredContent?: unknown;
   readonly metrics?: unknown;
+  readonly savings?: unknown;
   readonly system?: unknown;
   readonly kache?: unknown;
 }
@@ -92,6 +93,25 @@ interface StatusMetricsShape {
     readonly max?: unknown;
     readonly quantiles?: unknown;
   };
+}
+
+interface SavingsModeShape {
+  readonly mode?: unknown;
+  readonly ridersServed?: unknown;
+}
+
+interface SavingsTotalsShape {
+  readonly ridersServed?: unknown;
+  readonly savedComputeMs?: unknown;
+  readonly savedComputeExactMs?: unknown;
+  readonly savedComputeEstimatedMs?: unknown;
+  readonly savedLatencyMs?: unknown;
+  readonly negativeLatencyRiders?: unknown;
+}
+
+interface SavingsShape {
+  readonly byMode?: unknown;
+  readonly totals?: SavingsTotalsShape;
 }
 
 interface RequestRow {
@@ -253,6 +273,8 @@ const fetchTicketRecord = async (ticketId: string): Promise<unknown> => {
 const arrayOrEmpty = <T,>(value: unknown): readonly T[] => (Array.isArray(value) ? value : []);
 
 const duration = (value: unknown): string => (typeof value === 'number' ? formatMs(value) : '—');
+const signedDuration = (value: number): string =>
+  value < 0 ? `-${formatMs(Math.abs(value))}` : formatMs(value);
 
 const ticket = (value: unknown): ReactNode =>
   value == null ? '—' : <span className="ticket">{String(value)}</span>;
@@ -674,13 +696,28 @@ const TicketDrawer = ({
 const frequencyText = (entries: readonly (readonly [string, number])[]): string =>
   entries.map(([key, value]) => `${key} ${formatCompactNumber(value)}`).join(' · ');
 
+const ridersByModeText = (savings: SavingsShape): string | null => {
+  const byMode = arrayOrEmpty<SavingsModeShape>(savings.byMode);
+  const parts = byMode
+    .map((row) => {
+      if (typeof row.mode !== 'string' || typeof row.ridersServed !== 'number') {
+        return null;
+      }
+      return `${row.mode} ${formatCompactNumber(row.ridersServed)}`;
+    })
+    .filter((part): part is string => part !== null);
+  return parts.length === 0 ? null : parts.join(' · ');
+};
+
 const MetricsSection = ({
   finished,
   metrics,
+  savings,
   rows,
 }: {
   readonly finished: readonly RequestRow[];
   readonly metrics: StatusMetricsShape | null;
+  readonly savings: SavingsShape | null;
   /** Every visible row (active + recent): attach savings needs leaders in flight too. */
   readonly rows: readonly RequestRow[];
 }): ReactNode => {
@@ -701,13 +738,51 @@ const MetricsSection = ({
   // cannot be split retroactively, so the split comes from the visible
   // finished rows, each line carrying its own honest n.
   const bySubcommand = subcommandMetricsView(metrics?.cargo_run_ms_by_kind, finished);
-  const savings = attachSavings(rows);
-  const savedText =
-    savings.savedExactMs > 0
-      ? `${formatMs(savings.savedExactMs)}${savings.savedEstimatedMs > 0 ? ` +~${formatMs(savings.savedEstimatedMs)} est` : ''}`
-      : savings.savedEstimatedMs > 0
-        ? `~${formatMs(savings.savedEstimatedMs)} est`
+  const visibleSavings = attachSavings(rows);
+  const totals = asRecord(savings?.totals) as SavingsTotalsShape | null;
+  const allTimeComputeMs =
+    totals !== null && typeof totals.savedComputeMs === 'number' ? totals.savedComputeMs : null;
+  const allTimeExactMs =
+    totals !== null && typeof totals.savedComputeExactMs === 'number' ? totals.savedComputeExactMs : null;
+  const allTimeEstimatedMs =
+    totals !== null && typeof totals.savedComputeEstimatedMs === 'number'
+      ? totals.savedComputeEstimatedMs
+      : null;
+  const allTimeLatencyMs =
+    totals !== null && typeof totals.savedLatencyMs === 'number' ? totals.savedLatencyMs : null;
+  const allTimeNegativeLatencyCount =
+    totals !== null && typeof totals.negativeLatencyRiders === 'number'
+      ? totals.negativeLatencyRiders
+      : null;
+  const hasLedgerSavings =
+    allTimeComputeMs !== null &&
+    allTimeExactMs !== null &&
+    allTimeEstimatedMs !== null &&
+    allTimeLatencyMs !== null &&
+    allTimeNegativeLatencyCount !== null;
+  const fallbackSavedText =
+    visibleSavings.savedExactMs > 0
+      ? `${formatMs(visibleSavings.savedExactMs)}${
+          visibleSavings.savedEstimatedMs > 0
+            ? ` +~${formatMs(visibleSavings.savedEstimatedMs)} est`
+            : ''
+        }`
+      : visibleSavings.savedEstimatedMs > 0
+        ? `~${formatMs(visibleSavings.savedEstimatedMs)} est`
         : null;
+  const computeValue = hasLedgerSavings
+    ? formatMs(allTimeComputeMs)
+    : (fallbackSavedText ?? '—');
+  const computeSplitText = hasLedgerSavings
+    ? `${formatMs(allTimeExactMs)} exact + ~${formatMs(allTimeEstimatedMs)} est`
+    : null;
+  const latencyValue =
+    hasLedgerSavings && allTimeLatencyMs !== null ? signedDuration(allTimeLatencyMs) : '—';
+  const latencyTitle =
+    hasLedgerSavings && allTimeNegativeLatencyCount !== null
+      ? `counterfactual estimateMs minus actual time-to-result; negative means the rider waited longer than its own solo estimate (${formatCompactNumber(allTimeNegativeLatencyCount)} rider${allTimeNegativeLatencyCount === 1 ? '' : 's'} are negative)`
+      : 'available from newer daemons; negative means the rider waited longer than its own solo estimate';
+  const ridersByMode = hasLedgerSavings && savings !== null ? ridersByModeText(savings) : null;
 
   return (
     <section>
@@ -771,6 +846,20 @@ const MetricsSection = ({
           />
         )}
         <Stat label="wait max" value={waitMetrics.maxMs === null ? '—' : formatMs(waitMetrics.maxMs)} />
+        <Stat
+          label={hasLedgerSavings ? 'compute avoided (all time)' : 'attach time saved (visible rows)'}
+          title={
+            hasLedgerSavings
+              ? `sum of per-follower saved compute from the ledger (survives restarts): ${computeSplitText}`
+              : "follower runtime avoided in visible rows: leader run time when visible, otherwise follower estimate"
+          }
+          value={computeValue}
+        />
+        <Stat
+          label="latency saved (all time)"
+          title={latencyTitle}
+          value={latencyValue}
+        />
         {attachTotal > 0 ? (
           <Stat
             label="runs avoided (attach)"
@@ -779,7 +868,7 @@ const MetricsSection = ({
           />
         ) : null}
       </div>
-      {outcomes.length === 0 && attachEntries.length === 0 && savedText === null ? null : (
+      {outcomes.length === 0 && attachEntries.length === 0 && ridersByMode === null ? null : (
         <div className="stats metricsdetail">
           {outcomes.length === 0 ? null : (
             <Stat
@@ -791,13 +880,20 @@ const MetricsSection = ({
           {attachEntries.length === 0 ? null : (
             <Stat label="attach modes" value={frequencyText(attachEntries)} />
           )}
-          {savedText === null ? null : (
+          {ridersByMode === null ? null : (
             <Stat
-              label="attach time saved (visible rows)"
-              title="runtime attached requests never spent: the leader's real duration when it finished on screen, otherwise the follower's own prior-run estimate (marked est) — kache compile timings never feed this number"
-              value={`${savedText}${savings.batchExtraPackages > 0 ? ` · +${savings.batchExtraPackages} pkg${savings.batchExtraPackages === 1 ? '' : 's'} folded` : ''}`}
+              label="riders served by mode (all time)"
+              title="followers that reached terminal service outcomes, grouped by attach mode"
+              value={ridersByMode}
             />
           )}
+          {visibleSavings.batchExtraPackages > 0 ? (
+            <Stat
+              label="batch extra packages (visible)"
+              title="extra -p packages folded into visible batch leaders"
+              value={formatCompactNumber(visibleSavings.batchExtraPackages)}
+            />
+          ) : null}
         </div>
       )}
       {bySubcommand.rows.length === 0 ? null : (
@@ -970,6 +1066,7 @@ const DashboardContent = ({ structured }: { readonly structured: StructuredConte
     .filter((row) => typeof row.status === 'string' && terminalStatuses.has(row.status))
     .slice(0, 20);
   const metrics = (structured?.metrics ?? null) as StatusMetricsShape | null;
+  const savings = (structured?.savings ?? null) as SavingsShape | null;
   const system = (structured?.system ?? null) as SystemLoadShape | null;
   const permitHolders = running.filter((row) => row.attachedTo == null).length;
   const riders = running.length - permitHolders;
@@ -1077,6 +1174,7 @@ const DashboardContent = ({ structured }: { readonly structured: StructuredConte
             finished={finished}
             key="metrics"
             metrics={metrics}
+            savings={savings}
             rows={active.concat(recent)}
           />
         );

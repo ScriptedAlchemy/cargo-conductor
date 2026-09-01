@@ -1,6 +1,7 @@
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 
 import { describe, expect, it } from '@rstest/core';
 import * as Effect from 'effect/Effect';
@@ -68,6 +69,9 @@ describe('ledger lifecycle', () => {
       expect(finished?.signal).toBeNull();
       expect(finished?.error).toBeNull();
       expect(finished?.outputTail).toBe('Finished dev [unoptimized] target(s)\n');
+      expect(finished?.savedComputeMs).toBeNull();
+      expect(finished?.savedComputeSource).toBeNull();
+      expect(finished?.savedLatencyMs).toBeNull();
     });
   });
 
@@ -168,6 +172,33 @@ describe('ledger lifecycle', () => {
         'error[E0308]: mismatched types',
         'warning: unused import',
       ]);
+    });
+  });
+
+  it('persists follower savings fields written at settlement', () => {
+    withLedger((ledger) => {
+      Effect.runSync(ledger.createRequest(makeInput()));
+      Effect.runSync(
+        ledger.markAttached(1, {
+          atMs: 1_100,
+          leaderTicket: 'cc-99',
+          mode: 'coverage',
+        }),
+      );
+      Effect.runSync(ledger.markRunning(1, 1_500));
+      Effect.runSync(
+        ledger.markFinished(1, {
+          atMs: 2_700,
+          savedComputeMs: 1_200,
+          savedComputeSource: 'estimate',
+          savedLatencyMs: -500,
+          status: 'done',
+        }),
+      );
+      const record = Effect.runSync(ledger.getRequest(1));
+      expect(record?.savedComputeMs).toBe(1_200);
+      expect(record?.savedComputeSource).toBe('estimate');
+      expect(record?.savedLatencyMs).toBe(-500);
     });
   });
 
@@ -434,6 +465,95 @@ describe('ledger queries', () => {
       expect(Effect.runSync(ledger.getRequest(1))?.argv).toEqual(argv);
     });
   });
+
+  it('aggregates served attachment savings by mode and totals', () => {
+    withLedger((ledger) => {
+      for (let id = 1; id <= 4; id += 1) {
+        Effect.runSync(ledger.createRequest(makeInput({ createdAtMs: 1_000 + id })));
+      }
+      Effect.runSync(
+        ledger.markAttached(1, { atMs: 1_200, leaderTicket: 'cc-90', mode: 'identity' }),
+      );
+      Effect.runSync(
+        ledger.markFinished(1, {
+          atMs: 2_000,
+          savedComputeMs: 4_000,
+          savedComputeSource: 'exact',
+          savedLatencyMs: 900,
+          status: 'done',
+        }),
+      );
+      Effect.runSync(
+        ledger.markAttached(2, { atMs: 1_200, leaderTicket: 'cc-90', mode: 'coverage' }),
+      );
+      Effect.runSync(
+        ledger.markFinished(2, {
+          atMs: 2_100,
+          savedComputeMs: 1_500,
+          savedComputeSource: 'estimate',
+          savedLatencyMs: -300,
+          status: 'failed',
+        }),
+      );
+      Effect.runSync(
+        ledger.markAttached(3, { atMs: 1_200, leaderTicket: 'cc-90', mode: 'batch' }),
+      );
+      Effect.runSync(
+        ledger.markFinished(3, {
+          atMs: 2_200,
+          savedComputeMs: 800,
+          savedComputeSource: 'estimate',
+          savedLatencyMs: 250,
+          status: 'done',
+        }),
+      );
+      // Served savings absent: this requeued/no-service style row must not count.
+      Effect.runSync(
+        ledger.markAttached(4, { atMs: 1_200, leaderTicket: 'cc-90', mode: 'coverage' }),
+      );
+      Effect.runSync(ledger.markFinished(4, { atMs: 2_300, status: 'killed' }));
+
+      expect(Effect.runSync(ledger.attachmentSavings())).toEqual({
+        byMode: [
+          {
+            mode: 'identity',
+            ridersServed: 1,
+            savedComputeMs: 4_000,
+            savedComputeExactMs: 4_000,
+            savedComputeEstimatedMs: 0,
+            savedLatencyMs: 900,
+            negativeLatencyRiders: 0,
+          },
+          {
+            mode: 'coverage',
+            ridersServed: 1,
+            savedComputeMs: 1_500,
+            savedComputeExactMs: 0,
+            savedComputeEstimatedMs: 1_500,
+            savedLatencyMs: -300,
+            negativeLatencyRiders: 1,
+          },
+          {
+            mode: 'batch',
+            ridersServed: 1,
+            savedComputeMs: 800,
+            savedComputeExactMs: 0,
+            savedComputeEstimatedMs: 800,
+            savedLatencyMs: 250,
+            negativeLatencyRiders: 0,
+          },
+        ],
+        totals: {
+          ridersServed: 3,
+          savedComputeMs: 6_300,
+          savedComputeExactMs: 4_000,
+          savedComputeEstimatedMs: 2_300,
+          savedLatencyMs: 850,
+          negativeLatencyRiders: 1,
+        },
+      });
+    });
+  });
 });
 
 describe('reapOrphans', () => {
@@ -483,5 +603,81 @@ describe('reapOrphans', () => {
     withLedger((ledger) => {
       expect(Effect.runSync(ledger.reapOrphans(9_000, 'daemon restarted'))).toBe(0);
     });
+  });
+});
+
+describe('ledger migrations', () => {
+  it('adds savings columns to a legacy table and round-trips markFinished', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'cc-ledger-migrate-'));
+    const databasePath = join(directory, 'ledger.db');
+    const legacy = new DatabaseSync(databasePath);
+    try {
+      legacy.exec(`
+        CREATE TABLE requests (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          created_at_ms INTEGER NOT NULL,
+          session TEXT,
+          host TEXT,
+          cwd TEXT NOT NULL,
+          workspace_root TEXT NOT NULL,
+          target_dir TEXT NOT NULL,
+          lane_key TEXT NOT NULL,
+          argv_json TEXT NOT NULL,
+          intent_key TEXT,
+          intent_json TEXT,
+          status TEXT NOT NULL,
+          queued_at_ms INTEGER,
+          started_at_ms INTEGER,
+          finished_at_ms INTEGER,
+          wait_ms INTEGER,
+          run_ms INTEGER,
+          exit_code INTEGER,
+          signal TEXT,
+          output_tail TEXT,
+          error TEXT
+        );
+        CREATE TABLE transitions (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          request_id INTEGER NOT NULL,
+          at_ms INTEGER NOT NULL,
+          from_status TEXT,
+          to_status TEXT NOT NULL
+        );
+      `);
+    } finally {
+      legacy.close();
+    }
+    const migrated = openLedgerDatabase(databasePath);
+    try {
+      const ledger = createLedgerApi(migrated);
+      Effect.runSync(ledger.createRequest(makeInput()));
+      Effect.runSync(
+        ledger.markAttached(1, {
+          atMs: 1_200,
+          leaderTicket: 'cc-9',
+          mode: 'identity',
+        }),
+      );
+      Effect.runSync(ledger.markRunning(1, 1_500));
+      Effect.runSync(
+        ledger.markFinished(1, {
+          atMs: 2_000,
+          savedComputeMs: 500,
+          savedComputeSource: 'exact',
+          savedLatencyMs: -100,
+          status: 'done',
+        }),
+      );
+      expect(Effect.runSync(ledger.getRequest(1))).toEqual(
+        expect.objectContaining({
+          savedComputeMs: 500,
+          savedComputeSource: 'exact',
+          savedLatencyMs: -100,
+        }),
+      );
+    } finally {
+      migrated.close();
+      rmSync(directory, { force: true, recursive: true });
+    }
   });
 });

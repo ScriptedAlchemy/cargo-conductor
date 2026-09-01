@@ -9,6 +9,8 @@ import type { DaemonConfigShape } from './daemon/config.js';
 import { requestExpecting } from './daemon/control.js';
 import { createLedgerApi, openLedgerDatabase, openLedgerDatabaseReadOnly } from './daemon/ledger.js';
 import type {
+  AttachmentSavingsReport,
+  KacheStatusReport,
   LaneStatus,
   RequestRecord,
   StatusMetrics,
@@ -23,9 +25,11 @@ import { countWord } from './lib/text.js';
 export interface ConductorSnapshot {
   readonly active: readonly RequestRecord[];
   readonly daemon: 'running' | 'stopped';
+  readonly kache?: KacheStatusReport | null;
   readonly lanes: readonly LaneStatus[];
   readonly maxConcurrent: number | null;
   readonly metrics?: StatusMetrics;
+  readonly savings?: AttachmentSavingsReport;
   readonly system?: SystemLoadReport;
   readonly pid: number | null;
   readonly recent: readonly RequestRecord[];
@@ -115,6 +119,7 @@ const fromReport = (report: StatusReport, config: DaemonConfigShape): ConductorS
       lanes: report.lanes,
       maxConcurrent: report.maxConcurrent,
       ...(report.metrics === undefined ? {} : { metrics: report.metrics }),
+      ...(report.savings === undefined ? {} : { savings: report.savings }),
       pid: report.pid,
       recent: report.recent,
       socketPath: report.socketPath,
@@ -168,6 +173,7 @@ const fromLedger = (
       const ledger = createLedgerApi(db);
       const recent = yield* ledger.recentRequests(recentLimit);
       const active = yield* ledger.activeRequests();
+      const savings = yield* ledger.attachmentSavings();
       return withReport(
         {
           active,
@@ -176,6 +182,7 @@ const fromLedger = (
           maxConcurrent: null,
           pid: null,
           recent,
+          savings,
           socketPath: config.socketPath,
           startedAtMs: null,
           stateRoot: config.stateDir,
