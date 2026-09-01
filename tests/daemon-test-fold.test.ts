@@ -3,6 +3,7 @@ import { join } from 'node:path';
 
 import { describe, expect, it } from '@rstest/core';
 import * as Effect from 'effect/Effect';
+import * as Fiber from 'effect/Fiber';
 
 import type { ServerMessage } from '../src/daemon/protocol.js';
 import { realCargoBin } from '../src/daemon/real-cargo.js';
@@ -32,6 +33,98 @@ const makeRealTestWorkspace = (fixture: Fixture): string => {
 const startedThenDetach = (message: ServerMessage): boolean => message.type === 'started';
 
 describe('test batch folding', () => {
+  it(
+    'migrates followers already attached to a folded queued job',
+    () =>
+      withDaemon(1, (fixture) =>
+        Effect.gen(function* () {
+          yield* execRequest(fixture, {
+            cwd: fixture.ws1,
+            isTerminal: startedThenDetach,
+            sleep: '2',
+          });
+
+          const alpha = yield* Effect.fork(
+            execRequest(fixture, {
+              argv: ['cargo', 'test', '-p', 'aa', '--', 'filter_a'],
+              cwd: fixture.ws1,
+              timeoutMs: 30_000,
+            }),
+          );
+          yield* pollReport(fixture, (report) =>
+            report.active.some(
+              (record) => record.status === 'queued' && record.argv.includes('filter_a'),
+            ),
+          );
+          const alphaFollowerOne = yield* Effect.fork(
+            execRequest(fixture, {
+              argv: ['cargo', 'test', '-p', 'aa', '--', 'filter_a'],
+              cwd: fixture.ws1,
+              timeoutMs: 30_000,
+            }),
+          );
+          const alphaFollowerTwo = yield* Effect.fork(
+            execRequest(fixture, {
+              argv: ['cargo', 'test', '-p', 'aa', '--', 'filter_a'],
+              cwd: fixture.ws1,
+              timeoutMs: 30_000,
+            }),
+          );
+          yield* pollReport(
+            fixture,
+            (report) =>
+              report.active.filter(
+                (record) => record.argv.includes('filter_a') && record.attachedTo !== null,
+              ).length === 2,
+          );
+
+          const beta = yield* Effect.fork(
+            execRequest(fixture, {
+              argv: ['cargo', 'test', '-p', 'bb', '--', 'filter_b'],
+              cwd: fixture.ws1,
+              timeoutMs: 30_000,
+            }),
+          );
+          yield* pollReport(fixture, (report) =>
+            report.active.some(
+              (record) => record.status === 'queued' && record.argv.includes('filter_b'),
+            ),
+          );
+          const betaFollower = yield* Effect.fork(
+            execRequest(fixture, {
+              argv: ['cargo', 'test', '-p', 'bb', '--', 'filter_b'],
+              cwd: fixture.ws1,
+              timeoutMs: 30_000,
+            }),
+          );
+          const queued = yield* pollReport(fixture, (report) =>
+            report.active.some(
+              (record) => record.argv.includes('filter_b') && record.attachedTo !== null,
+            ),
+          );
+          const queuedFollower = queued.active.find(
+            (record) => record.argv.includes('filter_b') && record.attachedTo !== null,
+          );
+          expect(queuedFollower?.status).toBe('queued');
+          expect(queuedFollower?.startedAtMs).toBeNull();
+
+          const betaFollowerMessages = yield* Fiber.join(betaFollower);
+          const betaFollowerExit = findExit(betaFollowerMessages);
+          expect(betaFollowerExit.status).toBe('done');
+          expect(betaFollowerExit.exitCode).toBe(0);
+          const output = decodeOutput(betaFollowerMessages, 'stdout');
+          expect(output).toContain('filter_a');
+          expect(output).toContain('filter_b');
+
+          yield* Effect.all(
+            [alpha, alphaFollowerOne, alphaFollowerTwo, beta].map(Fiber.join),
+            { concurrency: 'unbounded', discard: true },
+          );
+        }),
+      ),
+    45_000,
+  );
+
   it(
     'folds two queued cargo test filters into one --no-fail-fast run',
     () =>

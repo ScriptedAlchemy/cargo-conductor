@@ -87,6 +87,40 @@ describe('ledger lifecycle', () => {
     });
   });
 
+  it('keeps an attached request queued until its leader starts', () => {
+    withLedger((ledger) => {
+      Effect.runSync(ledger.createRequest(makeInput()));
+      Effect.runSync(
+        ledger.markAttached(1, {
+          atMs: 1_200,
+          leaderTicket: 'cc-99',
+          mode: 'identity',
+        }),
+      );
+
+      const attached = Effect.runSync(ledger.getRequest(1));
+      expect(attached?.status).toBe('queued');
+      expect(attached?.queuedAtMs).toBe(1_000);
+      expect(attached?.startedAtMs).toBeNull();
+      expect(attached?.waitMs).toBeNull();
+      expect(attached?.attachedTo).toBe('cc-99');
+
+      Effect.runSync(ledger.markRunning(1, 1_700));
+      Effect.runSync(ledger.markFinished(1, { atMs: 4_200, exitCode: 0, status: 'done' }));
+
+      const finished = Effect.runSync(ledger.getRequest(1));
+      expect(finished?.startedAtMs).toBe(1_700);
+      expect(finished?.waitMs).toBe(700);
+      expect(finished?.runMs).toBe(2_500);
+      expect(Effect.runSync(ledger.transitionsFor(1)).map((transition) => transition.toStatus)).toEqual([
+        'requested',
+        'queued',
+        'running',
+        'done',
+      ]);
+    });
+  });
+
   it('stores a failed finish with its exit code and error', () => {
     withLedger((ledger) => {
       Effect.runSync(ledger.createRequest(makeInput()));

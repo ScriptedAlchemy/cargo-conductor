@@ -187,7 +187,7 @@ export interface AckMessage {
   /** Present when the request attached to an in-flight leader instead of queueing. */
   readonly attachedTo?: string;
   readonly attachMode?: AttachMode;
-  /** Cost-model runtime estimate for queued requests. */
+  /** Estimated remaining runtime for this queued request or its attached leader. */
   readonly etaMs?: number;
 }
 

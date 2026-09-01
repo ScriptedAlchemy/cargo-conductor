@@ -35,7 +35,7 @@ import type {
   StatusReport,
 } from './protocol.js';
 import { ReplayBuffer } from './replay.js';
-import type { ReplayChunk } from './replay.js';
+import type { ReplayAudience, ReplayChunk } from './replay.js';
 import { selectNextIndex } from './scheduler.js';
 import { Topology } from './topology.js';
 import { findConfiguredTargetDir, locateWorkspaceRoot } from './workspace.js';
@@ -95,7 +95,7 @@ export interface SubmitResult {
   readonly position: number;
   readonly attachedTo?: string;
   readonly attachMode?: AttachMode;
-  /** Cost-model estimate for queued (non-attached) requests. */
+  /** Estimated remaining runtime for queued requests or their attached leader. */
   readonly etaMs?: number;
 }
 
@@ -141,10 +141,13 @@ interface Attachment {
   readonly intent: NormalizedCargoIntent;
   readonly callbacks: SubmitCallbacks;
   readonly createdAtMs: number;
+  readonly estimateMs: number;
+  readonly tail: TailBuffer;
   attachedAtMs: number;
   /** True once the replay backlog is flushed; live output then flows directly. */
   live: boolean;
   startNotified: boolean;
+  startedAtMs: number | null;
   readonly pendingLive: ReplayChunk[];
 }
 
@@ -152,12 +155,22 @@ interface Attachment {
 const makeAttachment = (
   fields: Pick<
     Attachment,
-    'id' | 'ticket' | 'mode' | 'input' | 'intent' | 'callbacks' | 'createdAtMs' | 'attachedAtMs'
+    | 'id'
+    | 'ticket'
+    | 'mode'
+    | 'input'
+    | 'intent'
+    | 'callbacks'
+    | 'createdAtMs'
+    | 'estimateMs'
+    | 'tail'
+    | 'attachedAtMs'
   >,
 ): Attachment => ({
   ...fields,
   live: false,
   startNotified: false,
+  startedAtMs: null,
   pendingLive: [],
 });
 
@@ -191,6 +204,8 @@ interface Job {
   readonly tail: TailBuffer;
   /** Cost-model estimate at submission; feeds lane scheduling. */
   readonly estimateMs: number;
+  /** Real start of the cargo process, shared by attached ledger rows. */
+  startedAtMs: number | null;
   /** Fail-fast signal captured at submission (topology stat, cached). */
   readonly editedRecently: boolean;
   /** Workspace-internal transitive deps of this job's packages (topology, cached). */
@@ -269,6 +284,27 @@ const isTerminalStatus = (status: string): boolean =>
 const guarded = (effect: Effect.Effect<void>): Effect.Effect<void> =>
   Effect.catchAllCause(effect, () => Effect.void);
 
+const attachmentReceives = (attachment: Attachment, audience: ReplayAudience): boolean => {
+  if (attachment.mode === 'identity') {
+    return true;
+  }
+  switch (audience.kind) {
+    case 'all':
+      return true;
+    case 'identity':
+      return false;
+    case 'package':
+      return attachment.intent.packages.includes(audience.packageName);
+    default: {
+      const exhaustive: never = audience;
+      return exhaustive;
+    }
+  }
+};
+
+const remainingEstimateMs = (job: Job, atMs: number): number =>
+  job.startedAtMs === null ? job.estimateMs : Math.max(0, job.estimateMs - (atMs - job.startedAtMs));
+
 const requeueReasonFor = (mode: AttachMode, status: FinishedStatus): string =>
   mode === 'identity'
     ? 'coalesced run was killed; running your request directly'
@@ -297,6 +333,18 @@ export const BrokerLive: Layer.Layer<
     const inFlight = new Map<string, InFlightEntry>();
     const ticketWaiters = new Map<string, Deferred.Deferred<RequestRecord>[]>();
 
+    const removeTicketWaiter = (
+      ticket: string,
+      waiter: Deferred.Deferred<RequestRecord>,
+    ): void => {
+      const remaining = (ticketWaiters.get(ticket) ?? []).filter((item) => item !== waiter);
+      if (remaining.length === 0) {
+        ticketWaiters.delete(ticket);
+      } else {
+        ticketWaiters.set(ticket, remaining);
+      }
+    };
+
     const notifyWaiters = (ticket: string): Effect.Effect<void> =>
       Effect.gen(function* () {
         const waiters = ticketWaiters.get(ticket) ?? [];
@@ -323,24 +371,21 @@ export const BrokerLive: Layer.Layer<
       job: Job,
       channel: 'stdout' | 'stderr',
       data: Uint8Array,
-      coverageFilter: (attachment: Attachment) => boolean = () => true,
+      audience: ReplayAudience = { kind: 'all' },
     ): Effect.Effect<void> =>
       Effect.gen(function* () {
         const liveAttachments = yield* Effect.sync(() => {
-          job.replay.push(channel, data);
+          job.replay.push(channel, data, audience);
           job.tail.push(data);
           const live: Attachment[] = [];
           for (const attachment of job.attachments.values()) {
-            if (
-              (attachment.mode === 'coverage' || attachment.mode === 'batch') &&
-              !coverageFilter(attachment)
-            ) {
+            if (!attachmentReceives(attachment, audience)) {
               continue;
             }
             if (attachment.live) {
               live.push(attachment);
             } else {
-              attachment.pendingLive.push({ channel, data: Buffer.from(data) });
+              attachment.pendingLive.push({ channel, data: Buffer.from(data), audience });
             }
           }
           return live;
@@ -349,8 +394,12 @@ export const BrokerLive: Layer.Layer<
         yield* Effect.forEach(
           liveAttachments,
           (attachment) =>
-            guarded(
-              attachment.callbacks.onOutput({ ticket: attachment.ticket, channel, data }),
+            Effect.sync(() => attachment.tail.push(data)).pipe(
+              Effect.zipRight(
+                guarded(
+                  attachment.callbacks.onOutput({ ticket: attachment.ticket, channel, data }),
+                ),
+              ),
             ),
           { discard: true },
         );
@@ -363,12 +412,16 @@ export const BrokerLive: Layer.Layer<
       Effect.forEach(
         chunks,
         (chunk) =>
-          guarded(
-            attachment.callbacks.onOutput({
-              ticket: attachment.ticket,
-              channel: chunk.channel,
-              data: chunk.data,
-            }),
+          Effect.sync(() => attachment.tail.push(chunk.data)).pipe(
+            Effect.zipRight(
+              guarded(
+                attachment.callbacks.onOutput({
+                  ticket: attachment.ticket,
+                  channel: chunk.channel,
+                  data: chunk.data,
+                }),
+              ),
+            ),
           ),
         { discard: true },
       );
@@ -382,17 +435,22 @@ export const BrokerLive: Layer.Layer<
       Effect.gen(function* () {
         const snapshot = job.replay.snapshot();
         if (snapshot.droppedBytes > 0) {
+          const notice = Buffer.from(
+            `[cargo-conductor] replay truncated: ${snapshot.droppedBytes} earlier output bytes dropped\n`,
+          );
+          yield* Effect.sync(() => attachment.tail.push(notice));
           yield* guarded(
             attachment.callbacks.onOutput({
               ticket: attachment.ticket,
               channel: 'stderr',
-              data: Buffer.from(
-                `[cargo-conductor] replay truncated: ${snapshot.droppedBytes} earlier output bytes dropped\n`,
-              ),
+              data: notice,
             }),
           );
         }
-        yield* emitChunks(attachment, snapshot.chunks);
+        yield* emitChunks(
+          attachment,
+          snapshot.chunks.filter((chunk) => attachmentReceives(attachment, chunk.audience)),
+        );
         while (true) {
           const drained = yield* Effect.sync(() => {
             const batch = [...attachment.pendingLive];
@@ -425,6 +483,7 @@ export const BrokerLive: Layer.Layer<
             return false;
           }
           attachment.startNotified = true;
+          attachment.startedAtMs = atMs;
           return true;
         });
         if (won) {
@@ -442,15 +501,15 @@ export const BrokerLive: Layer.Layer<
       attachment: Attachment,
       atMs: number,
       exit: Omit<ExitInfo, 'ticket' | 'waitMs' | 'runMs'>,
-      outputTail: string | null,
     ): Effect.Effect<void> =>
       Effect.gen(function* () {
+        const startedAtMs = attachment.startedAtMs;
         yield* ledger.markFinished(attachment.id, {
           status: exit.status,
           atMs,
           exitCode: exit.exitCode,
           signal: exit.signal,
-          outputTail,
+          outputTail: attachment.tail.toString(),
           error: exit.error,
         });
         yield* notifyWaiters(attachment.ticket);
@@ -466,8 +525,11 @@ export const BrokerLive: Layer.Layer<
             status: exit.status,
             exitCode: exit.exitCode,
             signal: exit.signal,
-            waitMs: Math.max(0, attachment.attachedAtMs - attachment.createdAtMs),
-            runMs: Math.max(0, atMs - attachment.attachedAtMs),
+            waitMs: Math.max(
+              0,
+              (startedAtMs ?? attachment.attachedAtMs) - attachment.createdAtMs,
+            ),
+            runMs: startedAtMs === null ? 0 : Math.max(0, atMs - startedAtMs),
             error: exit.error,
           }),
         );
@@ -479,18 +541,19 @@ export const BrokerLive: Layer.Layer<
       atMs: number,
       note: string,
       exit: Omit<ExitInfo, 'ticket' | 'waitMs' | 'runMs'>,
-      outputTail: string | null,
     ): Effect.Effect<void> =>
       Effect.gen(function* () {
         yield* notifyAttachmentStarted(attachment, atMs);
+        const noteData = Buffer.from(note);
+        yield* Effect.sync(() => attachment.tail.push(noteData));
         yield* guarded(
           attachment.callbacks.onOutput({
             ticket: attachment.ticket,
             channel: 'stderr',
-            data: Buffer.from(note),
+            data: noteData,
           }),
         );
-        yield* finishAttachment(attachment, atMs, exit, outputTail);
+        yield* finishAttachment(attachment, atMs, exit);
       });
 
     /**
@@ -538,12 +601,12 @@ export const BrokerLive: Layer.Layer<
       intent: NormalizedCargoIntent,
       callbacks: SubmitCallbacks,
       queuedAtMs: number,
+      estimateMs: number,
     ): Effect.Effect<Job> =>
       Effect.gen(function* () {
         const killSignal = yield* Deferred.make<void>();
         const state = yield* Ref.make<JobState>('queued');
         const plan = planDemux(intent, input.argv);
-        const estimate = yield* costModel.estimate(intent);
         const editedRecently = yield* topology
           .editedRecently(intent.workspaceRoot, intent.packages)
           .pipe(Effect.catchAllCause(() => Effect.succeed(false)));
@@ -566,7 +629,8 @@ export const BrokerLive: Layer.Layer<
           execArgv: plan.execArgv,
           demux: plan.demux,
           tail: new TailBuffer(config.outputTailBytes),
-          estimateMs: estimate.estimateMs,
+          estimateMs,
+          startedAtMs: null,
           editedRecently,
           depClosure,
         };
@@ -633,6 +697,8 @@ export const BrokerLive: Layer.Layer<
         }
         const extras: string[] = [];
         const absorbed: Job[] = [];
+        const foldedAttachments: Attachment[] = [];
+        const atMs = Date.now();
         yield* Effect.sync(() => {
           const named = new Set(leader.intent.packages);
           for (let index = lane.pending.length - 1; index >= 0; index -= 1) {
@@ -653,36 +719,58 @@ export const BrokerLive: Layer.Layer<
             extras.push(...extra);
             absorbed.push(candidate);
             lane.pending.splice(index, 1);
+            candidate.attachGate.open = false;
             inFlight.delete(candidate.ticket);
+            const candidateAttachment = makeAttachment({
+              id: candidate.id,
+              ticket: candidate.ticket,
+              mode: 'batch',
+              input: candidate.input,
+              intent: candidate.intent,
+              callbacks: candidate.callbacks,
+              createdAtMs: candidate.queuedAtMs,
+              estimateMs: candidate.estimateMs,
+              tail: new TailBuffer(config.outputTailBytes),
+              attachedAtMs: atMs,
+            });
+            leader.attachments.set(candidateAttachment.ticket, candidateAttachment);
+            inFlight.set(candidateAttachment.ticket, {
+              kind: 'attachment',
+              leader,
+              attachment: candidateAttachment,
+            });
+            foldedAttachments.push(candidateAttachment);
+
+            for (const attachment of candidate.attachments.values()) {
+              switch (attachment.mode) {
+                case 'identity':
+                  attachment.mode = 'batch';
+                  break;
+                case 'coverage':
+                case 'batch':
+                  break;
+                default: {
+                  const exhaustive: never = attachment.mode;
+                  return exhaustive;
+                }
+              }
+              leader.attachments.set(attachment.ticket, attachment);
+              inFlight.set(attachment.ticket, { kind: 'attachment', leader, attachment });
+              foldedAttachments.push(attachment);
+            }
+            candidate.attachments.clear();
           }
         });
         if (absorbed.length === 0) {
           return;
         }
-        const atMs = Date.now();
         yield* Effect.forEach(
-          absorbed,
-          (candidate) =>
-            Effect.gen(function* () {
-              const attachment = makeAttachment({
-                id: candidate.id,
-                ticket: candidate.ticket,
-                mode: 'batch',
-                input: candidate.input,
-                intent: candidate.intent,
-                callbacks: candidate.callbacks,
-                createdAtMs: candidate.queuedAtMs,
-                attachedAtMs: atMs,
-              });
-              yield* Effect.sync(() => {
-                leader.attachments.set(attachment.ticket, attachment);
-                inFlight.set(attachment.ticket, { kind: 'attachment', leader, attachment });
-              });
-              yield* ledger.markAttached(candidate.id, {
-                atMs,
-                leaderTicket: leader.ticket,
-                mode: 'batch',
-              });
+          foldedAttachments,
+          (attachment) =>
+            ledger.markAttached(attachment.id, {
+              atMs,
+              leaderTicket: leader.ticket,
+              mode: attachment.mode,
             }),
           { discard: true },
         );
@@ -771,7 +859,6 @@ export const BrokerLive: Layer.Layer<
                     signal: null,
                     error: `compile errors in ${failed}`,
                   },
-              job.tail.toString(),
             ),
           { discard: true },
         );
@@ -791,11 +878,11 @@ export const BrokerLive: Layer.Layer<
     ): Effect.Effect<void> =>
       Effect.gen(function* () {
         yield* ledger.markAttached(attachment.id, { atMs, leaderTicket: leader.ticket, mode });
-        const leaderState = yield* Ref.get(leader.state);
-        if (leaderState !== 'running') {
+        if (leader.startedAtMs === null) {
           return;
         }
-        const won = yield* notifyAttachmentStarted(attachment, atMs);
+        yield* ledger.markRunning(attachment.id, leader.startedAtMs);
+        const won = yield* notifyAttachmentStarted(attachment, leader.startedAtMs);
         if (won) {
           yield* replayThenGoLive(leader, attachment);
         }
@@ -812,7 +899,7 @@ export const BrokerLive: Layer.Layer<
       if (event === null) {
         // Non-JSON stdout (test binaries, stray prints): leader and identity
         // attachments only — it cannot be attributed to a coverage scope.
-        return emitChunk(job, 'stdout', Buffer.from(`${line}\n`), () => false);
+        return emitChunk(job, 'stdout', Buffer.from(`${line}\n`), { kind: 'identity' });
       }
       switch (event.kind) {
         case 'artifact': {
@@ -844,8 +931,9 @@ export const BrokerLive: Layer.Layer<
                   job,
                   'stderr',
                   Buffer.from(rendered.endsWith('\n') ? rendered : `${rendered}\n`),
-                  (attachment) =>
-                    packageName === null || attachment.intent.packages.includes(packageName),
+                  packageName === null
+                    ? { kind: 'all' }
+                    : { kind: 'package', packageName },
                 );
           return record.pipe(
             Effect.zipRight(forward),
@@ -902,6 +990,8 @@ export const BrokerLive: Layer.Layer<
           intent: attachment.intent,
           callbacks: attachment.callbacks,
           createdAtMs: attachment.createdAtMs,
+          estimateMs: attachment.estimateMs,
+          tail: attachment.tail,
           attachedAtMs: atMs,
         });
         const reattached = yield* tryRegisterAttachment(lane.key, revived);
@@ -917,6 +1007,7 @@ export const BrokerLive: Layer.Layer<
           attachment.intent,
           attachment.callbacks,
           atMs,
+          attachment.estimateMs,
         );
         yield* Effect.sync(() => inFlight.set(job.ticket, { kind: 'leader', job }));
         yield* enqueueJob(lane, job);
@@ -930,14 +1021,13 @@ export const BrokerLive: Layer.Layer<
       exitCode: number | null,
       signal: string | null,
       error: string | null,
-      outputTail: string | null,
+      atMs: number,
     ): Effect.Effect<void> =>
       Effect.gen(function* () {
         const detached = yield* detachAll(job);
         if (detached.length === 0) {
           return;
         }
-        const atMs = Date.now();
         for (const attachment of detached) {
           // A failed leader can still prove a coverage demand: the demanded
           // units may have compiled cleanly before an unrelated unit failed.
@@ -960,16 +1050,10 @@ export const BrokerLive: Layer.Layer<
               atMs,
               `[cargo-conductor] ${job.ticket} failed elsewhere, but your requested packages compiled cleanly\n`,
               { status: 'done', exitCode: 0, signal: null, error: null },
-              outputTail,
             );
           } else if (mirrors) {
             yield* notifyAttachmentStarted(attachment, atMs);
-            yield* finishAttachment(
-              attachment,
-              atMs,
-              { status, exitCode, signal, error },
-              outputTail,
-            );
+            yield* finishAttachment(attachment, atMs, { status, exitCode, signal, error });
           } else if (lane !== null) {
             yield* requeueAttachment(lane, attachment, requeueReasonFor(attachment.mode, status));
           } else {
@@ -977,7 +1061,6 @@ export const BrokerLive: Layer.Layer<
               attachment,
               atMs,
               { status: 'killed', exitCode: null, signal: null, error: 'daemon shutdown' },
-              null,
             );
           }
         }
@@ -1013,7 +1096,7 @@ export const BrokerLive: Layer.Layer<
             error: 'killed while queued',
           }),
         );
-        yield* settleAttachments(lane, job, 'killed', null, null, 'killed while queued', null);
+        yield* settleAttachments(lane, job, 'killed', null, null, 'killed while queued', atMs);
       });
 
     // Runs with an admission permit held; interruption here means daemon
@@ -1026,6 +1109,10 @@ export const BrokerLive: Layer.Layer<
           return;
         }
         const runStartedAtMs = Date.now();
+        const queuedAttachments = yield* Effect.sync(() => {
+          job.startedAtMs = runStartedAtMs;
+          return [...job.attachments.values()];
+        });
         yield* Ref.set(job.state, 'running');
         yield* Ref.set(lane.running, job.ticket);
         // execArgv already carries the demux flag and any batch-folded -p
@@ -1033,11 +1120,11 @@ export const BrokerLive: Layer.Layer<
         yield* ledger.markRunning(job.id, runStartedAtMs, job.execArgv);
         const waitMs = runStartedAtMs - job.queuedAtMs;
         yield* guarded(job.callbacks.onStarted({ ticket: job.ticket, waitMs }));
-        const queuedAttachments = yield* Effect.sync(() => [...job.attachments.values()]);
         yield* Effect.forEach(
           queuedAttachments,
           (attachment) =>
             Effect.gen(function* () {
+              yield* ledger.markRunning(attachment.id, runStartedAtMs);
               const won = yield* notifyAttachmentStarted(attachment, runStartedAtMs);
               if (won) {
                 // The winner attached while the leader was queued: no output
@@ -1076,20 +1163,25 @@ export const BrokerLive: Layer.Layer<
         }).pipe(
           Effect.provideService(CommandExecutor.CommandExecutor, commandExecutor),
           Effect.onInterrupt(() =>
-            ledger
-              .markFinished(job.id, {
+            Effect.gen(function* () {
+              const interruptedAtMs = Date.now();
+              yield* ledger.markFinished(job.id, {
                 status: 'killed',
-                atMs: Date.now(),
+                atMs: interruptedAtMs,
                 signal: 'SIGTERM',
                 error: 'daemon shutdown',
-              })
-              .pipe(
-                Effect.zipRight(finishExit(lane, job)),
-                Effect.zipRight(
-                  settleAttachments(null, job, 'killed', null, 'SIGTERM', 'daemon shutdown', null),
-                ),
-                Effect.ignore,
-              ),
+              });
+              yield* finishExit(lane, job);
+              yield* settleAttachments(
+                null,
+                job,
+                'killed',
+                null,
+                'SIGTERM',
+                'daemon shutdown',
+                interruptedAtMs,
+              );
+            }).pipe(Effect.ignore),
           ),
         );
         const finishedAtMs = Date.now();
@@ -1125,7 +1217,7 @@ export const BrokerLive: Layer.Layer<
           result.exitCode,
           result.signal,
           result.error,
-          outputTail,
+          finishedAtMs,
         );
       });
 
@@ -1161,9 +1253,15 @@ export const BrokerLive: Layer.Layer<
                   })
                   .pipe(Effect.ignore);
                 yield* finishExit(lane, job);
-                yield* settleAttachments(lane, job, 'failed', null, null, message, null).pipe(
-                  Effect.ignore,
-                );
+                yield* settleAttachments(
+                  lane,
+                  job,
+                  'failed',
+                  null,
+                  null,
+                  message,
+                  Date.now(),
+                ).pipe(Effect.ignore);
               }),
             ),
           );
@@ -1286,6 +1384,8 @@ export const BrokerLive: Layer.Layer<
               intent: normalized,
               callbacks,
               createdAtMs,
+              estimateMs: estimate.estimateMs,
+              tail: new TailBuffer(config.outputTailBytes),
               attachedAtMs: createdAtMs,
             });
             const registered = yield* tryRegisterAttachment(laneKey, attachment);
@@ -1302,6 +1402,7 @@ export const BrokerLive: Layer.Layer<
                 position: 0,
                 attachedTo: registered.leader.ticket,
                 attachMode: registered.mode,
+                etaMs: remainingEstimateMs(registered.leader, Date.now()),
               };
             }
             const job = yield* makeJob(
@@ -1312,6 +1413,7 @@ export const BrokerLive: Layer.Layer<
               normalized,
               callbacks,
               createdAtMs,
+              estimate.estimateMs,
             );
             yield* Effect.sync(() => inFlight.set(job.ticket, { kind: 'leader', job }));
             yield* ledger.markQueued(created.id, createdAtMs);
@@ -1326,32 +1428,27 @@ export const BrokerLive: Layer.Layer<
 
     const awaitTicket = (ticket: string, maxWaitMs: number): Effect.Effect<AwaitTicketResult> =>
       Effect.gen(function* () {
-        const current = yield* ledger.getRequestByTicket(ticket);
-        if (current === null) {
-          return { record: null, timedOut: false };
-        }
-        if (isTerminalStatus(current.status)) {
-          return { record: current, timedOut: false };
-        }
         const waiter = yield* Deferred.make<RequestRecord>();
         yield* Effect.sync(() => {
           const existing = ticketWaiters.get(ticket) ?? [];
           existing.push(waiter);
           ticketWaiters.set(ticket, existing);
         });
+        const current = yield* ledger.getRequestByTicket(ticket);
+        if (current === null) {
+          yield* Effect.sync(() => removeTicketWaiter(ticket, waiter));
+          return { record: null, timedOut: false };
+        }
+        if (isTerminalStatus(current.status)) {
+          yield* Effect.sync(() => removeTicketWaiter(ticket, waiter));
+          return { record: current, timedOut: false };
+        }
         return yield* Deferred.await(waiter).pipe(
           Effect.timeout(`${Math.max(0, maxWaitMs)} millis`),
           Effect.map((record) => ({ record, timedOut: false })),
           Effect.catchTag('TimeoutException', () =>
             Effect.gen(function* () {
-              yield* Effect.sync(() => {
-                const remaining = (ticketWaiters.get(ticket) ?? []).filter((item) => item !== waiter);
-                if (remaining.length === 0) {
-                  ticketWaiters.delete(ticket);
-                } else {
-                  ticketWaiters.set(ticket, remaining);
-                }
-              });
+              yield* Effect.sync(() => removeTicketWaiter(ticket, waiter));
               const record = yield* ledger.getRequestByTicket(ticket);
               return {
                 record,
@@ -1396,7 +1493,6 @@ export const BrokerLive: Layer.Layer<
           entry.attachment,
           Date.now(),
           { status: 'killed', exitCode: null, signal: null, error: 'detached by kill' },
-          null,
         );
         return true;
       });

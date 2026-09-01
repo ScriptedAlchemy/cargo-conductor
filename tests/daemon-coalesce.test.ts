@@ -46,6 +46,7 @@ describe('identity coalescing', () => {
         const followerAck = findAck(followerMessages);
         expect(followerAck.attachedTo).toMatch(/^cc-\d+$/u);
         expect(followerAck.attachMode).toBe('identity');
+        expect(followerAck.etaMs).toBeGreaterThan(0);
 
         // Replayed leader output reaches the follower even though it was
         // emitted before the follower connected.
@@ -69,10 +70,16 @@ describe('identity coalescing', () => {
         const followerRecord = report.recent.find(
           (record) => record.ticket === followerExit.ticket,
         );
+        const leaderRecord = report.recent.find(
+          (record) => record.ticket === leaderExit.ticket,
+        );
         expect(followerRecord?.attachedTo).toBe(leaderExit.ticket);
         expect(followerRecord?.attachMode).toBe('identity');
+        expect(followerRecord?.startedAtMs).toBe(leaderRecord?.startedAtMs);
+        expect(followerRecord?.runMs).toBe(leaderRecord?.runMs);
 
-        // The follower never queued or executed: requested -> running -> done.
+        // The follower is queued against the leader, then inherits the
+        // leader's real running phase instead of starting at attach time.
         const db = openLedgerDatabase(fixture.config.databasePath);
         const transitions = yield* createLedgerApi(db).transitionsFor(
           Number(followerExit.ticket.slice('cc-'.length)),
@@ -80,6 +87,7 @@ describe('identity coalescing', () => {
         db.close();
         expect(transitions.map((transition) => transition.toStatus)).toEqual([
           'requested',
+          'queued',
           'running',
           'done',
         ]);
@@ -195,8 +203,8 @@ describe('coverage subsumption', () => {
         const leaderExit = findExit(yield* Fiber.join(leaderFiber));
         expect(leaderExit.status).toBe('failed');
 
-        // Ledger shows the full journey: requested -> running (attached) ->
-        // queued (requeued) -> running -> done.
+        // Ledger shows the full journey: requested -> queued -> running
+        // (attached) -> queued (requeued) -> running -> done.
         const db = openLedgerDatabase(fixture.config.databasePath);
         const transitions = yield* createLedgerApi(db).transitionsFor(
           Number(followerExit.ticket.slice('cc-'.length)),
@@ -204,6 +212,7 @@ describe('coverage subsumption', () => {
         db.close();
         expect(transitions.map((transition) => transition.toStatus)).toEqual([
           'requested',
+          'queued',
           'running',
           'queued',
           'running',

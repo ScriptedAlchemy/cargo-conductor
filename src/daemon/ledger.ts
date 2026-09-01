@@ -294,10 +294,21 @@ export const createLedgerApi = (db: DatabaseSync): LedgerApi => ({
         `UPDATE requests
          SET status = ?,
              started_at_ms = ?,
-             wait_ms = CASE WHEN queued_at_ms IS NULL THEN NULL ELSE ? - queued_at_ms END,
+             wait_ms = CASE
+               WHEN attached_to IS NOT NULL THEN MAX(0, ? - created_at_ms)
+               WHEN queued_at_ms IS NULL THEN NULL
+               ELSE MAX(0, ? - queued_at_ms)
+             END,
              exec_argv_json = ?
          WHERE id = ?`,
-      ).run('running', atMs, atMs, execArgv === undefined ? null : JSON.stringify(execArgv), id);
+      ).run(
+        'running',
+        atMs,
+        atMs,
+        atMs,
+        execArgv === undefined ? null : JSON.stringify(execArgv),
+        id,
+      );
       recordTransition(db, id, atMs, 'queued', 'running');
     }),
 
@@ -306,14 +317,17 @@ export const createLedgerApi = (db: DatabaseSync): LedgerApi => ({
       const fromStatus = readStatus(db, id);
       db.prepare(
         `UPDATE requests
-         SET status = 'running',
-             started_at_ms = ?,
-             wait_ms = ? - created_at_ms,
+         SET status = 'queued',
+             queued_at_ms = COALESCE(queued_at_ms, created_at_ms),
+             started_at_ms = NULL,
+             wait_ms = NULL,
              attached_to = ?,
              attach_mode = ?
          WHERE id = ?`,
-      ).run(input.atMs, input.atMs, input.leaderTicket, input.mode, id);
-      recordTransition(db, id, input.atMs, fromStatus, 'running');
+      ).run(input.leaderTicket, input.mode, id);
+      if (fromStatus !== 'queued') {
+        recordTransition(db, id, input.atMs, fromStatus, 'queued');
+      }
     }),
 
   markRequeued: (id, atMs) =>
@@ -339,7 +353,10 @@ export const createLedgerApi = (db: DatabaseSync): LedgerApi => ({
         `UPDATE requests
          SET status = ?,
              finished_at_ms = ?,
-             run_ms = CASE WHEN started_at_ms IS NULL THEN NULL ELSE ? - started_at_ms END,
+             run_ms = CASE
+               WHEN started_at_ms IS NULL THEN NULL
+               ELSE MAX(0, ? - started_at_ms)
+             END,
              exit_code = ?,
              signal = ?,
              output_tail = ?,

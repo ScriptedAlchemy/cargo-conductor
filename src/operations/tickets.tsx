@@ -6,6 +6,7 @@ import { awaitTicket, fetchTicket, submitBackground } from '../client/tickets.js
 import { ConductorResult } from '../result.js';
 
 import {
+  awaitMaxWaitMs,
   awaitResultSchema,
   requestInputSchema,
   requestResultSchema,
@@ -37,6 +38,11 @@ const parseTicket = (args: readonly string[]): TicketInput => {
   const maxWaitMs = Number(raw);
   if (raw === undefined || !Number.isInteger(maxWaitMs) || maxWaitMs < 0) {
     throw new Error('--max-wait-ms requires a non-negative integer');
+  }
+  if (maxWaitMs > awaitMaxWaitMs) {
+    throw new Error(
+      `--max-wait-ms must be at most ${awaitMaxWaitMs} (${awaitMaxWaitMs / 60_000} minutes); use conductor result to poll longer waits`,
+    );
   }
   return { maxWaitMs, ticket };
 };

@@ -1,6 +1,12 @@
+export type ReplayAudience =
+  | { readonly kind: 'all' }
+  | { readonly kind: 'identity' }
+  | { readonly kind: 'package'; readonly packageName: string };
+
 export interface ReplayChunk {
   readonly channel: 'stdout' | 'stderr';
   readonly data: Uint8Array;
+  readonly audience: ReplayAudience;
 }
 
 export interface ReplaySnapshot {
@@ -24,7 +30,11 @@ export class ReplayBuffer {
     this.#capacity = Math.max(0, capacityBytes);
   }
 
-  push(channel: 'stdout' | 'stderr', data: Uint8Array): void {
+  push(
+    channel: 'stdout' | 'stderr',
+    data: Uint8Array,
+    audience: ReplayAudience = { kind: 'all' },
+  ): void {
     if (data.byteLength === 0) {
       return;
     }
@@ -32,7 +42,7 @@ export class ReplayBuffer {
       this.#dropped += data.byteLength;
       return;
     }
-    this.#chunks.push({ channel, data: Buffer.from(data) });
+    this.#chunks.push({ channel, data: Buffer.from(data), audience });
     this.#bytes += data.byteLength;
     while (this.#bytes > this.#capacity && this.#chunks.length > 0) {
       const oldest = this.#chunks.shift();

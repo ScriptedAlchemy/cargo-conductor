@@ -187,6 +187,56 @@ describe('json demux early release', () => {
       }),
     ));
 
+  it('scope-filters replay and durable tails for late coverage attachments', () =>
+    withDaemon(5, (fixture) =>
+      Effect.gen(function* () {
+        const staged = stagedCargo(fixture, [
+          'sleep:0.2',
+          errorLine('bb', 'error[E0999]: replay must hide bb'),
+          'sleep:1.0',
+          artifactLine('aa'),
+          '{"reason":"build-finished","success":false}',
+          'exit:101',
+        ]);
+        const leaderFiber = yield* Effect.fork(
+          execRequest(fixture, {
+            cwd: fixture.ws1,
+            argv: [staged.cargoPath, 'check', '-p', 'aa', '-p', 'bb'],
+            extraEnv: staged.extraEnv,
+            timeoutMs: 15_000,
+          }),
+        );
+        yield* pollReport(fixture, (report) =>
+          report.active.some((record) => record.status === 'running'),
+        );
+        yield* Effect.sleep('500 millis');
+
+        const followerMessages = yield* execRequest(fixture, {
+          cwd: fixture.ws1,
+          argv: [staged.cargoPath, 'check', '-p', 'aa', '--lib'],
+          extraEnv: staged.extraEnv,
+          timeoutMs: 15_000,
+        });
+        const followerExit = findExit(followerMessages);
+        expect(followerExit.status).toBe('done');
+        expect(decodeOutput(followerMessages, 'stderr')).not.toContain('replay must hide bb');
+
+        const report = yield* pollReport(fixture, (candidate) =>
+          candidate.recent.some(
+            (record) => record.ticket === followerExit.ticket && record.status === 'done',
+          ),
+        );
+        const followerRecord = report.recent.find(
+          (record) => record.ticket === followerExit.ticket,
+        );
+        expect(followerRecord?.outputTail).not.toContain('replay must hide bb');
+
+        const leaderMessages = yield* Fiber.join(leaderFiber);
+        expect(findExit(leaderMessages).status).toBe('failed');
+        expect(decodeOutput(leaderMessages, 'stderr')).toContain('replay must hide bb');
+      }),
+    ));
+
   it('keeps caller-chosen message formats verbatim (no demux double-parse)', () =>
     withDaemon(5, (fixture) =>
       Effect.gen(function* () {

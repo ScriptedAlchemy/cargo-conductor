@@ -14,60 +14,58 @@ const requestStatusSchema = z.enum([
 const attachModeSchema = z.enum(['identity', 'coverage', 'batch']);
 const daemonStatusSchema = z.enum(['running', 'stopped']);
 
-const requestRecordSchema = z
-  .object({
-    argv: z.array(z.string()),
-    attachMode: attachModeSchema.nullable(),
-    attachedTo: z.string().nullable(),
-    createdAtMs: z.number(),
-    cwd: z.string(),
-    error: z.string().nullable(),
-    exitCode: z.number().nullable(),
-    finishedAtMs: z.number().nullable(),
-    host: z.string().nullable(),
-    id: z.number().int(),
-    intentJson: z.string().nullable(),
-    intentKey: z.string().nullable(),
-    laneKey: z.string(),
-    outputTail: z.string().nullable(),
-    queuedAtMs: z.number().nullable(),
-    runMs: z.number().nullable(),
-    session: z.string().nullable(),
-    signal: z.string().nullable(),
-    startedAtMs: z.number().nullable(),
-    status: requestStatusSchema,
-    targetDir: z.string(),
-    ticket: z.string(),
-    waitMs: z.number().nullable(),
-    workspaceRoot: z.string(),
-    background: z.boolean(),
-    holdStop: z.boolean(),
-    estimateMs: z.number().nullable(),
-    execArgv: z.array(z.string()).nullable(),
-  })
-  .strict() satisfies z.ZodType<RequestRecord>;
+// Daemon-sourced payloads deliberately STRIP unknown keys instead of
+// rejecting them (issue #4): plugin snapshots outlive daemon upgrades, and a
+// strict schema here turns every additive daemon field into a breaking
+// change for still-running MCP servers from older installs.
+export const requestRecordSchema = z.object({
+  argv: z.array(z.string()),
+  attachMode: attachModeSchema.nullable(),
+  attachedTo: z.string().nullable(),
+  createdAtMs: z.number(),
+  cwd: z.string(),
+  error: z.string().nullable(),
+  exitCode: z.number().nullable(),
+  finishedAtMs: z.number().nullable(),
+  host: z.string().nullable(),
+  id: z.number().int(),
+  intentJson: z.string().nullable(),
+  intentKey: z.string().nullable(),
+  laneKey: z.string(),
+  outputTail: z.string().nullable(),
+  queuedAtMs: z.number().nullable(),
+  runMs: z.number().nullable(),
+  session: z.string().nullable(),
+  signal: z.string().nullable(),
+  startedAtMs: z.number().nullable(),
+  status: requestStatusSchema,
+  targetDir: z.string(),
+  ticket: z.string(),
+  waitMs: z.number().nullable(),
+  workspaceRoot: z.string(),
+  background: z.boolean(),
+  holdStop: z.boolean(),
+  estimateMs: z.number().nullable(),
+  execArgv: z.array(z.string()).nullable(),
+}) satisfies z.ZodType<RequestRecord>;
 
-const laneStatusSchema = z
-  .object({
-    key: z.string(),
-    queued: z.number().int(),
-    runningTicket: z.string().nullable(),
-    targetDir: z.string(),
-    workspaceRoot: z.string(),
-  })
-  .strict() satisfies z.ZodType<LaneStatus>;
+const laneStatusSchema = z.object({
+  key: z.string(),
+  queued: z.number().int(),
+  runningTicket: z.string().nullable(),
+  targetDir: z.string(),
+  workspaceRoot: z.string(),
+}) satisfies z.ZodType<LaneStatus>;
 
-const statusReportSchema = z
-  .object({
-    active: z.array(requestRecordSchema),
-    lanes: z.array(laneStatusSchema),
-    maxConcurrent: z.number().int(),
-    pid: z.number().int(),
-    recent: z.array(requestRecordSchema),
-    socketPath: z.string(),
-    startedAtMs: z.number(),
-  })
-  .strict() satisfies z.ZodType<StatusReport>;
+const statusReportSchema = z.object({
+  active: z.array(requestRecordSchema),
+  lanes: z.array(laneStatusSchema),
+  maxConcurrent: z.number().int(),
+  pid: z.number().int(),
+  recent: z.array(requestRecordSchema),
+  socketPath: z.string(),
+  startedAtMs: z.number(),
+}) satisfies z.ZodType<StatusReport>;
 
 export const limitInputSchema = z
   .object({
@@ -167,10 +165,13 @@ export const daemonResultSchema = z
   })
   .strict() satisfies z.ZodType<DaemonResult>;
 
+/** Await ceiling (2h): agent build queues here routinely exceed 15 minutes. */
+export const awaitMaxWaitMs = 7_200_000;
+
 export const ticketInputSchema = z
   .object({
     ticket: z.string().min(1),
-    maxWaitMs: z.number().int().min(0).max(900_000).optional(),
+    maxWaitMs: z.number().int().min(0).max(awaitMaxWaitMs).optional(),
   })
   .strict();
 
