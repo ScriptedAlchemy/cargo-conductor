@@ -1,12 +1,19 @@
+import { randomUUID } from 'node:crypto';
+
+import type * as Socket from 'effect/unstable/socket/Socket';
+import * as Cause from 'effect/Cause';
 import * as Deferred from 'effect/Deferred';
 import * as Effect from 'effect/Effect';
 import * as Queue from 'effect/Queue';
-import * as Ref from 'effect/Ref';
 import type * as Scope from 'effect/Scope';
-import type * as Socket from 'effect/unstable/socket/Socket';
 
 import type { BrokerApi } from './broker.js';
-import type { ClientMessage, ExecRequest, ServerMessage } from './protocol.js';
+import type {
+  ClientMessage,
+  ExecRequest,
+  OutputMessage,
+  ServerMessage,
+} from './protocol.js';
 import { LineBuffer, clientMessageSchema, encodeServerMessage } from './protocol.js';
 
 export interface ConnectionHandlerOptions {
@@ -14,6 +21,158 @@ export interface ConnectionHandlerOptions {
   readonly shutdownLatch: Deferred.Deferred<void>;
   readonly startedAtMs: number;
   readonly version: string;
+}
+
+export interface ConnectionOutputBufferOptions {
+  readonly maxOutputBytes: number;
+  readonly maxOutputMessages: number;
+}
+
+interface BufferedServerMessage {
+  message: ServerMessage;
+  outputBytes: number;
+}
+
+const defaultOutputBufferOptions: ConnectionOutputBufferOptions = {
+  maxOutputBytes: 1024 * 1024,
+  maxOutputMessages: 128,
+};
+
+/**
+ * FIFO connection buffer with a bounded bulk-output portion. Control and
+ * terminal messages are always retained; overflow replaces output with one
+ * ordinary stderr output message so old clients display the truncation note.
+ */
+export class ConnectionOutputBuffer {
+  readonly #options: ConnectionOutputBufferOptions;
+  readonly #pending: BufferedServerMessage[] = [];
+  #bufferedOutputBytes = 0;
+  #bufferedOutputMessages = 0;
+  #droppedPayloadBytes = 0;
+  #truncation: BufferedServerMessage | null = null;
+
+  constructor(options: ConnectionOutputBufferOptions = defaultOutputBufferOptions) {
+    this.#options = options;
+  }
+
+  get bufferedOutputBytes(): number {
+    return this.#bufferedOutputBytes;
+  }
+
+  get bufferedOutputMessages(): number {
+    return this.#bufferedOutputMessages;
+  }
+
+  get size(): number {
+    return this.#pending.length;
+  }
+
+  offer(message: ServerMessage): boolean {
+    const wasEmpty = this.#pending.length === 0;
+    if (message.type !== 'output') {
+      this.#pending.push({ message, outputBytes: 0 });
+      return wasEmpty;
+    }
+    const outputBytes = message.data.length;
+    if (
+      this.#bufferedOutputMessages < this.#options.maxOutputMessages &&
+      this.#bufferedOutputBytes + outputBytes <= this.#options.maxOutputBytes
+    ) {
+      this.#pending.push({ message, outputBytes });
+      this.#bufferedOutputMessages += 1;
+      this.#bufferedOutputBytes += outputBytes;
+      return wasEmpty;
+    }
+    this.#recordDrop(message);
+    return wasEmpty;
+  }
+
+  take(): ServerMessage | null {
+    const envelope = this.#pending.shift();
+    if (envelope === undefined) {
+      return null;
+    }
+    if (envelope.message.type === 'output') {
+      this.#bufferedOutputMessages -= 1;
+      this.#bufferedOutputBytes -= envelope.outputBytes;
+      if (envelope === this.#truncation) {
+        this.#truncation = null;
+        this.#droppedPayloadBytes = 0;
+      }
+    }
+    return envelope.message;
+  }
+
+  #recordDrop(message: OutputMessage): void {
+    this.#droppedPayloadBytes += Buffer.byteLength(message.data, 'base64');
+    if (this.#truncation !== null) {
+      this.#replaceTruncation(message);
+      return;
+    }
+    while (
+      this.#bufferedOutputMessages >= this.#options.maxOutputMessages ||
+      this.#bufferedOutputBytes + this.#noticeBytes(message) > this.#options.maxOutputBytes
+    ) {
+      const index = this.#lastOutputIndex();
+      if (index === -1) {
+        return;
+      }
+      const removed = this.#pending[index];
+      if (removed === undefined) {
+        return;
+      }
+      this.#droppedPayloadBytes +=
+        removed.message.type === 'output'
+          ? Buffer.byteLength(removed.message.data, 'base64')
+          : 0;
+      this.#pending.splice(index, 1);
+      this.#bufferedOutputMessages -= 1;
+      this.#bufferedOutputBytes -= removed.outputBytes;
+    }
+    const notice = this.#makeNotice(message);
+    const envelope = { message: notice, outputBytes: notice.data.length };
+    this.#pending.push(envelope);
+    this.#bufferedOutputMessages += 1;
+    this.#bufferedOutputBytes += envelope.outputBytes;
+    this.#truncation = envelope;
+  }
+
+  #replaceTruncation(message: OutputMessage): void {
+    const truncation = this.#truncation;
+    if (truncation === null) {
+      return;
+    }
+    const notice = this.#makeNotice(message);
+    this.#bufferedOutputBytes -= truncation.outputBytes;
+    truncation.message = notice;
+    truncation.outputBytes = notice.data.length;
+    this.#bufferedOutputBytes += truncation.outputBytes;
+  }
+
+  #noticeBytes(message: OutputMessage): number {
+    return this.#makeNotice(message).data.length;
+  }
+
+  #makeNotice(message: OutputMessage): OutputMessage {
+    return {
+      type: 'output',
+      id: message.id,
+      ticket: message.ticket,
+      channel: 'stderr',
+      data: Buffer.from(
+        `[cargo-conductor] output truncated for slow client: ${this.#droppedPayloadBytes} bytes dropped\n`,
+      ).toString('base64'),
+    };
+  }
+
+  #lastOutputIndex(): number {
+    for (let index = this.#pending.length - 1; index >= 0; index -= 1) {
+      if (this.#pending[index]?.message.type === 'output') {
+        return index;
+      }
+    }
+    return -1;
+  }
 }
 
 const extractId = (value: unknown): string | null => {
@@ -26,9 +185,10 @@ const extractId = (value: unknown): string | null => {
 
 /**
  * One fiber per connection. Inbound lines are dispatched off the read pump
- * (exec submissions fork) so a long build never blocks kill/status messages
- * arriving on the same socket. Outbound messages flow through a queue with a
- * single writer fiber, keeping NDJSON lines whole under concurrency.
+ * (exec submissions and long-poll awaits fork) so suspending work never blocks
+ * kill/status messages arriving on the same socket. Outbound messages flow
+ * through a queue with a single writer fiber, keeping NDJSON lines whole under
+ * concurrency.
  */
 export const makeConnectionHandler =
   (options: ConnectionHandlerOptions) =>
@@ -36,30 +196,70 @@ export const makeConnectionHandler =
     Effect.scoped(
       Effect.gen(function* () {
         const write = yield* socket.writer;
-        const outbound = yield* Queue.unbounded<ServerMessage>();
-        const closed = yield* Ref.make(false);
+        const outbound = new ConnectionOutputBuffer();
+        const outboundWake = yield* Queue.dropping<void>(1);
+        const connection = { closed: false };
         const ownTickets = new Set<string>();
 
         // Jobs outlive connections by design (results stay retrievable from
         // the ledger), so sends become no-ops once the peer is gone. The
-        // outbound queue is never shut down: offers to a shutdown queue
-        // interrupt the offering fiber, which must never happen to a lane
-        // worker delivering output.
+        // The wake queue is never shut down and has dropping capacity one:
+        // offers never block or interrupt a lane worker delivering output.
         const send = (message: ServerMessage): Effect.Effect<void> =>
-          Effect.gen(function* () {
-            const isClosed = yield* Ref.get(closed);
-            if (!isClosed) {
-              yield* Queue.offer(outbound, message);
+          Effect.uninterruptible(
+            Effect.gen(function* () {
+              const shouldWake = yield* Effect.sync(() => {
+                if (connection.closed) {
+                  return false;
+                }
+                return outbound.offer(message);
+              });
+              if (shouldWake) {
+                yield* Queue.offer(outboundWake, undefined);
+              }
+            }),
+          );
+
+        const recoverHandlerDefect =
+          (id: string | null, handler: string) =>
+          (cause: Cause.Cause<unknown>): Effect.Effect<void> =>
+            Cause.hasInterruptsOnly(cause)
+              ? Effect.interrupt
+              : Effect.logError(`daemon ${handler} failed`, cause).pipe(
+                  Effect.andThen(
+                    id === null
+                      ? Effect.void
+                      : send({
+                          type: 'error',
+                          id,
+                          code: 'internal',
+                          message: 'internal daemon error',
+                        }),
+                  ),
+                );
+
+        const takeOutbound = (): Effect.Effect<ServerMessage> =>
+          Effect.suspend(() => {
+            const message = outbound.take();
+            if (message !== null) {
+              return Effect.succeed(message);
             }
+            return Queue.take(outboundWake).pipe(Effect.andThen(takeOutbound()));
           });
 
         yield* Effect.forkChild(
           Effect.forever(
             Effect.gen(function* () {
-              const message = yield* Queue.take(outbound);
+              const message = yield* takeOutbound();
               yield* write(encodeServerMessage(message));
             }),
-          ).pipe(Effect.catchCause(() => Ref.set(closed, true))),
+          ).pipe(
+            Effect.catchCause(() =>
+              Effect.sync(() => {
+                connection.closed = true;
+              }),
+            ),
+          ),
         );
 
         const handleExec = (message: ExecRequest): Effect.Effect<void> =>
@@ -77,6 +277,17 @@ export const makeConnectionHandler =
                   holdStop: message.holdStop,
                 },
                 {
+                  onRegistered: (ticket) =>
+                    Effect.sync(() => {
+                      if (message.background === true) {
+                        return true;
+                      }
+                      if (connection.closed) {
+                        return false;
+                      }
+                      ownTickets.add(ticket);
+                      return true;
+                    }),
                   onStarted: (info) =>
                     send({ type: 'started', id: message.id, ticket: info.ticket, waitMs: info.waitMs }),
                   onOutput: (info) =>
@@ -121,9 +332,6 @@ export const makeConnectionHandler =
               });
               return;
             }
-            if (message.background !== true) {
-              yield* Effect.sync(() => ownTickets.add(submitted.success.ticket));
-            }
             yield* send({
               type: 'ack',
               id: message.id,
@@ -143,7 +351,13 @@ export const makeConnectionHandler =
         const handleMessage = (message: ClientMessage): Effect.Effect<void, never, Scope.Scope> => {
           switch (message.type) {
             case 'exec':
-              return Effect.asVoid(Effect.forkScoped(handleExec(message)));
+              return Effect.asVoid(
+                Effect.forkScoped(
+                  handleExec(message).pipe(
+                    Effect.catchCause(recoverHandlerDefect(message.id, 'exec handler')),
+                  ),
+                ),
+              );
             case 'kill':
               return Effect.gen(function* () {
                 const killed = yield* options.broker.kill(message.ticket);
@@ -173,18 +387,24 @@ export const makeConnectionHandler =
                 });
               });
             case 'await':
-              return Effect.gen(function* () {
-                const waited = yield* options.broker.awaitTicket(
-                  message.ticket,
-                  message.maxWaitMs ?? 30_000,
-                );
-                yield* send({
-                  type: 'await-result',
-                  id: message.id,
-                  request: waited.record,
-                  timedOut: waited.timedOut,
-                });
-              });
+              return Effect.asVoid(
+                Effect.forkScoped(
+                  Effect.gen(function* () {
+                    const waited = yield* options.broker.awaitTicket(
+                      message.ticket,
+                      message.maxWaitMs ?? 30_000,
+                    );
+                    yield* send({
+                      type: 'await-result',
+                      id: message.id,
+                      request: waited.record,
+                      timedOut: waited.timedOut,
+                    });
+                  }).pipe(
+                    Effect.catchCause(recoverHandlerDefect(message.id, 'await handler')),
+                  ),
+                ),
+              );
             case 'result':
               return Effect.gen(function* () {
                 const request = yield* options.broker.getTicket(message.ticket);
@@ -218,8 +438,9 @@ export const makeConnectionHandler =
           }
         };
 
-        const handleLine = (line: string): Effect.Effect<void, never, Scope.Scope> =>
-          Effect.gen(function* () {
+        const handleLine = (line: string): Effect.Effect<void, never, Scope.Scope> => {
+          let requestId: string | null = null;
+          return Effect.gen(function* () {
             let json: unknown;
             try {
               json = JSON.parse(line);
@@ -232,18 +453,25 @@ export const makeConnectionHandler =
               });
               return;
             }
+            requestId = extractId(json);
             const parsed = clientMessageSchema.safeParse(json);
             if (!parsed.success) {
               yield* send({
                 type: 'error',
-                id: extractId(json),
+                id: requestId,
                 code: 'bad-message',
                 message: parsed.error.message,
               });
               return;
             }
+            requestId = parsed.data.id;
             yield* handleMessage(parsed.data);
-          });
+          }).pipe(
+            Effect.catchCause((cause) =>
+              recoverHandlerDefect(requestId, 'connection message handler')(cause),
+            ),
+          );
+        };
 
         const lineBuffer = new LineBuffer();
         yield* socket
@@ -253,11 +481,14 @@ export const makeConnectionHandler =
             Effect.catch(() => Effect.void),
             Effect.ensuring(
               Effect.gen(function* () {
-                yield* Ref.set(closed, true);
+                const tickets = yield* Effect.sync(() => {
+                  connection.closed = true;
+                  return [...ownTickets];
+                });
                 // Queued-but-unstarted work from a dead client is abandoned;
                 // running work continues so its result lands in the ledger.
                 yield* Effect.forEach(
-                  [...ownTickets],
+                  tickets,
                   (ticket) => options.broker.kill(ticket, { onlyIfQueued: true }),
                   { discard: true },
                 );
@@ -265,4 +496,4 @@ export const makeConnectionHandler =
             ),
           );
       }),
-    );
+    ).pipe(Effect.annotateLogs({ connectionId: randomUUID() }));

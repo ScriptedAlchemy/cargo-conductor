@@ -4,6 +4,7 @@ import { dirname, join } from 'node:path';
 import * as Context from 'effect/Context';
 import * as Effect from 'effect/Effect';
 import * as Layer from 'effect/Layer';
+import type * as Scope from 'effect/Scope';
 import * as ChildProcess from 'effect/unstable/process/ChildProcess';
 import * as ChildProcessSpawner from 'effect/unstable/process/ChildProcessSpawner';
 
@@ -183,21 +184,149 @@ export const newestMtimeMs = (packageDir: string): number | null => {
   return newest;
 };
 
+export interface MakeTopologyOptions {
+  readonly loadMetadata: (workspaceRoot: string) => Effect.Effect<WorkspaceMetadata, unknown>;
+  readonly scanNewestMtime: (packageDir: string) => Effect.Effect<number | null, unknown>;
+  readonly now?: () => number;
+}
+
+export const makeTopology = (
+  options: MakeTopologyOptions,
+): Effect.Effect<TopologyApi, never, Scope.Scope> =>
+  Effect.gen(function* () {
+    const scope = yield* Effect.scope;
+    const now = options.now ?? Date.now;
+    const metadataCache = new Map<string, MetadataCacheEntry>();
+    const editCache = new Map<string, EditCacheEntry>();
+    const refreshingMetadata = new Set<string>();
+    const refreshingEdits = new Set<string>();
+
+    const refreshMetadata = (workspaceRoot: string): Effect.Effect<void, unknown> =>
+      options.loadMetadata(workspaceRoot).pipe(
+        Effect.tap((metadata) =>
+          Effect.sync(() => {
+            metadataCache.set(workspaceRoot, { atMs: now(), metadata });
+          }),
+        ),
+        Effect.asVoid,
+        Effect.ensuring(
+          Effect.sync(() => {
+            refreshingMetadata.delete(workspaceRoot);
+          }),
+        ),
+      );
+
+    /**
+     * Never blocks a submission: returns whatever is cached and refreshes
+     * in a background fiber. Cold workspaces simply report no packages
+     * until the first refresh lands — the boost is best-effort.
+     */
+    const workspaceMetadata = (workspaceRoot: string): Effect.Effect<WorkspaceMetadata> =>
+      Effect.gen(function* () {
+        const cached = metadataCache.get(workspaceRoot);
+        const fresh = cached !== undefined && now() - cached.atMs < metadataTtlMs;
+        if (!fresh) {
+          const shouldRefresh = yield* Effect.sync(() => {
+            if (refreshingMetadata.has(workspaceRoot)) {
+              return false;
+            }
+            refreshingMetadata.add(workspaceRoot);
+            return true;
+          });
+          if (shouldRefresh) {
+            yield* Effect.forkIn(
+              refreshMetadata(workspaceRoot).pipe(
+                Effect.tapCause((cause) =>
+                  Effect.logDebug('topology metadata refresh failed', cause),
+                ),
+                Effect.catch(() => Effect.void),
+              ),
+              scope,
+            );
+          }
+        }
+        return cached?.metadata ?? emptyMetadata;
+      });
+
+    const refreshEdit = (packageDir: string): Effect.Effect<void, unknown> =>
+      options.scanNewestMtime(packageDir).pipe(
+        Effect.tap((newest) =>
+          Effect.sync(() => {
+            const atMs = now();
+            editCache.set(packageDir, {
+              atMs,
+              edited: newest !== null && atMs - newest < editWindowMs,
+            });
+          }),
+        ),
+        Effect.asVoid,
+        Effect.ensuring(
+          Effect.sync(() => {
+            refreshingEdits.delete(packageDir);
+          }),
+        ),
+      );
+
+    const editedRecently = (
+      workspaceRoot: string,
+      packages: readonly string[],
+    ): Effect.Effect<boolean> =>
+      Effect.gen(function* () {
+        if (packages.length === 0) {
+          return false;
+        }
+        const dirs = (yield* workspaceMetadata(workspaceRoot)).packageDirs;
+        const nowMs = now();
+        let edited = false;
+        for (const name of packages) {
+          const packageDir = dirs.get(name);
+          if (packageDir === undefined) {
+            continue;
+          }
+          const cached = editCache.get(packageDir);
+          edited ||= cached?.edited ?? false;
+          if (cached !== undefined && nowMs - cached.atMs < editStatTtlMs) {
+            continue;
+          }
+          const shouldRefresh = yield* Effect.sync(() => {
+            if (refreshingEdits.has(packageDir)) {
+              return false;
+            }
+            refreshingEdits.add(packageDir);
+            return true;
+          });
+          if (shouldRefresh) {
+            yield* Effect.forkIn(refreshEdit(packageDir), scope);
+          }
+        }
+        return edited;
+      });
+
+    const dependencyClosure = (
+      workspaceRoot: string,
+      packages: readonly string[],
+    ): Effect.Effect<ReadonlySet<string>> =>
+      Effect.gen(function* () {
+        if (packages.length === 0) {
+          return new Set<string>();
+        }
+        const metadata = yield* workspaceMetadata(workspaceRoot);
+        return workspaceClosure(metadata, packages);
+      });
+
+    return { editedRecently, dependencyClosure } satisfies TopologyApi;
+  });
+
 export const TopologyLive: Layer.Layer<Topology, never, ChildProcessSpawner.ChildProcessSpawner> =
   Layer.effect(
     Topology,
     Effect.gen(function* () {
       const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
-      const scope = yield* Effect.scope;
-      const metadataCache = new Map<string, MetadataCacheEntry>();
-      const editCache = new Map<string, EditCacheEntry>();
-      const refreshing = new Set<string>();
-
-      // cargo metadata --no-deps --offline reads manifests only: no build
-      // locks, no registry access. Failures cache an empty map for the TTL.
-      const refreshMetadata = (workspaceRoot: string): Effect.Effect<void> =>
-        Effect.gen(function* () {
-          const stdout = yield* spawner
+      return yield* makeTopology({
+        // cargo metadata --no-deps --offline reads manifests only: no build
+        // locks, no registry access.
+        loadMetadata: (workspaceRoot) =>
+          spawner
             .string(
               ChildProcess.make(
                 realCargoBin(),
@@ -205,87 +334,8 @@ export const TopologyLive: Layer.Layer<Topology, never, ChildProcessSpawner.Chil
                 { cwd: workspaceRoot },
               ),
             )
-            .pipe(
-              Effect.timeout(metadataTimeoutMs),
-              Effect.catch(() => Effect.succeed('')),
-            );
-          yield* Effect.sync(() => {
-            metadataCache.set(workspaceRoot, {
-              atMs: Date.now(),
-              metadata: parseWorkspaceMetadata(stdout),
-            });
-            refreshing.delete(workspaceRoot);
-          });
-        });
-
-      /**
-       * Never blocks a submission: returns whatever is cached and refreshes
-       * in a background fiber. Cold workspaces simply report no packages
-       * until the first refresh lands — the boost is best-effort.
-       */
-      const workspaceMetadata = (workspaceRoot: string): Effect.Effect<WorkspaceMetadata> =>
-        Effect.gen(function* () {
-          const cached = metadataCache.get(workspaceRoot);
-          const fresh = cached !== undefined && Date.now() - cached.atMs < metadataTtlMs;
-          if (!fresh) {
-            const shouldRefresh = yield* Effect.sync(() => {
-              if (refreshing.has(workspaceRoot)) {
-                return false;
-              }
-              refreshing.add(workspaceRoot);
-              return true;
-            });
-            if (shouldRefresh) {
-              yield* Effect.forkIn(refreshMetadata(workspaceRoot), scope);
-            }
-          }
-          return cached?.metadata ?? emptyMetadata;
-        });
-
-      const editedRecently = (
-        workspaceRoot: string,
-        packages: readonly string[],
-      ): Effect.Effect<boolean> =>
-        Effect.gen(function* () {
-          if (packages.length === 0) {
-            return false;
-          }
-          const dirs = (yield* workspaceMetadata(workspaceRoot)).packageDirs;
-          const nowMs = Date.now();
-          for (const name of packages) {
-            const packageDir = dirs.get(name);
-            if (packageDir === undefined) {
-              continue;
-            }
-            const cached = editCache.get(packageDir);
-            if (cached !== undefined && nowMs - cached.atMs < editStatTtlMs) {
-              if (cached.edited) {
-                return true;
-              }
-              continue;
-            }
-            const newest = newestMtimeMs(packageDir);
-            const edited = newest !== null && nowMs - newest < editWindowMs;
-            editCache.set(packageDir, { atMs: nowMs, edited });
-            if (edited) {
-              return true;
-            }
-          }
-          return false;
-        });
-
-      const dependencyClosure = (
-        workspaceRoot: string,
-        packages: readonly string[],
-      ): Effect.Effect<ReadonlySet<string>> =>
-        Effect.gen(function* () {
-          if (packages.length === 0) {
-            return new Set<string>();
-          }
-          const metadata = yield* workspaceMetadata(workspaceRoot);
-          return workspaceClosure(metadata, packages);
-        });
-
-      return { editedRecently, dependencyClosure } satisfies TopologyApi;
+            .pipe(Effect.timeout(metadataTimeoutMs), Effect.map(parseWorkspaceMetadata)),
+        scanNewestMtime: (packageDir) => Effect.sync(() => newestMtimeMs(packageDir)),
+      });
     }),
   );

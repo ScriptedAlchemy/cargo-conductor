@@ -47,8 +47,8 @@ const loadSnapshot = (limit: number | undefined) =>
   loadConductorSnapshot(limit === undefined ? {} : { recentLimit: limit });
 
 export const defaultInspectOperations: InspectOperations = {
-  last: async () => {
-    const snapshot = await Effect.runPromise(loadSnapshot(1));
+  last: async (_input, context) => {
+    const snapshot = await Effect.runPromise(loadSnapshot(1), { signal: context.signal });
     const request = snapshot.recent[0] ?? null;
     return {
       daemon: snapshot.daemon,
@@ -57,8 +57,10 @@ export const defaultInspectOperations: InspectOperations = {
       summary: request === null ? 'no conductor requests recorded' : `${request.ticket} ${request.status}`,
     };
   },
-  log: async (input) => {
-    const snapshot = await Effect.runPromise(loadSnapshot(input.limit ?? 50));
+  log: async (input, context) => {
+    const snapshot = await Effect.runPromise(loadSnapshot(input.limit ?? 50), {
+      signal: context.signal,
+    });
     return {
       daemon: snapshot.daemon,
       operation: 'log',
@@ -69,8 +71,10 @@ export const defaultInspectOperations: InspectOperations = {
           : `${snapshot.recent.length} recent request${snapshot.recent.length === 1 ? '' : 's'}`,
     };
   },
-  status: async (input) => {
-    const snapshot = await Effect.runPromise(loadSnapshot(input.limit ?? 20));
+  status: async (input, context) => {
+    const snapshot = await Effect.runPromise(loadSnapshot(input.limit ?? 20), {
+      signal: context.signal,
+    });
     return {
       ...snapshot,
       operation: 'status',

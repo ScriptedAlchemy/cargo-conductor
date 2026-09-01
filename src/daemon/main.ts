@@ -1,9 +1,11 @@
 import { rmSync } from 'node:fs';
 
 import { NodeServices, NodeSocketServer } from '@effect/platform-node';
+import * as Config from 'effect/Config';
 import * as Deferred from 'effect/Deferred';
 import * as Effect from 'effect/Effect';
 import * as Layer from 'effect/Layer';
+import * as References from 'effect/References';
 import type * as SocketServer from 'effect/unstable/socket/SocketServer';
 
 import { Broker, BrokerLive } from './broker.js';
@@ -26,6 +28,13 @@ const appLayer = (config: DaemonConfigShape) =>
     Layer.provideMerge(Layer.succeed(DaemonConfig, config)),
     Layer.provideMerge(NodeServices.layer),
   );
+
+const minimumLogLevelLayer = Layer.unwrap(
+  Config.logLevel('CARGO_CONDUCTOR_LOG_LEVEL').pipe(
+    Effect.catch(() => Effect.succeed('Info' as const)),
+    Effect.map((level) => Layer.succeed(References.MinimumLogLevel, level)),
+  ),
+);
 
 const daemonProgram = Effect.gen(function* () {
   const config = yield* DaemonConfig;
@@ -66,7 +75,11 @@ export const runDaemon = (
   config: DaemonConfigShape = resolveDaemonConfig(),
 ): Effect.Effect<DaemonOutcome, SingletonLockError | SocketServer.SocketServerError> =>
   Effect.scoped(daemonProgram).pipe(
+    // Defects escaping any daemon fiber must land in the log at Error, not
+    // vanish at the default level.
+    Effect.provideService(References.UnhandledLogLevel, 'Error'),
     Effect.provide(appLayer(config)),
+    Effect.provide(minimumLogLevelLayer),
     Effect.as('completed' as const),
     Effect.catchTag('DaemonAlreadyRunning', () => Effect.succeed('already-running' as const)),
   );

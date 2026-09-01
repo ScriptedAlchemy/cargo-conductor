@@ -28,6 +28,73 @@ export interface DaemonControlResult {
 }
 
 const shortId = (): string => randomUUID().slice(0, 8);
+const signalShutdownGraceMs = 5_000;
+
+type ShutdownSignal = 'SIGINT' | 'SIGTERM';
+
+export interface SignalShutdownDependencies {
+  readonly forceExit: (code: number) => void;
+  readonly keepAlive: () => () => void;
+  readonly scheduleForceExit: (callback: () => void, delayMs: number) => () => void;
+  readonly setExitCode: (code: number) => void;
+}
+
+export interface SignalShutdownController {
+  readonly onSignal: (signal: ShutdownSignal) => void;
+  readonly teardownComplete: () => void;
+}
+
+const defaultSignalShutdownDependencies: SignalShutdownDependencies = {
+  forceExit: (code) => {
+    process.exit(code);
+  },
+  keepAlive: () => {
+    const timer = setInterval(() => undefined, 2_147_483_647);
+    return () => {
+      clearInterval(timer);
+    };
+  },
+  scheduleForceExit: (callback, delayMs) => {
+    const timer = setTimeout(callback, delayMs);
+    return () => {
+      clearTimeout(timer);
+    };
+  },
+  setExitCode: (code) => {
+    process.exitCode = code;
+  },
+};
+
+export const makeSignalShutdownController = (
+  interrupt: () => void,
+  dependencies: SignalShutdownDependencies = defaultSignalShutdownDependencies,
+): SignalShutdownController => {
+  let cancelKeepAlive: (() => void) | undefined;
+  let cancelFallback: (() => void) | undefined;
+  let signaled = false;
+  return {
+    onSignal: (signal) => {
+      if (signaled) {
+        return;
+      }
+      signaled = true;
+      const exitCode = signal === 'SIGINT' ? 130 : 143;
+      dependencies.setExitCode(exitCode);
+      cancelKeepAlive = dependencies.keepAlive();
+      cancelFallback = dependencies.scheduleForceExit(
+        () => dependencies.forceExit(exitCode),
+        signalShutdownGraceMs,
+      );
+      interrupt();
+    },
+    teardownComplete: () => {
+      cancelFallback?.();
+      cancelFallback = undefined;
+      cancelKeepAlive?.();
+      cancelKeepAlive = undefined;
+    },
+  };
+};
 
 const isSubcommand = (value: string): value is DaemonSubcommand =>
   (daemonSubcommands as readonly string[]).includes(value);
@@ -56,8 +123,17 @@ const result = (
 
 export const startDaemon = (
   config: DaemonConfigShape = resolveDaemonConfig(),
-): Effect.Effect<DaemonControlResult> =>
-  ensureDaemonRunning(config).pipe(
+): Effect.Effect<DaemonControlResult> => {
+  const failedStart = (): Effect.Effect<DaemonControlResult> =>
+    Effect.succeed(
+      result(config, 'start', {
+        message: `cargo-conductor daemon did not come up; check ${config.logPath}`,
+        pid: null,
+        report: null,
+        running: false,
+      }),
+    );
+  return ensureDaemonRunning(config).pipe(
     Effect.map((pong) =>
       result(config, 'start', {
         message: `cargo-conductor daemon started (pid ${pong.pid})`,
@@ -66,17 +142,14 @@ export const startDaemon = (
         running: true,
       }),
     ),
-    Effect.catch(() =>
-      Effect.succeed(
-        result(config, 'start', {
-          message: `cargo-conductor daemon did not come up; check ${config.logPath}`,
-          pid: null,
-          report: null,
-          running: false,
-        }),
-      ),
-    ),
+    Effect.catchTags({
+      ConnectionClosed: failedStart,
+      ControlTimeout: failedStart,
+      DaemonUnreachable: failedStart,
+      SpawnDaemonError: failedStart,
+    }),
   );
+};
 
 export const stopDaemon = (
   config: DaemonConfigShape = resolveDaemonConfig(),
@@ -140,6 +213,7 @@ export const statusDaemon = (
                 active: snapshot.active,
                 lanes: snapshot.lanes,
                 maxConcurrent: snapshot.maxConcurrent ?? 5,
+                ...(snapshot.metrics === undefined ? {} : { metrics: snapshot.metrics }),
                 pid: snapshot.pid ?? 0,
                 recent: snapshot.recent,
                 socketPath: snapshot.socketPath,
@@ -159,11 +233,15 @@ export const runForegroundDaemon = (
   const interrupt = (): void => {
     fiber.interruptUnsafe();
   };
-  process.once('SIGINT', interrupt);
-  process.once('SIGTERM', interrupt);
+  const shutdown = makeSignalShutdownController(interrupt);
+  const onSigint = (): void => shutdown.onSignal('SIGINT');
+  const onSigterm = (): void => shutdown.onSignal('SIGTERM');
+  process.once('SIGINT', onSigint);
+  process.once('SIGTERM', onSigterm);
   return Effect.runPromise(Fiber.await(fiber)).then((exit) => {
-    process.removeListener('SIGINT', interrupt);
-    process.removeListener('SIGTERM', interrupt);
+    process.removeListener('SIGINT', onSigint);
+    process.removeListener('SIGTERM', onSigterm);
+    shutdown.teardownComplete();
     if (Exit.isSuccess(exit)) {
       const outcome = exit.value;
       return result(config, 'run', {

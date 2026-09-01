@@ -19,6 +19,223 @@ import { Topology } from '../src/daemon/topology.js';
 import { makeFixture, pollReport, shortId, withDaemon } from './harness.js';
 
 describe('async tickets', () => {
+  it('removes an interrupted ticket waiter immediately', async () => {
+    const fixture = makeFixture(1);
+    const db = openLedgerDatabase(fixture.config.databasePath);
+    const baseLedger = createLedgerApi(db);
+    const costModel = createCostModel({
+      kacheReader: null,
+      seedDurations: baseLedger.recentDurations,
+    });
+    const layer = BrokerLive.pipe(
+      Layer.provideMerge(Layer.succeed(CostModel, costModel)),
+      Layer.provideMerge(
+        Layer.succeed(Topology, {
+          dependencyClosure: () => Effect.succeed(new Set<string>()),
+          editedRecently: () => Effect.succeed(false),
+        }),
+      ),
+      Layer.provideMerge(Layer.succeed(Ledger, baseLedger)),
+      Layer.provideMerge(Layer.succeed(DaemonConfig, fixture.config)),
+      Layer.provideMerge(NodeServices.layer),
+    );
+
+    try {
+      await Effect.runPromise(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const broker = yield* Broker;
+            const submitted = yield* broker.submit(
+              {
+                argv: ['cargo', 'check'],
+                cwd: fixture.ws1,
+                env: {
+                  CARGO_CONDUCTOR_CARGO_BIN: join(fixture.binDir, 'cargo'),
+                  FAKE_SLEEP: '10',
+                },
+              },
+              {
+                onExit: () => Effect.void,
+                onOutput: () => Effect.void,
+                onStarted: () => Effect.void,
+              },
+            );
+            const waiting = yield* Effect.forkChild(broker.awaitTicket(submitted.ticket, 60_000));
+            yield* Effect.sleep('20 millis');
+            const registeredWaiters = yield* broker._testWaiterCount(submitted.ticket);
+            expect(registeredWaiters).toBe(1);
+            yield* Fiber.interrupt(waiting);
+            const remainingWaiters = yield* broker._testWaiterCount(submitted.ticket);
+            expect(remainingWaiters).toBe(0);
+            yield* broker.kill(submitted.ticket);
+          }),
+        ).pipe(Effect.provide(layer)),
+      );
+    } finally {
+      db.close();
+      rmSync(fixture.root, { force: true, recursive: true });
+    }
+  });
+
+  it('settles running, queued, and attached rows when the broker scope closes', async () => {
+    const fixture = makeFixture(1);
+    const db = openLedgerDatabase(fixture.config.databasePath);
+    const ledger = createLedgerApi(db);
+    const costModel = createCostModel({
+      kacheReader: null,
+      seedDurations: ledger.recentDurations,
+    });
+    const layer = BrokerLive.pipe(
+      Layer.provideMerge(Layer.succeed(CostModel, costModel)),
+      Layer.provideMerge(
+        Layer.succeed(Topology, {
+          dependencyClosure: () => Effect.succeed(new Set<string>()),
+          editedRecently: () => Effect.succeed(false),
+        }),
+      ),
+      Layer.provideMerge(Layer.succeed(Ledger, ledger)),
+      Layer.provideMerge(Layer.succeed(DaemonConfig, fixture.config)),
+      Layer.provideMerge(NodeServices.layer),
+    );
+    const started = Effect.runSync(Deferred.make<void>());
+    const callbacks = {
+      onExit: () => Effect.void,
+      onOutput: () => Effect.void,
+      onStarted: () => Effect.asVoid(Deferred.succeed(started, undefined)),
+    };
+    const tickets: string[] = [];
+
+    try {
+      await Effect.runPromise(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const broker = yield* Broker;
+            const running = yield* broker.submit(
+              {
+                argv: ['cargo', 'check', '-p', 'running'],
+                cwd: fixture.ws1,
+                env: {
+                  CARGO_CONDUCTOR_CARGO_BIN: join(fixture.binDir, 'cargo'),
+                  FAKE_SLEEP: '10',
+                },
+              },
+              callbacks,
+            );
+            tickets.push(running.ticket);
+            yield* Deferred.await(started);
+
+            const queued = yield* broker.submit(
+              {
+                argv: ['cargo', 'check', '-p', 'queued'],
+                cwd: fixture.ws2,
+                env: {
+                  CARGO_CONDUCTOR_CARGO_BIN: join(fixture.binDir, 'cargo'),
+                },
+              },
+              callbacks,
+            );
+            tickets.push(queued.ticket);
+            const attached = yield* broker.submit(
+              {
+                argv: ['cargo', 'check', '-p', 'queued'],
+                cwd: fixture.ws2,
+                env: {
+                  CARGO_CONDUCTOR_CARGO_BIN: join(fixture.binDir, 'cargo'),
+                },
+              },
+              callbacks,
+            );
+            tickets.push(attached.ticket);
+            const anotherQueued = yield* broker.submit(
+              {
+                argv: ['cargo', 'check', '-p', 'another'],
+                cwd: fixture.ws2,
+                env: {
+                  CARGO_CONDUCTOR_CARGO_BIN: join(fixture.binDir, 'cargo'),
+                },
+              },
+              callbacks,
+            );
+            tickets.push(anotherQueued.ticket);
+
+            const waiter = yield* Effect.forkChild(broker.awaitTicket(queued.ticket, 60_000));
+            yield* Effect.sleep('20 millis');
+            const waiterCount = yield* broker._testWaiterCount();
+            expect(waiterCount).toBe(1);
+            yield* Fiber.interrupt(waiter);
+          }),
+        ).pipe(Effect.provide(layer)),
+      );
+
+      const active = await Effect.runPromise(ledger.activeRequests());
+      expect(active).toEqual([]);
+      const records = await Promise.all(
+        tickets.map((ticket) => Effect.runPromise(ledger.getRequestByTicket(ticket))),
+      );
+      expect(records).toHaveLength(4);
+      for (const record of records) {
+        expect(record?.status).toBe('killed');
+        expect(record?.error).toBe('daemon shutdown');
+      }
+    } finally {
+      db.close();
+      rmSync(fixture.root, { force: true, recursive: true });
+    }
+  });
+
+  it('kills a foreground submission whose connection closed during registration', async () => {
+    const fixture = makeFixture(1);
+    const db = openLedgerDatabase(fixture.config.databasePath);
+    const ledger = createLedgerApi(db);
+    const costModel = createCostModel({
+      kacheReader: null,
+      seedDurations: ledger.recentDurations,
+    });
+    const layer = BrokerLive.pipe(
+      Layer.provideMerge(Layer.succeed(CostModel, costModel)),
+      Layer.provideMerge(
+        Layer.succeed(Topology, {
+          dependencyClosure: () => Effect.succeed(new Set<string>()),
+          editedRecently: () => Effect.succeed(false),
+        }),
+      ),
+      Layer.provideMerge(Layer.succeed(Ledger, ledger)),
+      Layer.provideMerge(Layer.succeed(DaemonConfig, fixture.config)),
+      Layer.provideMerge(NodeServices.layer),
+    );
+
+    try {
+      await Effect.runPromise(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const broker = yield* Broker;
+            const submitted = yield* broker.submit(
+              {
+                argv: ['cargo', 'check'],
+                cwd: fixture.ws1,
+                env: {
+                  CARGO_CONDUCTOR_CARGO_BIN: join(fixture.binDir, 'cargo'),
+                },
+              },
+              {
+                onExit: () => Effect.void,
+                onOutput: () => Effect.void,
+                onRegistered: () => Effect.succeed(false),
+                onStarted: () => Effect.die(new Error('registration-refused job spawned')),
+              },
+            );
+            const result = yield* broker.awaitTicket(submitted.ticket, 2_000);
+            expect(result.record?.status).toBe('killed');
+            expect(result.record?.startedAtMs).toBeNull();
+          }),
+        ).pipe(Effect.provide(layer)),
+      );
+    } finally {
+      db.close();
+      rmSync(fixture.root, { force: true, recursive: true });
+    }
+  });
+
   it('does not lose completion between the await ledger read and waiter registration', async () => {
     const fixture = makeFixture(1);
     const db = openLedgerDatabase(fixture.config.databasePath);

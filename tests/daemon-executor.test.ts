@@ -15,8 +15,20 @@ if [ "$1" = pwd ]; then
   pwd
   exit 0
 fi
+if [ "$1" = unterminated ]; then
+  printf "last-fragment"
+  exit 0
+fi
 echo "out:$1"
 echo "err:$1" >&2
+if [ "$1" = trap-term ]; then
+  trap 'exit 7' TERM
+  while true; do sleep 0.1; done
+fi
+if [ "$1" = ignore-term ]; then
+  trap '' TERM
+  while true; do sleep 0.1; done
+fi
 if [ -n "$FAKE_SLEEP" ]; then sleep "$FAKE_SLEEP"; fi
 exit "\${FAKE_EXIT:-0}"
 `;
@@ -136,6 +148,27 @@ describe('executeCargo', () => {
     expect(result.outputTail).toContain(realpathSync(dir));
   });
 
+  it('emits a trailing unterminated stdout fragment through the line callback', async () => {
+    const { dir, script } = makeWorkspace();
+    const lines: string[] = [];
+
+    const result = await runExecute({
+      argv: [script, 'unterminated'],
+      cwd: dir,
+      killSignal: unusedKill(),
+      tailBytes: 4096,
+      onOutput: () => Effect.void,
+      onStdoutLine: (line) =>
+        Effect.sync(() => {
+          lines.push(line);
+        }),
+    });
+
+    expect(result.outcome).toBe('done');
+    expect(lines).toEqual(['last-fragment']);
+    expect(result.outputTail).toBe('');
+  });
+
   it('kills the process group when killSignal completes', async () => {
     const { dir, script } = makeWorkspace();
     const killSignal = unusedKill();
@@ -153,6 +186,69 @@ describe('executeCargo', () => {
     expect(result.outcome).toBe('killed');
     expect(result.signal).toBe('SIGTERM');
     expect(result.exitCode).toBeNull();
+    expect(Date.now() - started).toBeLessThan(2500);
+  });
+
+  it('classifies the observed natural exit when it races a kill request', async () => {
+    const { dir, script } = makeWorkspace();
+    const killSignal = unusedKill();
+
+    const result = await runExecute({
+      argv: [script, 'trap-term'],
+      cwd: dir,
+      killSignal,
+      tailBytes: 4096,
+      onOutput: (channel) =>
+        channel === 'stdout'
+          ? Deferred.succeed(killSignal, undefined).pipe(Effect.asVoid)
+          : Effect.void,
+    });
+
+    expect(result.outcome).toBe('failed');
+    expect(result.exitCode).toBe(7);
+    expect(result.signal).toBeNull();
+  });
+
+  it('escalates to SIGKILL after the configured termination grace period', async () => {
+    const { dir, script } = makeWorkspace();
+    const killSignal = unusedKill();
+    const started = Date.now();
+
+    const result = await runExecute({
+      argv: [script, 'ignore-term'],
+      cwd: dir,
+      env: { CARGO_CONDUCTOR_KILL_GRACE_MS: '100' },
+      killSignal,
+      tailBytes: 4096,
+      onOutput: (channel) =>
+        channel === 'stdout'
+          ? Deferred.succeed(killSignal, undefined).pipe(Effect.asVoid)
+          : Effect.void,
+    });
+
+    expect(result.outcome).toBe('killed');
+    expect(result.signal).toBe('SIGKILL');
+    expect(result.exitCode).toBeNull();
+    expect(Date.now() - started).toBeLessThan(2500);
+  });
+
+  it('surfaces a stream pump failure and terminates the child', async () => {
+    const { dir, script } = makeWorkspace();
+    const started = Date.now();
+
+    const result = await runExecute({
+      argv: [script, 'ignore-term'],
+      cwd: dir,
+      env: { CARGO_CONDUCTOR_KILL_GRACE_MS: '100' },
+      killSignal: unusedKill(),
+      tailBytes: 4096,
+      onOutput: (channel) =>
+        channel === 'stdout' ? Effect.die(new Error('consumer exploded')) : Effect.void,
+    });
+
+    expect(result.outcome).toBe('failed');
+    expect(result.error).toContain('stdout pump failed');
+    expect(result.error).toContain('consumer exploded');
     expect(Date.now() - started).toBeLessThan(2500);
   });
 

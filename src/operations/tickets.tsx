@@ -1,8 +1,11 @@
 import { defineOperation, type RscOperationContext } from '@agent-bundle/rsc-runtime/plugin';
 import * as React from 'react';
+import * as Cause from 'effect/Cause';
 import * as Effect from 'effect/Effect';
+import * as Exit from 'effect/Exit';
+import * as Option from 'effect/Option';
 
-import { awaitTicket, fetchTicket, submitBackground } from '../client/tickets.js';
+import { awaitTicket, fetchTicket, submitBackground, type TicketSocketError } from '../client/tickets.js';
 import { ConductorResult } from '../result.js';
 
 import {
@@ -71,9 +74,53 @@ const describeRecord = (ticket: string, request: AwaitResult['request']): string
   return `${request.ticket} ${request.status}`;
 };
 
+const infraFailure = (error: TicketSocketError): Error => {
+  switch (error._tag) {
+    case 'DaemonUnreachable':
+      return new Error(
+        `conductor daemon unreachable at ${error.socketPath}; it starts on demand with any exec, or run: conductor daemon start`,
+      );
+    case 'ControlTimeout':
+      return new Error(
+        `conductor daemon did not answer within ${error.timeoutMs}ms (socket ${error.socketPath})`,
+      );
+    case 'ConnectionClosed':
+      return new Error(
+        `connection to the conductor daemon closed mid-request (socket ${error.socketPath})`,
+      );
+    default: {
+      const exhaustive: never = error;
+      return exhaustive;
+    }
+  }
+};
+
+/**
+ * Boundary runner: MCP/CLI cancellation aborts the socket wait, and typed
+ * infrastructure failures surface as clear tool errors instead of being
+ * disguised as "not found" / "timed out".
+ */
+const runTicketEffect = async <A,>(
+  effect: Effect.Effect<A, TicketSocketError>,
+  signal: AbortSignal,
+): Promise<A> => {
+  const exit = await Effect.runPromiseExit(effect, { signal });
+  if (Exit.isSuccess(exit)) {
+    return exit.value;
+  }
+  const failure = Cause.findErrorOption(exit.cause);
+  if (Option.isSome(failure)) {
+    throw infraFailure(failure.value);
+  }
+  throw Cause.squash(exit.cause);
+};
+
 export const defaultTicketOperations: TicketOperations = {
-  await: async (input) => {
-    const waited = await Effect.runPromise(awaitTicket(input.ticket, input.maxWaitMs ?? 30_000));
+  await: async (input, context) => {
+    const waited = await runTicketEffect(
+      awaitTicket(input.ticket, input.maxWaitMs ?? 30_000),
+      context.signal,
+    );
     return {
       operation: 'await',
       request: waited.request,
@@ -84,16 +131,16 @@ export const defaultTicketOperations: TicketOperations = {
       timedOut: waited.timedOut,
     };
   },
-  request: async (input) => {
-    const ticket = await Effect.runPromise(submitBackground(input));
+  request: async (input, context) => {
+    const ticket = await runTicketEffect(submitBackground(input), context.signal);
     return {
       operation: 'request',
       summary: ticket === null ? 'failed to submit background request' : `${ticket} submitted`,
       ticket,
     };
   },
-  result: async (input) => {
-    const request = await Effect.runPromise(fetchTicket(input.ticket));
+  result: async (input, context) => {
+    const request = await runTicketEffect(fetchTicket(input.ticket), context.signal);
     return {
       operation: 'result',
       request,

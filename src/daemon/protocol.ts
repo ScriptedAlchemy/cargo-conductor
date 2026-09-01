@@ -162,6 +162,21 @@ export interface LaneStatus {
   readonly runningTicket: string | null;
 }
 
+export interface HistogramMetricSnapshot {
+  /** A null boundary is the histogram's positive-infinity bucket. */
+  readonly buckets: readonly (readonly [boundary: number | null, count: number])[];
+  readonly count: number;
+  readonly min: number | null;
+  readonly max: number | null;
+  readonly sum: number;
+}
+
+export interface StatusMetrics {
+  readonly cargo_run_ms: HistogramMetricSnapshot;
+  readonly job_outcome: Readonly<Record<string, number>>;
+  readonly attach_mode: Readonly<Record<string, number>>;
+}
+
 export interface StatusReport {
   readonly pid: number;
   readonly startedAtMs: number;
@@ -170,6 +185,7 @@ export interface StatusReport {
   readonly lanes: readonly LaneStatus[];
   readonly active: readonly RequestRecord[];
   readonly recent: readonly RequestRecord[];
+  readonly metrics?: StatusMetrics;
 }
 
 /**

@@ -2,6 +2,7 @@ import { randomBytes } from 'node:crypto';
 
 import * as NodeServices from '@effect/platform-node/NodeServices';
 import * as NodeSocket from '@effect/platform-node/NodeSocket';
+import * as Cause from 'effect/Cause';
 import * as Deferred from 'effect/Deferred';
 import * as Effect from 'effect/Effect';
 import * as Fiber from 'effect/Fiber';
@@ -24,7 +25,7 @@ import {
 } from '../daemon/protocol.js';
 import type { ExitMessage, ServerMessage } from '../daemon/protocol.js';
 
-import { ensureDaemonRunning } from './ensure-daemon.js';
+import { ensureDaemonRunning, type EnsureDaemonError } from './ensure-daemon.js';
 import { shouldAutoBackground } from './host-cap.js';
 import { formatProgressLine } from './progress.js';
 
@@ -40,7 +41,7 @@ export interface RunExecOptions {
   readonly config?: DaemonConfigShape;
   readonly cwd: string;
   readonly env?: Readonly<Record<string, string>>;
-  readonly ensureDaemon?: () => Effect.Effect<void, unknown>;
+  readonly ensureDaemon?: () => Effect.Effect<void, EnsureDaemonError>;
   readonly heartbeatMs?: number;
   readonly host?: string;
   readonly io: ExecIo;
@@ -348,7 +349,17 @@ export const runExecClient = (
           return yield* passthrough(options);
         }
         const ensure = options.ensureDaemon ?? (() => ensureDaemonRunning(config).pipe(Effect.asVoid));
-        yield* ensure().pipe(Effect.ignore);
+        yield* ensure().pipe(
+          Effect.tapCause((cause) =>
+            Effect.sync(() => {
+              const reason = Cause.pretty(cause).split('\n')[0] ?? 'unknown error';
+              options.io.writeStderr(
+                `[cargo-conductor] daemon startup failed: ${reason}; trying cargo directly\n`,
+              );
+            }),
+          ),
+          Effect.ignore,
+        );
         return yield* brokeredOrUnreachable(options, config).pipe(
           Effect.catchTag('DaemonUnreachable', () => passthrough(options)),
         );
