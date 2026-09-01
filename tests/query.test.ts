@@ -20,7 +20,7 @@ import {
   describeRequestRecord,
   displayRequestRecord,
   displayRequestRecords,
-  loadConductorSnapshot,
+  loadHaulerSnapshot,
 } from '../src/query.js';
 
 import { withTempDir } from './harness.js';
@@ -147,16 +147,16 @@ describe('display projection', () => {
 const isolatedConfig = () => {
   const root = mkdtempSync(join(tmpdir(), 'cc-query-'));
   return {
-    config: resolveDaemonConfig({ CARGO_CONDUCTOR_STATE_DIR: join(root, 'state') }),
+    config: resolveDaemonConfig({ CARGO_HAULER_STATE_DIR: join(root, 'state') }),
     root,
   };
 };
 
-describe('loadConductorSnapshot', () => {
+describe('loadHaulerSnapshot', () => {
   it('reports a stopped daemon and empty history when nothing has run', () =>
     withTempDir('cc-query-', async (root) => {
-      const config = resolveDaemonConfig({ CARGO_CONDUCTOR_STATE_DIR: join(root, 'state') });
-      const snapshot = await Effect.runPromise(loadConductorSnapshot({ config }));
+      const config = resolveDaemonConfig({ CARGO_HAULER_STATE_DIR: join(root, 'state') });
+      const snapshot = await Effect.runPromise(loadHaulerSnapshot({ config }));
       expect(snapshot.daemon).toBe('stopped');
       expect(snapshot.active).toEqual([]);
       expect(snapshot.recent).toEqual([]);
@@ -189,7 +189,7 @@ describe('loadConductorSnapshot', () => {
       Effect.runSync(ledger.markFinished(1, { atMs: 2_000, exitCode: 0, status: 'done' }));
       db.close();
 
-      const snapshot = await Effect.runPromise(loadConductorSnapshot({ config, recentLimit: 10 }));
+      const snapshot = await Effect.runPromise(loadHaulerSnapshot({ config, recentLimit: 10 }));
       expect(snapshot.daemon).toBe('stopped');
       expect(snapshot.recent).toHaveLength(1);
       expect(snapshot.recent[0]?.ticket).toBe('cc-1');
@@ -206,7 +206,7 @@ describe('loadConductorSnapshot', () => {
     // forces color on (FORCE_COLOR/CLICOLOR_FORCE) must not reintroduce it.
     const { config, root } = isolatedConfig();
     const saved = {
-      CARGO_CONDUCTOR_STATE_DIR: process.env.CARGO_CONDUCTOR_STATE_DIR,
+      CARGO_HAULER_STATE_DIR: process.env.CARGO_HAULER_STATE_DIR,
       CLICOLOR_FORCE: process.env.CLICOLOR_FORCE,
       FORCE_COLOR: process.env.FORCE_COLOR,
     };
@@ -237,7 +237,7 @@ describe('loadConductorSnapshot', () => {
       );
       db.close();
 
-      process.env.CARGO_CONDUCTOR_STATE_DIR = config.stateDir;
+      process.env.CARGO_HAULER_STATE_DIR = config.stateDir;
       process.env.FORCE_COLOR = '1';
       process.env.CLICOLOR_FORCE = '1';
       const context = { signal: new AbortController().signal };
@@ -275,7 +275,7 @@ describe('loadConductorSnapshot', () => {
             message: { id: 'snap', type: 'status' },
             socketPath: config.socketPath,
           });
-          const snapshot = yield* loadConductorSnapshot({ config });
+          const snapshot = yield* loadHaulerSnapshot({ config });
           expect(snapshot.daemon).toBe('running');
           expect(snapshot.pid).toBe(process.pid);
           expect(snapshot.report?.pid).toBe(process.pid);

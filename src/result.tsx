@@ -11,7 +11,7 @@ import type {
   StatusResult,
 } from './operations/schemas.js';
 
-export type ConductorReceipt =
+export type HaulerReceipt =
   | AwaitResult
   | DaemonResult
   | LastResult
@@ -20,7 +20,7 @@ export type ConductorReceipt =
   | ResultFetchResult
   | StatusResult;
 
-const summary = (receipt: ConductorReceipt): string => {
+const summary = (receipt: HaulerReceipt): string => {
   switch (receipt.operation) {
     case 'daemon':
       return receipt.message;
@@ -38,7 +38,7 @@ const summary = (receipt: ConductorReceipt): string => {
   }
 };
 
-export const ConductorResult = ({ receipt }: { readonly receipt: ConductorReceipt }) => (
+export const HaulerResult = ({ receipt }: { readonly receipt: HaulerReceipt }) => (
   <Mcp.Result structuredContent={receipt}>
     <Mcp.Text>{summary(receipt)}</Mcp.Text>
   </Mcp.Result>

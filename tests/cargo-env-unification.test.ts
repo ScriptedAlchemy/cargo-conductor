@@ -11,7 +11,7 @@ describe('cargo environment relevance', () => {
   it('transports every identity-relevant variable the digest sees', () => {
     const env = {
       CARGO_TARGET_DIR: '/tmp/target',
-      CARGO_CONDUCTOR_STATE_DIR: '/tmp/state',
+      CARGO_HAULER_STATE_DIR: '/tmp/state',
       CC_aarch64_unknown_linux_gnu: 'clang',
       CFLAGS: '-O2',
       CXXFLAGS: '-O3',
@@ -31,6 +31,7 @@ describe('cargo environment relevance', () => {
     expect(isRelevantCargoEnvironmentVariable('CFLAGS')).toBe(true);
     expect(isRelevantCargoEnvironmentVariable('CC_aarch64_unknown_linux_gnu')).toBe(true);
     expect(isRelevantCargoEnvironmentVariable('CARGO_CONDUCTOR_STATE_DIR')).toBe(false);
+    expect(isRelevantCargoEnvironmentVariable('CARGO_HAULER_STATE_DIR')).toBe(false);
     expect(isRelevantCargoEnvironmentVariable('HOME')).toBe(false);
   });
 

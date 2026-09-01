@@ -40,7 +40,7 @@ export type ProgressEvent =
       readonly ticket: string;
     };
 
-const prefix = '[cargo-conductor]';
+const prefix = '[cargo-hauler]';
 
 export const formatProgressLine = (event: ProgressEvent): string => {
   switch (event.kind) {
@@ -76,7 +76,7 @@ export const formatProgressLine = (event: ProgressEvent): string => {
         event.estimateMs === null
           ? ''
           : ` (ETA ${Math.max(1, Math.round(event.estimateMs / 1000))}s)`;
-      return `${prefix} ticket ${event.ticket} submitted in background${eta}\nRetrieve with: conductor result ${event.ticket}\nAwait with: conductor await ${event.ticket}\n`;
+      return `${prefix} ticket ${event.ticket} submitted in background${eta}\nRetrieve with: hauler result ${event.ticket}\nAwait with: hauler await ${event.ticket}\n`;
     }
     default: {
       const exhaustive: never = event;

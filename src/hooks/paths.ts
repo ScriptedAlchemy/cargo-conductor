@@ -2,8 +2,8 @@ import { join } from 'node:path';
 
 import { daemonSocketPath, resolveStateDir } from '../status.js';
 
-/** Absolute `node …/conductor.mjs` when the plugin root is known; otherwise PATH `conductor`. */
-export const resolveConductorArgv = (
+/** Absolute `node …/hauler.mjs` when the plugin root is known; otherwise PATH `hauler`. */
+export const resolveHaulerArgv = (
   env: Readonly<Record<string, string | undefined>> = process.env,
 ): readonly string[] => {
   const pluginRoot =
@@ -12,9 +12,9 @@ export const resolveConductorArgv = (
     env.CURSOR_PLUGIN_ROOT ??
     env.PLUGIN_ROOT;
   if (pluginRoot !== undefined && pluginRoot.length > 0) {
-    return [process.execPath, join(pluginRoot, 'scripts/conductor.mjs')];
+    return [process.execPath, join(pluginRoot, 'scripts/hauler.mjs')];
   }
-  return ['conductor'];
+  return ['hauler'];
 };
 
 export const resolveHookStateDir = (

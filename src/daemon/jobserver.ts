@@ -61,7 +61,7 @@ const drain = (fd: number): void => {
 };
 
 export interface ArmJobserverOptions {
-  /** Conductor state dir that owns the FIFO. */
+  /** Hauler state dir that owns the FIFO. */
   readonly stateDir: string;
   /** Token count; defaults to `max(1, cores - 1)`. */
   readonly tokens?: number;

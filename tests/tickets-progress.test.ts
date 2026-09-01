@@ -22,7 +22,7 @@ describe('awaitTicketWithProgress', () => {
           config: fixture.config,
           cwd: fixture.ws1,
           env: {
-            CARGO_CONDUCTOR_CARGO_BIN: `${fixture.binDir}/cargo`,
+            CARGO_HAULER_CARGO_BIN: `${fixture.binDir}/cargo`,
             FAKE_SLEEP: '2',
             PATH: `${fixture.binDir}:${process.env.PATH ?? ''}`,
           },

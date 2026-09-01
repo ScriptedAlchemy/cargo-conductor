@@ -10,7 +10,7 @@ set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 artifact="${1:-$repo_root/artifact/plugin}"
-dest="${CURSOR_PLUGINS_DIR:-$HOME/.cursor/plugins/local}/cargo-conductor"
+dest="${CURSOR_PLUGINS_DIR:-$HOME/.cursor/plugins/local}/cargo-hauler"
 node_bin="$(command -v node)"
 
 [ -f "$artifact/plugin.json" ] || [ -d "$artifact/hooks" ] || {
@@ -36,8 +36,8 @@ version="$(node -e "console.log(require('$artifact/.cursor-plugin/plugin.json').
 
 cat > "$dest/plugin.json" <<MANIFEST
 {
-  "name": "cargo-conductor",
-  "displayName": "cargo-conductor",
+  "name": "cargo-hauler",
+  "displayName": "cargo-hauler",
   "description": "Coalesce, schedule, and stream cargo so concurrent agent sessions share compiles instead of fighting locks.",
   "version": "$version",
   "author": { "name": "ScriptedAlchemy" },
@@ -72,15 +72,15 @@ cat > "$dest/hooks/hooks.json" <<HOOKS
 }
 HOOKS
 
-mcp_entry="$(ls "$artifact"/mcp/mcp-conductor-*.mjs 2>/dev/null | head -1 || true)"
+mcp_entry="$(ls "$artifact"/mcp/mcp-hauler-*.mjs 2>/dev/null | head -1 || true)"
 [ -n "$mcp_entry" ] || {
-  echo "missing MCP entry mcp-conductor-*.mjs in $artifact/mcp" >&2
+  echo "missing MCP entry mcp-hauler-*.mjs in $artifact/mcp" >&2
   exit 1
 }
 cat > "$dest/mcp.json" <<MCP
 {
   "mcpServers": {
-    "conductor": {
+    "hauler": {
       "command": "$node_bin",
       "args": ["$mcp_entry"],
       "env": { "AGENT_BUNDLE_PLUGIN_ROOT": "$artifact" }

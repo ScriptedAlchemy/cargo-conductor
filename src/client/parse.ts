@@ -30,7 +30,7 @@ const takeValue = (argv: readonly string[], index: number, option: ValuedFlag): 
 };
 
 /**
- * Flags before `--` (or before the cargo argv) belong to conductor.
+ * Flags before `--` (or before the cargo argv) belong to hauler.
  * Everything after `--`, or the remaining tokens, is the cargo command.
  */
 export const parseExecArgv = (argv: readonly string[]): ParsedExecArgv => {

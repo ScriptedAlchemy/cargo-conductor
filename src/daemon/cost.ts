@@ -38,7 +38,7 @@ export interface CostModelApi {
 }
 
 export class CostModel extends Context.Service<CostModel, CostModelApi>()(
-  'cargo-conductor/CostModel',
+  'cargo-hauler/CostModel',
 ) {}
 
 /** Cold-start priors per subcommand, from the mined tracedecay p50s. */

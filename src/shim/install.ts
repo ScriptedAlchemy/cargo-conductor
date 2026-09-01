@@ -3,7 +3,7 @@ import { homedir } from 'node:os';
 import { delimiter, isAbsolute, join, resolve } from 'node:path';
 
 export interface RenderShimOptions {
-  readonly conductorArgv: readonly string[];
+  readonly haulerArgv: readonly string[];
   readonly realCargo: string;
 }
 
@@ -29,19 +29,20 @@ const shellQuote = (value: string): string => {
 };
 
 export const renderCargoShim = (options: RenderShimOptions): string => {
-  const conductor = options.conductorArgv.map(shellQuote).join(' ');
+  const hauler = options.haulerArgv.map(shellQuote).join(' ');
   const cargo = shellQuote(options.realCargo);
   // --host shim: unlike hook rewrites, the shim has no agent identity, but the
-  // ledger should still say where a request entered. CARGO_CONDUCTOR_INSIDE
-  // marks cargo spawned by the daemon itself; forwarding it would submit the
-  // broker's own work back to the broker.
+  // ledger should still say where a request entered. CARGO_HAULER_INSIDE
+  // marks cargo spawned by the daemon itself; the legacy guard remains a
+  // backward-compatible fallback during mixed-version swaps. Forwarding
+  // either would submit the broker's own work back to the broker.
   return `#!/bin/sh
-# cargo-conductor PATH shim — forwards cargo to the broker.
-# Installed by \`conductor install-shim\`. Hooks cannot see cargo inside scripts.
-if [ -n "\${CARGO_CONDUCTOR_INSIDE:-}" ]; then
+# cargo-hauler PATH shim — forwards cargo to the broker.
+# Installed by \`hauler install-shim\`. Hooks cannot see cargo inside scripts.
+if [ -n "\${CARGO_HAULER_INSIDE:-}" ] || [ -n "\${CARGO_CONDUCTOR_INSIDE:-}" ]; then
   exec ${cargo} "$@"
 fi
-exec ${conductor} exec --host shim -- ${cargo} "$@"
+exec ${hauler} exec --host shim -- ${cargo} "$@"
 `;
 };
 
@@ -130,7 +131,7 @@ export const installCargoShim = (options: InstallShimOptions): InstallShimResult
   // would produce a file cmd.exe cannot execute. Refuse clearly instead.
   if ((options.platform ?? process.platform) === 'win32') {
     throw new Error(
-      'conductor install-shim is not supported on Windows: the shim is a POSIX shell script. Windows is not yet supported.',
+      'hauler install-shim is not supported on Windows: the shim is a POSIX shell script. Windows is not yet supported.',
     );
   }
   const destDir = options.destDir ?? defaultShimDir();

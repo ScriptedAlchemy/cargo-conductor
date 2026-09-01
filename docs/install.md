@@ -1,6 +1,6 @@
-# Installing cargo-conductor
+# Installing cargo-hauler
 
-cargo-conductor is an [agent-bundle](https://github.com/ScriptedAlchemy/agent-bundle)
+cargo-hauler is an [agent-bundle](https://github.com/ScriptedAlchemy/agent-bundle)
 plugin. The compile target is `plugin`, which emits Claude, Codex, and Cursor
 into one artifact.
 
@@ -26,7 +26,7 @@ open the portable target in the workbench playground).
 
   ```sh
   claude plugin marketplace add ./artifact/plugin
-  claude plugin install cargo-conductor@cargo-conductor-marketplace
+  claude plugin install cargo-hauler@cargo-hauler-marketplace
   ```
 
 - Hook events: `PreToolUse`, `PostToolUse`, `Stop`.
@@ -47,7 +47,7 @@ open the portable target in the workbench playground).
   ./scripts/install-cursor.sh
   ```
 
-  It installs into `~/.cursor/plugins/local/cargo-conductor`
+  It installs into `~/.cursor/plugins/local/cargo-hauler`
   (`CURSOR_PLUGINS_DIR` overrides the base). Restart or reload Cursor so new
   agent sessions pick up the hooks. Re-run the script after every
   `npm run build` — hook wrapper filenames are content-hashed.
@@ -63,7 +63,7 @@ open the portable target in the workbench playground).
 
   ```sh
   codex plugin marketplace add ./artifact/plugin
-  codex plugin add cargo-conductor@cargo-conductor-marketplace
+  codex plugin add cargo-hauler@cargo-hauler-marketplace
   ```
 
 - Hook schema mirrors Claude (`PreToolUse` / `PostToolUse` / `Stop`).
@@ -76,7 +76,7 @@ open the portable target in the workbench playground).
   `~/.codex/config.toml` (`[hooks.state]`) or
   `--dangerously-bypass-hook-trust`, Codex does not run the hooks at all.
 - If a Stop hook is ever cut off mid-hold anyway:
-  1. Shorten the in-hook wait (`CARGO_CONDUCTOR_STOP_WAIT_MS`, default 30000).
+  1. Shorten the in-hook wait (`CARGO_HAULER_STOP_WAIT_MS`, default 30000).
   2. Rely on the re-deny loop: the next Stop re-enters with `stopHookActive`.
 - Integration: `npm run test` covers native Codex PreToolUse envelopes on
   the generated wrapper. The live Codex Stop timeout probe is documented in
@@ -87,8 +87,8 @@ open the portable target in the workbench playground).
 Hooks cannot see `cargo` spawned from scripts. Install a shim:
 
 ```sh
-conductor install-shim            # defaults to ~/.local/bin
-conductor install-shim --dir DIR  # or pick another user-writable dir
+hauler install-shim            # defaults to ~/.local/bin
+hauler install-shim --dir DIR  # or pick another user-writable dir
 ```
 
 The shim only works if its directory resolves `cargo` **before** rustup's
@@ -103,10 +103,10 @@ resolves elsewhere (or when the directory is not on `PATH` at all).
 
 The generated shim is self-contained
 ([issue #2](https://github.com/ScriptedAlchemy/cargo-conductor/issues/2): it
-used to call a bare `conductor` that nothing puts on PATH):
+used to call a bare `hauler` that nothing puts on PATH):
 
 - It embeds the absolute `node <script>` invocation of the CLI that ran
-  `install-shim`, so it needs no `conductor` on PATH.
+  `install-shim`, so it needs no `hauler` on PATH.
 - It embeds an absolute real-cargo path. `--real-cargo` accepts a name or a
   path; names resolve through PATH at install time, skipping the shim
   directory itself, so re-installing with the shim already on PATH cannot
@@ -116,26 +116,26 @@ used to call a bare `conductor` that nothing puts on PATH):
   column show which requests entered through the shim rather than a hook
   rewrite (`claude`/`codex`/`cursor`).
 - It passes daemon-spawned cargo straight through: the daemon sets
-  `CARGO_CONDUCTOR_INSIDE=1` on every process it spawns, and the shim execs
+  `CARGO_HAULER_INSIDE=1` on every process it spawns, and the shim execs
   the real cargo directly when that variable is present, so the broker's own
   work never re-enters the broker.
 
 On the daemon side, bare `cargo` argv (hook rewrites) and the internal
 `cargo metadata` topology refresh never resolve through PATH, where the shim
-sits. The daemon uses `CARGO_CONDUCTOR_CARGO_BIN` when set, otherwise
+sits. The daemon uses `CARGO_HAULER_CARGO_BIN` when set, otherwise
 `$CARGO_HOME/bin/cargo` (default `~/.cargo/bin/cargo`), otherwise a bare
 `cargo` as the last resort.
 
 ## State
 
 Daemon socket and ledger live under a per-user cache directory:
-`$XDG_CACHE_HOME/cargo-conductor` when `XDG_CACHE_HOME` is set, otherwise
-`~/.cache/cargo-conductor` on Linux, `~/Library/Caches/cargo-conductor` on
-macOS, and `%LOCALAPPDATA%\cargo-conductor` on Windows. Set
-`CARGO_CONDUCTOR_STATE_DIR` to relocate it (a RAM disk or other fast mount is
+`$XDG_CACHE_HOME/cargo-hauler` when `XDG_CACHE_HOME` is set, otherwise
+`~/.cache/cargo-hauler` on Linux, `~/Library/Caches/cargo-hauler` on
+macOS, and `%LOCALAPPDATA%\cargo-hauler` on Windows. Set
+`CARGO_HAULER_STATE_DIR` to relocate it (a RAM disk or other fast mount is
 optional, never required).
 
-kache is optional. When `CARGO_CONDUCTOR_KACHE_INDEX` is unset, the daemon
+kache is optional. When `CARGO_HAULER_KACHE_INDEX` is unset, the daemon
 reads kache's own config (`$XDG_CONFIG_HOME/kache/config.toml`, else
 `~/.config/kache/config.toml`) for the `local_store` path under `[cache]` and
 uses `<local_store>/index.db`; without that config it falls back to

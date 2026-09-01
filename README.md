@@ -1,6 +1,6 @@
-# cargo-conductor
+# cargo-hauler
 
-cargo-conductor is an [agent-bundle](https://github.com/ScriptedAlchemy/agent-bundle)
+cargo-hauler is an [agent-bundle](https://github.com/ScriptedAlchemy/agent-bundle)
 plugin that puts a broker daemon between coding agents (Claude Code, Codex CLI,
 Cursor) and `cargo`. A `beforeTool` hook rewrites each agent's cargo shell call
 into a brokered request; the daemon deduplicates, schedules, and executes the
@@ -33,12 +33,12 @@ attachment, and blind waiting with tickets and status surfaces.
 
 ```mermaid
 flowchart LR
-  agent["agent shell call<br/>cargo check -p foo"] --> hook["beforeTool hook<br/>rewrite to conductor exec"]
+  agent["agent shell call<br/>cargo check -p foo"] --> hook["beforeTool hook<br/>rewrite to hauler exec"]
   scripts["cargo inside scripts"] --> shim["PATH shim (optional)"]
-  hook --> client["conductor exec client<br/>streams output + progress"]
+  hook --> client["hauler exec client<br/>streams output + progress"]
   shim --> client
   client -->|unix socket| daemon
-  subgraph daemon["conductor daemon (flock singleton)"]
+  subgraph daemon["hauler daemon (flock singleton)"]
     normalizer["intent normalizer"] --> matcher["attach:<br/>identity / coverage"]
     matcher --> lanes["lanes: one queue per<br/>(workspace root, target dir)"]
     lanes --> scheduler["scheduler + batch composer<br/>+ admission gate"]
@@ -46,8 +46,8 @@ flowchart LR
   end
   executor --> cargo["cargo → rustc<br/>(kache optional)"]
   daemon --> ledgerDb["SQLite ledger:<br/>every request + transitions"]
-  ledgerDb --> surfaces["conductor status/log/last<br/>MCP tools + dashboard app"]
-  daemon --> notify["tickets: afterTool notify,<br/>stop-hold, conductor_await"]
+  ledgerDb --> surfaces["hauler status/log/last<br/>MCP tools + dashboard app"]
+  daemon --> notify["tickets: afterTool notify,<br/>stop-hold, hauler_await"]
 ```
 
 Every request is normalized into an intent (subcommand, package set, targets,
@@ -98,21 +98,21 @@ Every request gets a durable ticket (`cc-<n>`) in the SQLite ledger; results
 (status, exit code, output tail, timings) survive daemon restarts and are
 retrievable cross-session.
 
-- `conductor exec --bg -- cargo …` (or the `conductor_request` MCP tool)
+- `hauler exec --bg -- cargo …` (or the `hauler_request` MCP tool)
   returns the ticket immediately.
 - Sync runs auto-background when the priors-based ETA exceeds the host's
   shell-timeout cap (~9 min for Claude, 10 for Codex, 14 for Cursor), instead
   of getting killed mid-build.
 - The `afterTool` hook notifies: on the agent's next tool call after a ticket
   finishes, it injects context like `ticket cc-42 finished: success, 0 errors —
-  call conductor_result cc-42`.
-- `conductor_await <ticket>` long-polls; `conductor_result <ticket>` fetches
+  call hauler_result cc-42`.
+- `hauler_await <ticket>` long-polls; `hauler_result <ticket>` fetches
   the durable result.
 - Stop-hold: when an agent tries to stop with pending tickets, the `stop` hook
-  waits up to min(remaining ETA, `CARGO_CONDUCTOR_STOP_WAIT_MS`) and then
+  waits up to min(remaining ETA, `CARGO_HAULER_STOP_WAIT_MS`) and then
   denies the stop — with the result summary if something finished, otherwise
   with status + ETA and an escape hatch ("stop again to keep waiting or call
-  conductor_await"). The re-deny loop makes the total wait unbounded without
+  hauler_await"). The re-deny loop makes the total wait unbounded without
   any marathon hook process; `stopHookActive` plus a per-ticket deny cap (8)
   prevents livelock. Background tickets never hold the stop.
 
@@ -133,14 +133,14 @@ the installable multi-host bundle. Then install per host:
 
   ```sh
   claude plugin marketplace add ./artifact/plugin
-  claude plugin install cargo-conductor@cargo-conductor-marketplace
+  claude plugin install cargo-hauler@cargo-hauler-marketplace
   ```
 
 - **Codex CLI**:
 
   ```sh
   codex plugin marketplace add ./artifact/plugin
-  codex plugin add cargo-conductor@cargo-conductor-marketplace
+  codex plugin add cargo-hauler@cargo-hauler-marketplace
   ```
 
 - **Cursor** — run the install script (Cursor's local-plugin loader needs
@@ -151,17 +151,17 @@ the installable multi-host bundle. Then install per host:
   ./scripts/install-cursor.sh
   ```
 
-Verify the daemon with the `conductor` CLI that ships in the artifact
-(`node artifact/plugin/scripts/conductor.mjs`, abbreviated `conductor` below):
+Verify the daemon with the `hauler` CLI that ships in the artifact
+(`node artifact/plugin/scripts/hauler.mjs`, abbreviated `hauler` below):
 
 ```sh
-conductor daemon start
-conductor daemon status
+hauler daemon start
+hauler daemon status
 ```
 
 The first brokered request auto-spawns the daemon too, so this step just
 confirms the wiring. The dashboard is an MCP App
-(`ui://cargo-conductor/dashboard.html`) rendered by the `conductor_status`
+(`ui://cargo-hauler/dashboard.html`) rendered by the `hauler_status`
 tool inside MCP App-capable hosts; to see it in a plain browser, run
 `node scripts/preview-dashboard.mjs` (see [Development](#development)).
 
@@ -169,10 +169,10 @@ tool inside MCP App-capable hosts; to see it in a plain browser, run
 scripts; the shim catches those:
 
 ```sh
-conductor install-shim --dir ~/.local/bin
+hauler install-shim --dir ~/.local/bin
 ```
 
-The generated shim embeds absolute paths for both the conductor CLI and the
+The generated shim embeds absolute paths for both the hauler CLI and the
 real cargo (resolved at install time, never through PATH again), tags its
 submissions with `--host shim`, and passes daemon-spawned cargo straight
 through to the real binary so the broker never re-enters itself.
@@ -192,34 +192,34 @@ as "kache unavailable", never an error.
 
 ## Surfaces
 
-The `conductor` CLI ships inside every host artifact (`scripts/conductor.mjs`)
+The `hauler` CLI ships inside every host artifact (`scripts/hauler.mjs`)
 and as the package bin:
 
 | Command | What it does |
 | --- | --- |
-| `conductor exec [--session ID] [--host HOST] [--cwd DIR] [--bg] -- <cargo …>` | Run cargo through the daemon, streaming output back (the hook rewrites to this form) |
-| `conductor status [--limit N]` | Queue, in-flight work, lanes, admission |
-| `conductor log [--limit N]` | Recent requests from the durable ledger |
-| `conductor last` | The most recent request |
-| `conductor await <ticket> [--max-wait-ms N]` | Long-poll a ticket until it finishes or the wait expires |
-| `conductor result <ticket>` | Fetch a durable ticket result |
-| `conductor request [--session ID] [--cwd DIR] -- <cargo …>` | Submit a background request, returning a ticket |
-| `conductor daemon <run\|start\|stop\|status>` | Daemon lifecycle |
-| `conductor install-shim [--dir DIR] [--real-cargo PATH] [--force]` | Install the optional PATH cargo shim |
+| `hauler exec [--session ID] [--host HOST] [--cwd DIR] [--bg] -- <cargo …>` | Run cargo through the daemon, streaming output back (the hook rewrites to this form) |
+| `hauler status [--limit N]` | Queue, in-flight work, lanes, admission |
+| `hauler log [--limit N]` | Recent requests from the durable ledger |
+| `hauler last` | The most recent request |
+| `hauler await <ticket> [--max-wait-ms N]` | Long-poll a ticket until it finishes or the wait expires |
+| `hauler result <ticket>` | Fetch a durable ticket result |
+| `hauler request [--session ID] [--cwd DIR] -- <cargo …>` | Submit a background request, returning a ticket |
+| `hauler daemon <run\|start\|stop\|status>` | Daemon lifecycle |
+| `hauler install-shim [--dir DIR] [--real-cargo PATH] [--force]` | Install the optional PATH cargo shim |
 
-The same operations project to MCP tools on the `conductor` server:
+The same operations project to MCP tools on the `hauler` server:
 
 | MCP tool | What it does |
 | --- | --- |
-| `conductor_status` | Daemon queue and in-flight work (renders the dashboard widget) |
-| `conductor_log` | Recent requests from the ledger |
-| `conductor_last` | The most recent request |
-| `conductor_await` | Long-poll a ticket |
-| `conductor_result` | Fetch a durable ticket result |
-| `conductor_request` | Submit a background cargo request |
+| `hauler_status` | Daemon queue and in-flight work (renders the dashboard widget) |
+| `hauler_log` | Recent requests from the ledger |
+| `hauler_last` | The most recent request |
+| `hauler_await` | Long-poll a ticket |
+| `hauler_result` | Fetch a durable ticket result |
+| `hauler_request` | Submit a background cargo request |
 
-The MCP App dashboard (`ui://cargo-conductor/dashboard.html`, bound to
-`conductor_status`, loaded immediately and then refreshed every 5s) stacks
+The MCP App dashboard (`ui://cargo-hauler/dashboard.html`, bound to
+`hauler_status`, loaded immediately and then refreshed every 5s) stacks
 full-width sections in the order contention → in flight → queue → lanes →
 history. Contention shows daemon state, queue depth, and an admission meter.
 In-flight and queued rows show the workspace, who submitted (host · session),
@@ -238,23 +238,27 @@ All settings are environment variables read by the daemon (and hooks):
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `CARGO_CONDUCTOR_STATE_DIR` | per-user cache dir (see below) | Home of the unix socket, SQLite ledger, daemon log, pid lock, and `hook-events.jsonl` |
-| `CARGO_CONDUCTOR_CARGO_BIN` | `$CARGO_HOME/bin/cargo` | Real cargo binary for daemon-spawned work (bare `cargo` as last resort); the daemon never resolves `cargo` through PATH, where the shim may sit |
-| `CARGO_CONDUCTOR_MAX_CONCURRENT` | `5` | Machine-wide cap on concurrently running cargo processes (admission permits) |
-| `CARGO_CONDUCTOR_REPLAY_BUFFER_BYTES` | `4194304` | Leader output retained in memory for late-attacher replay |
-| `CARGO_CONDUCTOR_KACHE_INDEX` | kache's own configured store (see below) | kache index for per-crate compile-time priors (empty string disables; a missing file just reports kache as unavailable) |
-| `CARGO_CONDUCTOR_JOBS_GRANT` | `max(4, cores / max concurrent)` | `CARGO_BUILD_JOBS` injected into each spawned cargo (`0` disables; caller-set `-j`/env wins) |
-| `CARGO_CONDUCTOR_BATCH` | enabled | Set to `0` to disable the batch composer |
-| `CARGO_CONDUCTOR_BATCH_WINDOW_MS` | `150` | Brief hold for a batchable lane head so near-simultaneous agent requests can fold (`0` disables) |
-| `CARGO_CONDUCTOR_STOP_WAIT_MS` | `30000` | Bounded wait per stop-hold hook invocation |
+| `CARGO_HAULER_STATE_DIR` | per-user cache dir (see below) | Home of the unix socket, SQLite ledger, daemon log, pid lock, and `hook-events.jsonl` |
+| `CARGO_HAULER_CARGO_BIN` | `$CARGO_HOME/bin/cargo` | Real cargo binary for daemon-spawned work (bare `cargo` as last resort); the daemon never resolves `cargo` through PATH, where the shim may sit |
+| `CARGO_HAULER_MAX_CONCURRENT` | `5` | Machine-wide cap on concurrently running cargo processes (admission permits) |
+| `CARGO_HAULER_REPLAY_BUFFER_BYTES` | `4194304` | Leader output retained in memory for late-attacher replay |
+| `CARGO_HAULER_KACHE_INDEX` | kache's own configured store (see below) | kache index for per-crate compile-time priors (empty string disables; a missing file just reports kache as unavailable) |
+| `CARGO_HAULER_JOBS_GRANT` | `max(4, cores / max concurrent)` | `CARGO_BUILD_JOBS` injected into each spawned cargo (`0` disables; caller-set `-j`/env wins) |
+| `CARGO_HAULER_BATCH` | enabled | Set to `0` to disable the batch composer |
+| `CARGO_HAULER_BATCH_WINDOW_MS` | `150` | Brief hold for a batchable lane head so near-simultaneous agent requests can fold (`0` disables) |
+| `CARGO_HAULER_STOP_WAIT_MS` | `30000` | Bounded wait per stop-hold hook invocation |
 
-Daemon state defaults to a per-user cache directory: `$XDG_CACHE_HOME/cargo-conductor`
-when `XDG_CACHE_HOME` is set, otherwise `~/.cache/cargo-conductor` on Linux,
-`~/Library/Caches/cargo-conductor` on macOS, and `%LOCALAPPDATA%\cargo-conductor`
-on Windows. Set `CARGO_CONDUCTOR_STATE_DIR` to move it (e.g. onto a RAM disk);
+For a non-breaking rebrand, each `CARGO_HAULER_*` setting takes precedence
+over its legacy `CARGO_CONDUCTOR_*` alias; existing operator environments
+continue to work while they migrate.
+
+Daemon state defaults to a per-user cache directory: `$XDG_CACHE_HOME/cargo-hauler`
+when `XDG_CACHE_HOME` is set, otherwise `~/.cache/cargo-hauler` on Linux,
+`~/Library/Caches/cargo-hauler` on macOS, and `%LOCALAPPDATA%\cargo-hauler`
+on Windows. Set `CARGO_HAULER_STATE_DIR` to move it (e.g. onto a RAM disk);
 no machine-specific mount is ever required.
 
-When `CARGO_CONDUCTOR_KACHE_INDEX` is unset, the kache index resolves to
+When `CARGO_HAULER_KACHE_INDEX` is unset, the kache index resolves to
 `<local_store>/index.db` where `local_store` is read from kache's own config
 (`$XDG_CONFIG_HOME/kache/config.toml`, else `~/.config/kache/config.toml`,
 `[cache]` section); if no config exists, it falls back to
@@ -292,7 +296,7 @@ optional either way — see [kache is optional](#kache-is-optional).
 - Requires Node >= 22.19 (`node:sqlite` without native deps). Linux and macOS
   only for now — Windows lacks the unix socket, shell shim, and POSIX fifo
   the daemon relies on. Daemon state lives under the per-user cache dir by
-  default (`CARGO_CONDUCTOR_STATE_DIR` overrides; see
+  default (`CARGO_HAULER_STATE_DIR` overrides; see
   [Configuration](#configuration)).
 
 ## Development
@@ -310,7 +314,7 @@ node scripts/preview-dashboard.mjs --port 4941
 
 Serves the built dashboard (`artifact/plugin/mcp-apps/dashboard.html`) at
 `http://127.0.0.1:4941` outside any MCP host: a small harness answers the
-widget's MCP App messages with live `conductor status` output, so the page
+widget's MCP App messages with live `hauler status` output, so the page
 shows real daemon data with the same 5s polling. Run `npm run build` first —
 the harness reads the artifact, not the sources.
 

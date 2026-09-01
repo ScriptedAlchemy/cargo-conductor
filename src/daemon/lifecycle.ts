@@ -5,7 +5,7 @@ import * as Fiber from 'effect/Fiber';
 
 import { ensureDaemonRunning } from '../client/ensure-daemon.js';
 import { shortId } from '../lib/id.js';
-import { loadConductorSnapshot } from '../query.js';
+import { loadHaulerSnapshot } from '../query.js';
 
 import { resolveDaemonConfig } from './config.js';
 import type { DaemonConfigShape } from './config.js';
@@ -125,7 +125,7 @@ export const startDaemon = (
   const failedStart = (): Effect.Effect<DaemonControlResult> =>
     Effect.succeed(
       result(config, 'start', {
-        message: `cargo-conductor daemon did not come up; check ${config.logPath}`,
+        message: `cargo-hauler daemon did not come up; check ${config.logPath}`,
         pid: null,
         report: null,
         running: false,
@@ -134,7 +134,7 @@ export const startDaemon = (
   return ensureDaemonRunning(config).pipe(
     Effect.map((pong) =>
       result(config, 'start', {
-        message: `cargo-conductor daemon started (pid ${pong.pid})`,
+        message: `cargo-hauler daemon started (pid ${pong.pid})`,
         pid: pong.pid,
         report: null,
         running: true,
@@ -160,7 +160,7 @@ export const stopDaemon = (
   }).pipe(
     Effect.map(() =>
       result(config, 'stop', {
-        message: 'cargo-conductor daemon stopped',
+        message: 'cargo-hauler daemon stopped',
         pid: null,
         report: null,
         running: false,
@@ -170,7 +170,7 @@ export const stopDaemon = (
       ConnectionClosed: () =>
         Effect.succeed(
           result(config, 'stop', {
-            message: 'cargo-conductor daemon stopped',
+            message: 'cargo-hauler daemon stopped',
             pid: null,
             report: null,
             running: false,
@@ -179,7 +179,7 @@ export const stopDaemon = (
       ControlTimeout: () =>
         Effect.succeed(
           result(config, 'stop', {
-            message: 'cargo-conductor daemon did not acknowledge the shutdown request',
+            message: 'cargo-hauler daemon did not acknowledge the shutdown request',
             pid: null,
             report: null,
             running: false,
@@ -188,7 +188,7 @@ export const stopDaemon = (
       DaemonUnreachable: () =>
         Effect.succeed(
           result(config, 'stop', {
-            message: 'cargo-conductor daemon is not running',
+            message: 'cargo-hauler daemon is not running',
             pid: null,
             report: null,
             running: false,
@@ -200,7 +200,7 @@ export const stopDaemon = (
 export const statusDaemon = (
   config: DaemonConfigShape = resolveDaemonConfig(),
 ): Effect.Effect<DaemonControlResult> =>
-  loadConductorSnapshot({ config }).pipe(
+  loadHaulerSnapshot({ config }).pipe(
     Effect.map((snapshot) =>
       result(config, 'status', {
         message: snapshot.summary,

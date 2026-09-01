@@ -103,7 +103,7 @@ export const digestCargoEnvironment = (
     .filter((entry): entry is [string, string] => entry[1] !== undefined && affectsCompilation(entry[0]))
     .sort(([left], [right]) => left.localeCompare(right));
   const hash = createHash('sha256');
-  hash.update('cargo-conductor-env-v1\0');
+  hash.update('cargo-hauler-env-v1\0');
   for (const [name, value] of entries) {
     hash.update(name);
     hash.update('\0');
@@ -360,7 +360,7 @@ export const normalizeCargoIntent = (
     ...parsed,
     cwd,
     envDigest,
-    key: sha256(`cargo-conductor-intent-v2\0${JSON.stringify(surface)}`),
+    key: sha256(`cargo-hauler-intent-v2\0${JSON.stringify(surface)}`),
     manifestPath,
     targetDir,
     targetTriple,

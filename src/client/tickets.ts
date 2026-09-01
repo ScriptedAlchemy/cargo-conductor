@@ -82,7 +82,7 @@ export const awaitTicketWithProgress = (
     for (;;) {
       const record = yield* fetchTicket(ticket, config).pipe(Effect.orElseSucceed(() => null));
       onProgress(
-        `[cargo-conductor] ${describeAwaitedRecord(ticket, record)} (waited ${formatSeconds(Date.now() - startedAtMs)})\n`,
+        `[cargo-hauler] ${describeAwaitedRecord(ticket, record)} (waited ${formatSeconds(Date.now() - startedAtMs)})\n`,
       );
       yield* Effect.sleep(intervalMs);
     }

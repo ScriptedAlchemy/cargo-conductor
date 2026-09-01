@@ -12,7 +12,7 @@ import type { HookRecord } from '../src/hooks/record.js';
 const services = (
   extras: HookServices = {},
 ): HookServices => ({
-  conductorArgv: ['conductor'],
+  haulerArgv: ['hauler'],
   hasActiveBuilds: () => false,
   ...extras,
 });
@@ -33,22 +33,22 @@ const runBefore = async (
 ) => handleBeforeShell(beforeEvent(command), context, services(extras));
 
 describe('beforeTool shell hook', () => {
-  it('rewrites a cargo command to conductor exec with session and host', async () => {
+  it('rewrites a cargo command to hauler exec with session and host', async () => {
     const result = await runBefore('cargo test -p foo');
 
     expect(result.outcome).toBe('continue');
     expect(result.updatedInput).toEqual({
-      command: 'conductor exec --session sess-1 --host claude --cwd /tmp/ws -- cargo test -p foo',
+      command: 'hauler exec --session sess-1 --host claude --cwd /tmp/ws -- cargo test -p foo',
       timeout: 120,
     });
     expect(result.reason).toBeUndefined();
   });
 
-  it('keeps env-prefix assignments on the rewritten conductor invocation', async () => {
+  it('keeps env-prefix assignments on the rewritten hauler invocation', async () => {
     const result = await runBefore('CARGO_TARGET_DIR=tmp cargo test');
 
     expect(result.updatedInput?.command).toBe(
-      'CARGO_TARGET_DIR=tmp conductor exec --session sess-1 --host claude --cwd /tmp/ws -- cargo test',
+      'CARGO_TARGET_DIR=tmp hauler exec --session sess-1 --host claude --cwd /tmp/ws -- cargo test',
     );
   });
 
@@ -56,7 +56,7 @@ describe('beforeTool shell hook', () => {
     const result = await runBefore('cargo check && cargo test | tee log.txt');
 
     expect(result.updatedInput?.command).toBe(
-      'conductor exec --session sess-1 --host claude --cwd /tmp/ws -- cargo check && conductor exec --session sess-1 --host claude --cwd /tmp/ws -- cargo test | tee log.txt',
+      'hauler exec --session sess-1 --host claude --cwd /tmp/ws -- cargo check && hauler exec --session sess-1 --host claude --cwd /tmp/ws -- cargo test | tee log.txt',
     );
   });
 
@@ -64,7 +64,7 @@ describe('beforeTool shell hook', () => {
     const result = await runBefore('sudo -u builder cargo test');
 
     expect(result.updatedInput?.command).toBe(
-      'sudo -u builder conductor exec --session sess-1 --host claude --cwd /tmp/ws -- cargo test',
+      'sudo -u builder hauler exec --session sess-1 --host claude --cwd /tmp/ws -- cargo test',
     );
   });
 
@@ -84,8 +84,8 @@ describe('beforeTool shell hook', () => {
     expect(result).toEqual({ outcome: 'continue' });
   });
 
-  it('does not rewrite an already-brokered conductor exec', async () => {
-    const command = 'conductor exec --session sess-1 --host claude -- cargo test';
+  it('does not rewrite an already-brokered hauler exec', async () => {
+    const command = 'hauler exec --session sess-1 --host claude -- cargo test';
     const result = await runBefore(command);
 
     expect(result).toEqual({ outcome: 'continue' });
@@ -126,7 +126,7 @@ describe('beforeTool shell hook', () => {
     const result = await runBefore('cargo +nightly clean -p foo');
 
     expect(result.outcome).toBe('continue');
-    expect(result.updatedInput?.command).toContain('conductor exec');
+    expect(result.updatedInput?.command).toContain('hauler exec');
     expect(result.updatedInput?.command).toContain('-- cargo +nightly clean -p foo');
   });
 
@@ -140,14 +140,14 @@ describe('beforeTool shell hook', () => {
 
   it('does not consult the daemon probe for non-destructive cargo', async () => {
     const result = await runBefore('cargo test', undefined, {
-      conductorArgv: ['conductor'],
+      haulerArgv: ['hauler'],
       hasActiveBuilds: () => {
         throw new Error('boom');
       },
     });
 
     expect(result.outcome).toBe('continue');
-    expect(result.updatedInput?.command).toContain('conductor exec');
+    expect(result.updatedInput?.command).toContain('hauler exec');
   });
 });
 

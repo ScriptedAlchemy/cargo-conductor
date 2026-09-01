@@ -1,6 +1,6 @@
 {
-  "name": "cargo-conductor",
-  "version": "0.1.22",
+  "name": "cargo-hauler",
+  "version": "0.2.0",
   "license": "MIT",
   "private": true,
   "description": "Orchestrate cargo across Claude, Codex, and Cursor so concurrent agent sessions share work instead of fighting locks.",
@@ -23,7 +23,7 @@
     "node": ">=22.19.0"
   },
   "bin": {
-    "cargo-conductor": "./dist/bin/cargo-conductor.js"
+    "cargo-hauler": "./dist/bin/cargo-hauler.js"
   },
   "scripts": {
     "build": "agent-bundle build --output artifact",

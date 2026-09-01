@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { describe, expect, it } from '@rstest/core';
 import * as Effect from 'effect/Effect';
 
-import { runCli, type ConductorOperations } from '../src/cli.js';
+import { runCli, type HaulerOperations } from '../src/cli.js';
 import type { RunExecOptions, RunExecResult } from '../src/client/exec.js';
 
 const stoppedSnapshot = {
@@ -18,10 +18,10 @@ const stoppedSnapshot = {
   socketPath: '/tmp/cc/daemon.sock',
   startedAtMs: null,
   stateRoot: '/tmp/cc',
-  summary: 'cargo-conductor daemon is not running',
+  summary: 'cargo-hauler daemon is not running',
 };
 
-const operations = (): ConductorOperations => ({
+const operations = (): HaulerOperations => ({
   await: async (input) => ({
     operation: 'await',
     request: null,
@@ -30,7 +30,7 @@ const operations = (): ConductorOperations => ({
     timedOut: false,
   }),
   daemon: async (input) => ({
-    message: input.subcommand === 'status' ? 'cargo-conductor daemon is not running' : `${input.subcommand} ok`,
+    message: input.subcommand === 'status' ? 'cargo-hauler daemon is not running' : `${input.subcommand} ok`,
     operation: 'daemon',
     pid: null,
     report: null,
@@ -42,13 +42,13 @@ const operations = (): ConductorOperations => ({
     daemon: 'stopped',
     operation: 'last',
     request: null,
-    summary: 'no conductor requests recorded',
+    summary: 'no hauler requests recorded',
   }),
   log: async () => ({
     daemon: 'stopped',
     operation: 'log',
     requests: [],
-    summary: 'no conductor requests recorded',
+    summary: 'no hauler requests recorded',
   }),
   request: async () => ({
     operation: 'request',
@@ -70,7 +70,7 @@ const operations = (): ConductorOperations => ({
 const run = async (
   argv: readonly string[],
   extras: {
-    readonly operations?: ConductorOperations;
+    readonly operations?: HaulerOperations;
     readonly runExec?: (options: RunExecOptions) => Effect.Effect<RunExecResult>;
     readonly signal?: AbortSignal;
   } = {},
@@ -87,18 +87,18 @@ const run = async (
   return { code, text: lines.join('') };
 };
 
-describe('conductor cli', () => {
+describe('hauler cli', () => {
   it('prints usage and exits 2 without arguments', async () => {
     const result = await run([]);
     expect(result.code).toBe(2);
-    expect(result.text).toContain('Usage: conductor');
+    expect(result.text).toContain('Usage: hauler');
     expect(result.text).toContain('exec');
   });
 
   it('prints usage and exits 0 for --help', async () => {
     const result = await run(['--help']);
     expect(result.code).toBe(0);
-    expect(result.text).toContain('Usage: conductor');
+    expect(result.text).toContain('Usage: hauler');
     expect(result.text).toContain('status');
     expect(result.text).toContain('daemon');
   });
@@ -109,7 +109,7 @@ describe('conductor cli', () => {
     expect(JSON.parse(status.text)).toMatchObject({
       daemon: 'stopped',
       operation: 'status',
-      summary: 'cargo-conductor daemon is not running',
+      summary: 'cargo-hauler daemon is not running',
     });
 
     const log = await run(['log', '--limit', '5'], { operations: operations() });
@@ -143,6 +143,49 @@ describe('conductor cli', () => {
     expect(() => JSON.parse(result.text)).toThrow();
   });
 
+  it('falls back to legacy host/session variables and prefers hauler variables', async () => {
+    const names = [
+      'CARGO_CONDUCTOR_HOST',
+      'CARGO_CONDUCTOR_SESSION',
+      'CARGO_HAULER_HOST',
+      'CARGO_HAULER_SESSION',
+    ] as const;
+    const previous = Object.fromEntries(names.map((name) => [name, process.env[name]]));
+    try {
+      process.env.CARGO_CONDUCTOR_HOST = 'legacy-host';
+      process.env.CARGO_CONDUCTOR_SESSION = 'legacy-session';
+      let seen: RunExecOptions | undefined;
+      await run(['exec', '--', 'cargo', 'check'], {
+        runExec: (options) => {
+          seen = options;
+          return Effect.succeed({ exitCode: 0, mode: 'brokered', ticket: 'cc-9' });
+        },
+      });
+      expect(seen?.host).toBe('legacy-host');
+      expect(seen?.session).toBe('legacy-session');
+
+      process.env.CARGO_HAULER_HOST = 'current-host';
+      process.env.CARGO_HAULER_SESSION = 'current-session';
+      await run(['exec', '--', 'cargo', 'check'], {
+        runExec: (options) => {
+          seen = options;
+          return Effect.succeed({ exitCode: 0, mode: 'brokered', ticket: 'cc-10' });
+        },
+      });
+      expect(seen?.host).toBe('current-host');
+      expect(seen?.session).toBe('current-session');
+    } finally {
+      for (const name of names) {
+        const value = previous[name];
+        if (value === undefined) {
+          delete process.env[name];
+        } else {
+          process.env[name] = value;
+        }
+      }
+    }
+  });
+
   it('returns the cargo exit code from exec and rejects a missing cargo command', async () => {
     const failed = await run(['exec', '--', 'cargo', 'test'], {
       runExec: () => Effect.succeed({ exitCode: 17, mode: 'passthrough' }),
@@ -151,7 +194,7 @@ describe('conductor cli', () => {
 
     const usage = await run(['exec']);
     expect(usage.code).toBe(2);
-    expect(usage.text).toContain('Usage: conductor');
+    expect(usage.text).toContain('Usage: hauler');
   });
 
   it('prints an exec defect and exits 1 instead of leaking a FiberFailure', async () => {
@@ -180,8 +223,8 @@ describe('conductor cli', () => {
 
   it('status uses the default snapshot when no operations are injected', async () => {
     const root = mkdtempSync(join(tmpdir(), 'cc-cli-status-'));
-    const previous = process.env.CARGO_CONDUCTOR_STATE_DIR;
-    process.env.CARGO_CONDUCTOR_STATE_DIR = join(root, 'state');
+    const previous = process.env.CARGO_HAULER_STATE_DIR;
+    process.env.CARGO_HAULER_STATE_DIR = join(root, 'state');
     try {
       const result = await run(['status']);
       expect(result.code).toBe(0);
@@ -192,9 +235,9 @@ describe('conductor cli', () => {
       expect(JSON.parse(result.text).summary).toContain('daemon is not running');
     } finally {
       if (previous === undefined) {
-        delete process.env.CARGO_CONDUCTOR_STATE_DIR;
+        delete process.env.CARGO_HAULER_STATE_DIR;
       } else {
-        process.env.CARGO_CONDUCTOR_STATE_DIR = previous;
+        process.env.CARGO_HAULER_STATE_DIR = previous;
       }
       rmSync(root, { recursive: true, force: true });
     }

@@ -228,7 +228,7 @@ describe('digestCargoEnvironment', () => {
 
 describe('normalizeCargoIntent', () => {
   it('canonicalizes workspace and target-dir identity through symlinks', () => {
-    const directory = mkdtempSync(join(tmpdir(), 'cargo-conductor-intent-'));
+    const directory = mkdtempSync(join(tmpdir(), 'cargo-hauler-intent-'));
     try {
       const workspace = join(directory, 'workspace');
       const workspaceLink = join(directory, 'workspace-link');

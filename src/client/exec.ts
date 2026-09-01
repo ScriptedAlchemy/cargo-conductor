@@ -87,7 +87,7 @@ const writeChannel = (io: ExecIo, channel: 'stdout' | 'stderr', data: Uint8Array
 /**
  * Wraps `io` so stderr output chunks are ANSI-stripped for a colorless
  * consumer. Only byte chunks (cargo output) pass through the stripper;
- * conductor's own progress strings carry no color. Stdout is left verbatim:
+ * hauler's own progress strings carry no color. Stdout is left verbatim:
  * it can be program/data output (binary, caller-chosen `--message-format`
  * streams) that stripping must not touch.
  */
@@ -242,7 +242,7 @@ const handleServerMessage = (
         });
         return;
       case 'error':
-        options.io.writeStderr(`[cargo-conductor] ${message.message}\n`);
+        options.io.writeStderr(`[cargo-hauler] ${message.message}\n`);
         yield* Deferred.succeed(finished, {
           exitCode: message.code === 'bad-intent' ? 2 : 1,
           mode: 'brokered' as const,
@@ -424,7 +424,7 @@ export const runExecClient = (
   // Help/version and other non-compiling queries never take a ticket: a
   // brokered query would hold a lane slot behind a generic multi-minute
   // estimate and record a spurious job outcome (observed with
-  // `cargo conductor --help` ticketed at a ~120s ETA and counted as a
+  // `cargo hauler --help` ticketed at a ~120s ETA and counted as a
   // failed job). They run in place and stay out of the spool.
   const localReason = localQueryReason(options.argv);
   if (localReason !== null) {
@@ -442,7 +442,7 @@ export const runExecClient = (
             Effect.sync(() => {
               const reason = Cause.pretty(cause).split('\n')[0] ?? 'unknown error';
               options.io.writeStderr(
-                `[cargo-conductor] daemon startup failed: ${reason}; trying cargo directly\n`,
+                `[cargo-hauler] daemon startup failed: ${reason}; trying cargo directly\n`,
               );
             }),
           ),

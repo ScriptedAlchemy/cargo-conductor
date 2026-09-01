@@ -367,11 +367,11 @@ describe('json demux early release', () => {
         const previousEnv = {
           forceColor: process.env.FORCE_COLOR,
           noColor: process.env.NO_COLOR,
-          stateDir: process.env.CARGO_CONDUCTOR_STATE_DIR,
+          stateDir: process.env.CARGO_HAULER_STATE_DIR,
         };
         const context = { signal: new AbortController().signal };
         try {
-          process.env.CARGO_CONDUCTOR_STATE_DIR = fixture.config.stateDir;
+          process.env.CARGO_HAULER_STATE_DIR = fixture.config.stateDir;
           process.env.NO_COLOR = '1';
           delete process.env.FORCE_COLOR;
           const plain = yield* Effect.promise(() =>
@@ -391,7 +391,7 @@ describe('json demux early release', () => {
           expect(forced.request?.diagnostics?.join('')).not.toContain(esc);
           expect(JSON.stringify(forced.request)).not.toContain('\\u001b');
         } finally {
-          restoreEnv('CARGO_CONDUCTOR_STATE_DIR', previousEnv.stateDir);
+          restoreEnv('CARGO_HAULER_STATE_DIR', previousEnv.stateDir);
           restoreEnv('NO_COLOR', previousEnv.noColor);
           restoreEnv('FORCE_COLOR', previousEnv.forceColor);
         }

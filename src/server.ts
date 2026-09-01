@@ -2,7 +2,7 @@ import { createRscMcpServer } from '@agent-bundle/rsc-runtime/plugin';
 import type { McpServer } from '@modelcontextprotocol/server';
 import type { McpAppResource } from 'agent-bundle/mcp-apps';
 
-import { conductorApplication } from './application.js';
+import { haulerApplication } from './application.js';
 import { APP_RESOURCE_URI } from './constants.js';
 
 export interface DashboardResource {
@@ -13,9 +13,9 @@ export interface DashboardResource {
   readonly resourceUri: string;
 }
 
-const dashboardName = 'cargo-conductor dashboard';
+const dashboardName = 'cargo-hauler dashboard';
 const dashboardDescription =
-  'Live queue, in-flight work, history timeline, and contention stats for the cargo-conductor daemon.';
+  'Live queue, in-flight work, history timeline, and contention stats for the cargo-hauler daemon.';
 
 export const selectDashboardResource = (
   apps: readonly McpAppResource[],
@@ -33,8 +33,8 @@ export const selectDashboardResource = (
   };
 };
 
-export const createConductorServer = (widget?: DashboardResource): McpServer => {
-  const server = createRscMcpServer(conductorApplication, 'conductor');
+export const createHaulerServer = (widget?: DashboardResource): McpServer => {
+  const server = createRscMcpServer(haulerApplication, 'hauler');
   if (widget !== undefined) {
     server.registerResource(
       widget.name,

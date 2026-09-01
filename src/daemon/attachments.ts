@@ -188,7 +188,7 @@ export const makeAttachmentRuntime = (deps: AttachmentRuntimeDeps): AttachmentRu
       const snapshot = job.replay.snapshot();
       if (snapshot.droppedBytes > 0) {
         const notice = Buffer.from(
-          `[cargo-conductor] replay truncated: ${snapshot.droppedBytes} earlier output bytes dropped\n`,
+          `[cargo-hauler] replay truncated: ${snapshot.droppedBytes} earlier output bytes dropped\n`,
         );
         const encodedNotice = notice.toString('base64');
         yield* Effect.sync(() => attachment.tail.push(notice));
@@ -292,7 +292,7 @@ export const makeAttachmentRuntime = (deps: AttachmentRuntimeDeps): AttachmentRu
       );
     });
 
-  /** Deliver the at-most-once start notice plus one conductor stderr note, then finish. */
+  /** Deliver the at-most-once start notice plus one hauler stderr note, then finish. */
   const finishAttachmentWithNote = (
     attachment: Attachment,
     atMs: number,
@@ -407,8 +407,8 @@ export const makeAttachmentRuntime = (deps: AttachmentRuntimeDeps): AttachmentRu
             attachment,
             atMs,
             failed === null
-              ? `[cargo-conductor] released early: requested packages compiled cleanly under ${job.ticket}\n`
-              : `[cargo-conductor] released early: ${failed} failed to compile under ${job.ticket}\n`,
+              ? `[cargo-hauler] released early: requested packages compiled cleanly under ${job.ticket}\n`
+              : `[cargo-hauler] released early: ${failed} failed to compile under ${job.ticket}\n`,
             failed === null
               ? { status: 'done', exitCode: 0, signal: null, error: null }
               : {
@@ -594,7 +594,7 @@ export const makeAttachmentRuntime = (deps: AttachmentRuntimeDeps): AttachmentRu
           yield* finishAttachmentWithNote(
             attachment,
             atMs,
-            `[cargo-conductor] ${job.ticket} failed elsewhere, but your requested packages compiled cleanly\n`,
+            `[cargo-hauler] ${job.ticket} failed elsewhere, but your requested packages compiled cleanly\n`,
             { status: 'done', exitCode: 0, signal: null, error: null },
             servedSavings(attachment, atMs, leaderRunMs),
           );

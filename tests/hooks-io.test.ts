@@ -59,7 +59,7 @@ const listenStatus = (
   });
 
 describe('hook recorder', () => {
-  it('appends a JSON line under the conductor state dir', async () => {
+  it('appends a JSON line under the hauler state dir', async () => {
     await withTempDir(async (directory) => {
       appendHookRecord(
         {

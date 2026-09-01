@@ -31,10 +31,15 @@ export interface StopHoldServices {
 
 // 30s per hold is deliberately far below the 900s stop-hook budget: Codex's
 // per-hook timeout honoring is unverified, and the re-deny loop already makes
-// the total wait unbounded. Raise via CARGO_CONDUCTOR_STOP_WAIT_MS on hosts
+// the total wait unbounded. Raise via CARGO_HAULER_STOP_WAIT_MS on hosts
 // known to honor long hook timeouts.
 const defaultMaxWaitMs = (() => {
-  const parsed = Number.parseInt(process.env.CARGO_CONDUCTOR_STOP_WAIT_MS ?? '', 10);
+  const parsed = Number.parseInt(
+    process.env.CARGO_HAULER_STOP_WAIT_MS ??
+      process.env.CARGO_CONDUCTOR_STOP_WAIT_MS ??
+      '',
+    10,
+  );
   return Number.isInteger(parsed) && parsed > 0 ? parsed : 30_000;
 })();
 const defaultMaxDenyCount = 8;
@@ -106,7 +111,7 @@ const decideStopHold = async (
   }
   return {
     outcome: 'deny',
-    reason: `results pending: ${pending.map((ticket) => formatPending(ticket, nowMs)).join('; ')}; stop again to keep waiting or call conductor_await`,
+    reason: `results pending: ${pending.map((ticket) => formatPending(ticket, nowMs)).join('; ')}; stop again to keep waiting or call hauler_await`,
   };
 };
 

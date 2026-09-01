@@ -6,7 +6,7 @@ import { parseCargoArgv } from '../daemon/intent-normalizer.js';
 import { isRecord } from './shared.js';
 
 const cargoExecutable = /(?:^|[/\\])cargo(?:\.exe)?$/u;
-const conductorExecutable = /(?:^|[/\\])(?:cargo-conductor|conductor)(?:\.mjs)?$/u;
+const haulerExecutable = /(?:^|[/\\])(?:cargo-hauler|hauler)(?:\.mjs)?$/u;
 const prefixCommands = new Set([
   'builtin',
   'command',
@@ -46,7 +46,7 @@ const prefixValueFlags: Readonly<Record<string, ReadonlySet<string>>> = {
 };
 
 export interface RewriteOptions {
-  readonly conductorArgv: readonly string[];
+  readonly haulerArgv: readonly string[];
   readonly cwd?: string;
   readonly host: string;
   readonly session: string;
@@ -111,11 +111,11 @@ const findCargoIndex = (argv: readonly string[]): number => {
 };
 
 const isAlreadyWrapped = (argv: readonly string[]): boolean => {
-  const conductorIndex = argv.findIndex((token) => conductorExecutable.test(token));
-  if (conductorIndex === -1) {
+  const haulerIndex = argv.findIndex((token) => haulerExecutable.test(token));
+  if (haulerIndex === -1) {
     return false;
   }
-  const after = argv.slice(conductorIndex + 1);
+  const after = argv.slice(haulerIndex + 1);
   return after.includes('exec') && after.includes('--');
 };
 
@@ -180,7 +180,7 @@ const walkSimpleCommands = (node: unknown, visit: (command: BashSimpleCommand) =
 
 const wrapWords = (words: readonly BashWord[], cargoIndex: number, options: RewriteOptions): BashWord[] => {
   const inserted: BashWord[] = [
-    ...options.conductorArgv.map(asWord),
+    ...options.haulerArgv.map(asWord),
     asWord('exec'),
     asWord('--session'),
     asWord(options.session),

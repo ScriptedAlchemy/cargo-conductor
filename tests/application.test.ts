@@ -1,22 +1,22 @@
 import { lowerMcpResult } from '@agent-bundle/rsc-runtime';
 import { describe, expect, it } from '@rstest/core';
 
-import { createConductorApplication } from '../src/application.js';
-import { ConductorResult } from '../src/result.js';
+import { createHaulerApplication } from '../src/application.js';
+import { HaulerResult } from '../src/result.js';
 
-describe('conductor application', () => {
+describe('hauler application', () => {
   it('exposes status, log, last, and daemon CLI commands without duplicating exec', () => {
-    const application = createConductorApplication();
+    const application = createHaulerApplication();
     const cliNames = application.operations.flatMap((operation) =>
       operation.cli === undefined ? [] : [operation.cli.name],
     );
     expect(cliNames).toEqual(['status', 'log', 'last', 'await', 'result', 'request', 'daemon']);
-    expect(application.name).toBe('cargo-conductor');
+    expect(application.name).toBe('cargo-hauler');
   });
 
   it('lowers JSX MCP results without a global React identifier', () => {
     const lowered = lowerMcpResult(
-      ConductorResult({
+      HaulerResult({
         receipt: {
           active: [],
           daemon: 'stopped',
@@ -28,7 +28,7 @@ describe('conductor application', () => {
           socketPath: '/tmp/cc.sock',
           startedAtMs: null,
           stateRoot: '/tmp/cc',
-          summary: 'cargo-conductor daemon is not running',
+          summary: 'cargo-hauler daemon is not running',
         },
       }),
     );

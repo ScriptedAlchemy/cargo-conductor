@@ -528,7 +528,7 @@ describe('createCostModel', () => {
 });
 
 // Opt-in grounding against live kache data: runs only where the resolved
-// kache index (CARGO_CONDUCTOR_KACHE_INDEX or the per-user cache default)
+// kache index (CARGO_HAULER_KACHE_INDEX or the per-user cache default)
 // actually exists; hermetic CI machines skip it.
 const realKacheIndexPath = resolveDaemonConfig(process.env).kacheIndexPath;
 const realKacheEventsPath =

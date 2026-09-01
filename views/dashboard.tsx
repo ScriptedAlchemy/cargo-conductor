@@ -273,7 +273,7 @@ const fetchStatus = Effect.tryPromise({
   try: async () => {
     const response = await rpcRequest('tools/call', {
       arguments: { limit: 40 },
-      name: 'conductor_status',
+      name: 'hauler_status',
     });
     return structuredFrom(response);
   },
@@ -293,12 +293,12 @@ export const statusAtom = Atom.make(
 /**
  * Follow-up fetch for the detail drawer: status rows arrive with their
  * output tail stripped (the daemon nulls `outputTail` to keep status small),
- * while `conductor_result` reads the full ledger record, tail included.
+ * while `hauler_result` reads the full ledger record, tail included.
  */
 const fetchTicketRecord = async (ticketId: string): Promise<unknown> => {
   const response = await rpcRequest('tools/call', {
     arguments: { ticket: ticketId },
-    name: 'conductor_result',
+    name: 'hauler_result',
   });
   return asRecord(response.structuredContent)?.request ?? null;
 };
@@ -1044,7 +1044,7 @@ const MetricsSection = ({
         {attachTotal > 0 ? (
           <Stat
             label="runs avoided (attach)"
-            title="requests served by attaching to another in-flight run (identity, coverage, or batch coalescing) — conductor scheduling, not kache cache hits"
+            title="requests served by attaching to another in-flight run (identity, coverage, or batch coalescing) — hauler scheduling, not kache cache hits"
             value={formatCompactNumber(attachTotal)}
           />
         ) : null}
@@ -1313,7 +1313,7 @@ const DashboardContent = ({ structured }: { readonly structured: StructuredConte
             ) : (
               <p className="down-cue">
                 Daemon is not running — it starts on demand with any cargo exec, or run{' '}
-                <code>conductor daemon start</code>.
+                <code>hauler daemon start</code>.
               </p>
             )}
           </section>
@@ -1489,7 +1489,7 @@ const Dashboard = ({ pushed }: { readonly pushed: PushedStatus | null }) => {
   return (
     <main>
       <header>
-        <h1>cargo-conductor</h1>
+        <h1>cargo-hauler</h1>
         <div id="status">
           {summary}
           {result.waiting ? <span className="refreshing" title="Refreshing status">●</span> : null}
@@ -1547,7 +1547,7 @@ const DashboardApp = () => {
     setInitialization({ _tag: 'Initializing' });
     void rpcRequest('ui/initialize', {
       appCapabilities: { availableDisplayModes: ['inline'] },
-      appInfo: { name: 'cargo-conductor', version: dashboardVersion },
+      appInfo: { name: 'cargo-hauler', version: dashboardVersion },
       protocolVersion: '2026-01-26',
     }).then(
       () => {
@@ -1582,7 +1582,7 @@ const DashboardApp = () => {
       return (
         <main>
           <header>
-            <h1>cargo-conductor</h1>
+            <h1>cargo-hauler</h1>
             <div id="status">Connecting…</div>
           </header>
         </main>
@@ -1593,7 +1593,7 @@ const DashboardApp = () => {
       return (
         <main>
           <header>
-            <h1>cargo-conductor</h1>
+            <h1>cargo-hauler</h1>
             <div id="status">Error: {initialization.error.message}</div>
           </header>
           <div className="error-line">

@@ -2,7 +2,7 @@ import { defineOperation, type RscOperationContext } from '@agent-bundle/rsc-run
 import * as React from 'react';
 
 import { parseDaemonSubcommand, runDaemonControl } from '../daemon/lifecycle.js';
-import { ConductorResult } from '../result.js';
+import { HaulerResult } from '../result.js';
 
 import {
   daemonInputSchema,
@@ -39,13 +39,13 @@ export const daemonOperations = (operations: DaemonOperations) => [
       },
       name: 'daemon',
       parse: (argv) => ({ subcommand: parseDaemonSubcommand(argv) }),
-      summary: 'Control the conductor daemon.',
+      summary: 'Control the hauler daemon.',
       usage: 'daemon <run|start|stop|status>',
     },
     execute: operations.daemon,
     id: 'daemon',
     inputSchema: daemonInputSchema,
-    render: (receipt) => <ConductorResult receipt={receipt} />,
+    render: (receipt) => <HaulerResult receipt={receipt} />,
     resultSchema: daemonResultSchema,
   }),
 ];

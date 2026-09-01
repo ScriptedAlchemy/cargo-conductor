@@ -347,7 +347,7 @@ export interface KacheStatusApi {
 }
 
 export class KacheStatus extends Context.Service<KacheStatus, KacheStatusApi>()(
-  'cargo-conductor/KacheStatus',
+  'cargo-hauler/KacheStatus',
 ) {}
 
 interface CreateKacheStatusOptions {

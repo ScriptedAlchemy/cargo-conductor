@@ -331,7 +331,7 @@ const stringArrayOrNull = (value: unknown): readonly string[] | null =>
     ? (value as readonly string[])
     : null;
 
-/** Shape a request record (status row or conductor_result payload) for the detail drawer. */
+/** Shape a request record (status row or hauler_result payload) for the detail drawer. */
 export const ticketDetailFrom = (record: unknown): TicketDetail | null => {
   if (record === null || typeof record !== 'object') {
     return null;
@@ -379,7 +379,7 @@ export const outputTextFor = (detail: TicketDetail): string | null => {
 /**
  * Resolve the drawer detail for a clicked row. Status payloads from a running
  * daemon deliberately null `outputTail` on every row to keep the report
- * small, so a row without a tail needs one follow-up `conductor_result`
+ * small, so a row without a tail needs one follow-up `hauler_result`
  * fetch. Finished rows receive the ledger tail; running rows receive the
  * daemon's live in-memory tail snapshot.
  */
@@ -1022,9 +1022,9 @@ export const laneIsActive = (lane: {
   typeof lane.runningTicket === 'string';
 
 /**
- * Time conductor's attach coalescing saved, from the rows on screen. This is
+ * Time hauler's attach coalescing saved, from the rows on screen. This is
  * strictly about attached requests (identity/coverage/batch riders) — kache
- * compile timings are crate build costs, not conductor savings, and must
+ * compile timings are crate build costs, not hauler savings, and must
  * never feed this number.
  *
  * Per attached row: when its leader is visible and finished, the follower

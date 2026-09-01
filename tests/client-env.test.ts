@@ -21,11 +21,11 @@ describe('buildRelevantEnv', () => {
     });
   });
 
-  it('never leaks conductor-internal variables', () => {
+  it('never leaks hauler-internal variables', () => {
     expect(
       buildRelevantEnv({
-        CARGO_CONDUCTOR_CARGO_BIN: '/fake/cargo',
-        CARGO_CONDUCTOR_STATE_DIR: '/tmp/state',
+        CARGO_HAULER_CARGO_BIN: '/fake/cargo',
+        CARGO_HAULER_STATE_DIR: '/tmp/state',
         RUSTDOCFLAGS: '--cfg docsrs',
       }),
     ).toEqual({ RUSTDOCFLAGS: '--cfg docsrs' });

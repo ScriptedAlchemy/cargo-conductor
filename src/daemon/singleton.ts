@@ -75,7 +75,7 @@ export const makeSingletonCompromiseController = (
       }
       signaled = true;
       dependencies.writeStderr(
-        `cargo-conductor: singleton lock compromised: ${error.message}\n`,
+        `cargo-hauler: singleton lock compromised: ${error.message}\n`,
       );
       dependencies.setExitCode(1);
       Deferred.doneUnsafe(fatalShutdown, Effect.succeed(error));

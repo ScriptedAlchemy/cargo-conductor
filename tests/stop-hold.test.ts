@@ -78,7 +78,7 @@ describe('stop-hold hook', () => {
     );
     expect(result.outcome).toBe('deny');
     expect(result.reason).toMatch(/cc-7 finished: success/u);
-    expect(result.reason).toMatch(/conductor_result cc-7/u);
+    expect(result.reason).toMatch(/hauler_result cc-7/u);
   });
 
   it('denies with ETA and an escape hatch when work is still pending', async () => {

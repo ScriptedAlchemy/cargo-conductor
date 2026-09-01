@@ -8,7 +8,17 @@ import { realCargoBin } from '../src/daemon/real-cargo.js';
 
 describe('realCargoBin', () => {
   it('honors the explicit override', () => {
-    expect(realCargoBin({ CARGO_CONDUCTOR_CARGO_BIN: '/opt/rust/cargo' })).toBe('/opt/rust/cargo');
+    expect(realCargoBin({ CARGO_HAULER_CARGO_BIN: '/opt/rust/cargo' })).toBe('/opt/rust/cargo');
+  });
+
+  it('falls back to the legacy override and prefers the hauler variable', () => {
+    expect(realCargoBin({ CARGO_CONDUCTOR_CARGO_BIN: '/legacy/cargo' })).toBe('/legacy/cargo');
+    expect(
+      realCargoBin({
+        CARGO_CONDUCTOR_CARGO_BIN: '/legacy/cargo',
+        CARGO_HAULER_CARGO_BIN: '/current/cargo',
+      }),
+    ).toBe('/current/cargo');
   });
 
   it('prefers CARGO_HOME/bin/cargo when it exists', () => {
