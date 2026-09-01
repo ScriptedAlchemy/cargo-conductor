@@ -2,7 +2,9 @@ import { describe, expect, it } from '@rstest/core';
 
 import {
   awaitMaxWaitMs,
+  awaitResultSchema,
   requestRecordSchema,
+  resultFetchResultSchema,
   statusReportSchema,
   statusResultSchema,
   ticketInputSchema,
@@ -41,6 +43,80 @@ const baseRecord = {
   estimateMs: null,
   execArgv: null,
 };
+
+describe('status/result contract completeness (issue #16)', () => {
+  /**
+   * A finished record exactly as the daemon serializes it after a demuxed
+   * run: diagnostics populated, counts non-null. The deployed 0.1.9 MCP
+   * schemas rejected these keys (`unrecognized_keys: errorCount,
+   * warningCount, diagnostics`), stranding completed-ticket evidence that
+   * the ledger still held.
+   */
+  const diagnosedRecord = {
+    ...baseRecord,
+    diagnostics: ['error[E0308]: mismatched types\n --> src/lib.rs:1:1'],
+    errorCount: 1,
+    warningCount: 2,
+    status: 'failed',
+    exitCode: 101,
+  };
+
+  it('accepts diagnostics-bearing records under every durable status', () => {
+    const statuses = [
+      'requested',
+      'queued',
+      'running',
+      'done',
+      'failed',
+      'killed',
+      'denied',
+      'passthrough',
+    ] as const;
+    for (const status of statuses) {
+      const parsed = requestRecordSchema.parse({ ...diagnosedRecord, status });
+      expect(parsed.status).toBe(status);
+      expect(parsed.errorCount).toBe(1);
+      expect(parsed.warningCount).toBe(2);
+      expect(parsed.diagnostics).toHaveLength(1);
+    }
+  });
+
+  it('round-trips a diagnosed record through the await handler schema', () => {
+    const parsed = awaitResultSchema.parse({
+      operation: 'await',
+      request: diagnosedRecord,
+      summary: 'cc-1 failed',
+      ticket: 'cc-1',
+      timedOut: false,
+    });
+    expect(parsed.request?.diagnostics).toHaveLength(1);
+    expect(parsed.request?.errorCount).toBe(1);
+  });
+
+  it('round-trips a diagnosed record through the result handler schema', () => {
+    const parsed = resultFetchResultSchema.parse({
+      operation: 'result',
+      request: diagnosedRecord,
+      summary: 'cc-1 failed',
+      ticket: 'cc-1',
+    });
+    expect(parsed.request?.warningCount).toBe(2);
+  });
+
+  it('accepts diagnosed records in status report active/recent lists', () => {
+    const parsed = statusReportSchema.parse({
+      active: [{ ...diagnosedRecord, status: 'running' }],
+      lanes: [],
+      maxConcurrent: 5,
+      pid: 42,
+      recent: [diagnosedRecord],
+      socketPath: '/tmp/cc/daemon.sock',
+      startedAtMs: 1,
+    });
+    expect(parsed.recent[0]?.diagnostics).toHaveLength(1);
+    expect(parsed.active[0]?.status).toBe('running');
+  });
+});
 
 describe('schema forward compatibility (issue #4)', () => {
   it('strips unknown daemon fields instead of rejecting the record', () => {
