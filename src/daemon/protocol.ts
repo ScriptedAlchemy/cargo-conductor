@@ -206,6 +206,27 @@ export interface StatusMetrics {
   readonly attach_mode: Readonly<Record<string, number>>;
 }
 
+export interface KacheHeartbeatRoot {
+  readonly root: string;
+  readonly count: number;
+}
+
+export interface KacheTopCrate {
+  readonly crate: string;
+  readonly profile: string;
+  readonly ms: number;
+}
+
+export interface KacheStatusReport {
+  readonly available: boolean;
+  readonly entryCount: number;
+  readonly distinctCrates: number;
+  readonly indexSizeBytes: number;
+  readonly eventsFreshMs: number | null;
+  readonly recentHeartbeatRoots: readonly KacheHeartbeatRoot[];
+  readonly topCrates: readonly KacheTopCrate[];
+}
+
 export interface StatusReport {
   readonly pid: number;
   readonly startedAtMs: number;
@@ -215,6 +236,7 @@ export interface StatusReport {
   readonly active: readonly RequestRecord[];
   readonly recent: readonly RequestRecord[];
   readonly metrics?: StatusMetrics;
+  readonly kache?: KacheStatusReport | null;
 }
 
 /**

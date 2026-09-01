@@ -1923,6 +1923,7 @@ export const BrokerLive: Layer.Layer<
         const cargoRun = yield* Metric.value(cargoRunMetric);
         const jobOutcome = yield* Metric.value(jobOutcomeMetric);
         const attachMode = yield* Metric.value(attachModeMetric);
+        const kache = yield* costModel.kacheStatus;
         return {
           pid: process.pid,
           startedAtMs,
@@ -1931,6 +1932,7 @@ export const BrokerLive: Layer.Layer<
           lanes: laneStatuses,
           active: active.map((record) => ({ ...record, outputTail: null })),
           recent: recent.map((record) => ({ ...record, outputTail: null })),
+          kache,
           metrics: {
             cargo_run_ms: {
               buckets: cargoRun.buckets.map(([boundary, count]) => [

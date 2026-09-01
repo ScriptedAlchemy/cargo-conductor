@@ -9,6 +9,7 @@ import {
   DEMUX_FLAG,
   argvText,
   argvTitle,
+  formatCompactNumber,
   formatMs,
   ranAsFor,
   relativeTime,
@@ -105,6 +106,13 @@ describe('display formatting', () => {
     expect(formatMs(420)).toBe('420ms');
     expect(formatMs(1_500)).toBe('1.5s');
     expect(formatMs(200_000)).toBe('3m 20s');
+  });
+
+  it('compacts large counts while keeping small counts exact', () => {
+    expect(formatCompactNumber(999)).toBe('999');
+    expect(formatCompactNumber(1_200)).toBe('1.2k');
+    expect(formatCompactNumber(12_400)).toBe('12k');
+    expect(formatCompactNumber(1_250_000)).toBe('1.3m');
   });
 
   it('shortens home-prefixed and overly long paths', () => {

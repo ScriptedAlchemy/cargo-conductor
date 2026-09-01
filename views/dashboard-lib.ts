@@ -98,6 +98,24 @@ export const formatMs = (ms: number): string => {
   return rest === 0 ? `${minutes}m` : `${minutes}m ${rest}s`;
 };
 
+export const formatCompactNumber = (value: number): string => {
+  const absolute = Math.abs(value);
+  const unit =
+    absolute >= 1_000_000_000
+      ? ({ divisor: 1_000_000_000, suffix: 'b' } as const)
+      : absolute >= 1_000_000
+        ? ({ divisor: 1_000_000, suffix: 'm' } as const)
+        : absolute >= 1_000
+          ? ({ divisor: 1_000, suffix: 'k' } as const)
+          : null;
+  if (unit === null) {
+    return String(Math.round(value));
+  }
+  const scaled = value / unit.divisor;
+  const rounded = Math.abs(scaled) >= 10 ? Math.round(scaled) : Math.round(scaled * 10) / 10;
+  return `${rounded}${unit.suffix}`;
+};
+
 export const shortenPath = (path: string, maxLength = 38): string => {
   const homed = path.replace(/^\/(?:home|Users)\/[^/]+/u, '~');
   if (homed.length <= maxLength) {

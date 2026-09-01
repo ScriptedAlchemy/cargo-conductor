@@ -14,6 +14,7 @@ import { Broker, BrokerLive } from './broker.js';
 import { DaemonConfig, resolveDaemonConfig } from './config.js';
 import type { DaemonConfigShape } from './config.js';
 import { CostModelLive } from './cost.js';
+import { KacheStatusLive } from './kache-status.js';
 import { Ledger, LedgerLive } from './ledger.js';
 import { makeConnectionHandler } from './server.js';
 import type { SingletonLockError } from './singleton.js';
@@ -25,6 +26,7 @@ export const daemonVersion = packageVersion;
 const appLayer = (config: DaemonConfigShape) =>
   BrokerLive.pipe(
     Layer.provideMerge(CostModelLive),
+    Layer.provideMerge(KacheStatusLive),
     Layer.provideMerge(TopologyLive),
     Layer.provideMerge(LedgerLive),
     Layer.provideMerge(Layer.succeed(DaemonConfig, config)),

@@ -2,6 +2,7 @@ import { z } from 'zod';
 
 import { awaitCeilingMs } from '../daemon/protocol.js';
 import type {
+  KacheStatusReport,
   LaneStatus,
   RequestRecord,
   StatusMetrics,
@@ -82,8 +83,26 @@ const statusMetricsSchema = z.object({
   job_outcome: frequencyMetricSchema,
 }) satisfies z.ZodType<StatusMetrics>;
 
-const statusReportSchema = z.object({
+const kacheStatusSchema = z.object({
+  available: z.boolean(),
+  distinctCrates: z.number().int().nonnegative(),
+  entryCount: z.number().int().nonnegative(),
+  eventsFreshMs: z.number().nonnegative().nullable(),
+  indexSizeBytes: z.number().int().nonnegative(),
+  recentHeartbeatRoots: z.array(z.object({
+    count: z.number().int().nonnegative(),
+    root: z.string(),
+  })),
+  topCrates: z.array(z.object({
+    crate: z.string(),
+    ms: z.number().nonnegative(),
+    profile: z.string(),
+  })),
+}) satisfies z.ZodType<KacheStatusReport>;
+
+export const statusReportSchema = z.object({
   active: z.array(requestRecordSchema),
+  kache: kacheStatusSchema.nullable().optional(),
   lanes: z.array(laneStatusSchema),
   maxConcurrent: z.number().int(),
   metrics: statusMetricsSchema.optional(),
@@ -102,6 +121,7 @@ export const limitInputSchema = z
 export interface StatusResult {
   readonly active: readonly RequestRecord[];
   readonly daemon: 'running' | 'stopped';
+  readonly kache?: KacheStatusReport | null;
   readonly lanes: readonly LaneStatus[];
   readonly maxConcurrent: number | null;
   readonly metrics?: StatusMetrics;
@@ -142,6 +162,7 @@ export const statusResultSchema = z
   .object({
     active: z.array(requestRecordSchema),
     daemon: daemonStatusSchema,
+    kache: kacheStatusSchema.nullable().optional(),
     lanes: z.array(laneStatusSchema),
     maxConcurrent: z.number().int().nullable(),
     metrics: statusMetricsSchema.optional(),

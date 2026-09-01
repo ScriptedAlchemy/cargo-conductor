@@ -3,6 +3,7 @@ import { describe, expect, it } from '@rstest/core';
 import {
   awaitMaxWaitMs,
   requestRecordSchema,
+  statusReportSchema,
   statusResultSchema,
   ticketInputSchema,
 } from '../src/operations/schemas.js';
@@ -79,6 +80,38 @@ describe('schema forward compatibility (issue #4)', () => {
 
     expect(parsed.metrics?.cargo_run_ms.count).toBe(1);
     expect(parsed.metrics?.job_outcome.done).toBe(1);
+  });
+
+  it('round-trips kache status results while an old daemon schema strips it', () => {
+    const report = {
+      active: [],
+      kache: {
+        available: true,
+        distinctCrates: 2,
+        entryCount: 3,
+        eventsFreshMs: 750,
+        indexSizeBytes: 4_096,
+        recentHeartbeatRoots: [{ count: 2, root: '/fast/projects/alpha' }],
+        topCrates: [{ crate: 'alpha', ms: 12_000, profile: 'release' }],
+      },
+      lanes: [],
+      maxConcurrent: 5,
+      pid: 42,
+      recent: [],
+      socketPath: '/tmp/cc/daemon.sock',
+      startedAtMs: 1,
+    };
+
+    const result = statusResultSchema.parse({
+      ...report,
+      daemon: 'running',
+      operation: 'status',
+      stateRoot: '/tmp/cc',
+      summary: 'running',
+    });
+    expect(result.kache).toEqual(report.kache);
+    const oldClient = statusReportSchema.omit({ kache: true }).parse(report);
+    expect('kache' in oldClient).toBe(false);
   });
 
   it('accepts denied and passthrough terminal request records', () => {

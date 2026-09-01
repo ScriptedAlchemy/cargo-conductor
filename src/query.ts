@@ -86,6 +86,7 @@ const fromReport = (report: StatusReport, config: DaemonConfigShape): ConductorS
     {
       active: report.active,
       daemon: 'running',
+      ...(report.kache === undefined ? {} : { kache: report.kache }),
       lanes: report.lanes,
       maxConcurrent: report.maxConcurrent,
       ...(report.metrics === undefined ? {} : { metrics: report.metrics }),

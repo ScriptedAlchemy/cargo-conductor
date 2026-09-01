@@ -9,6 +9,7 @@ import {
   argvTitle,
   dashboardVersion,
   DEMUX_FLAG,
+  formatCompactNumber,
   formatMs,
   ranAsFor,
   relativeTime,
@@ -39,6 +40,7 @@ interface StructuredContent {
   readonly operation?: unknown;
   readonly structuredContent?: unknown;
   readonly metrics?: unknown;
+  readonly kache?: unknown;
 }
 
 interface RunHistogram {
@@ -76,6 +78,27 @@ interface LaneRow {
   readonly workspaceRoot?: unknown;
   readonly queued?: unknown;
   readonly runningTicket?: unknown;
+}
+
+interface KacheRootRow {
+  readonly count?: unknown;
+  readonly root?: unknown;
+}
+
+interface KacheTopCrateRow {
+  readonly crate?: unknown;
+  readonly ms?: unknown;
+  readonly profile?: unknown;
+}
+
+interface KacheShape {
+  readonly available?: unknown;
+  readonly distinctCrates?: unknown;
+  readonly entryCount?: unknown;
+  readonly eventsFreshMs?: unknown;
+  readonly indexSizeBytes?: unknown;
+  readonly recentHeartbeatRoots?: unknown;
+  readonly topCrates?: unknown;
 }
 
 interface PendingRequest {
@@ -249,9 +272,11 @@ const requestCells = (row: RequestRow): readonly ReactNode[] => [
 
 const Table = ({
   headers,
+  numericColumns = [],
   rows,
 }: {
   readonly headers: readonly string[];
+  readonly numericColumns?: readonly number[];
   readonly rows: readonly (readonly ReactNode[])[];
 }): ReactNode => {
   if (rows.length === 0) {
@@ -261,13 +286,24 @@ const Table = ({
     <table>
       <thead>
         <tr>
-          {headers.map((header) => <th key={header}>{header}</th>)}
+          {headers.map((header, index) => (
+            <th className={numericColumns.includes(index) ? 'numeric' : undefined} key={header}>
+              {header}
+            </th>
+          ))}
         </tr>
       </thead>
       <tbody>
         {rows.map((row, rowIndex) => (
           <tr key={rowIndex}>
-            {row.map((cell, cellIndex) => <td key={cellIndex}>{cell}</td>)}
+            {row.map((cell, cellIndex) => (
+              <td
+                className={numericColumns.includes(cellIndex) ? 'numeric' : undefined}
+                key={cellIndex}
+              >
+                {cell}
+              </td>
+            ))}
           </tr>
         ))}
       </tbody>
@@ -275,10 +311,26 @@ const Table = ({
   );
 };
 
-const Stat = ({ label, value }: { readonly label: string; readonly value: string }): ReactNode => (
+const Stat = ({
+  barPercent,
+  label,
+  value,
+}: {
+  readonly barPercent?: number;
+  readonly label: string;
+  readonly value: string;
+}): ReactNode => (
   <div className="stat">
     <b>{value}</b>
     <span>{label}</span>
+    {barPercent === undefined ? null : (
+      <div className="mini-meter" aria-hidden="true">
+        <div
+          className="mini-meter-fill"
+          style={{ width: `${Math.max(0, Math.min(100, barPercent))}%` }}
+        />
+      </div>
+    )}
   </div>
 );
 
@@ -336,7 +388,7 @@ const frequencyText = (record: Readonly<Record<string, unknown>> | undefined): s
   }
   const parts = Object.entries(record)
     .filter((entry): entry is [string, number] => typeof entry[1] === 'number' && entry[1] > 0)
-    .map(([key, value]) => `${key} ${value}`);
+    .map(([key, value]) => `${key} ${formatCompactNumber(value)}`);
   return parts.length === 0 ? 'none yet' : parts.join(' · ');
 };
 
@@ -368,25 +420,132 @@ const MetricsSection = ({
           (sum, value) => (typeof value === 'number' ? sum + value : sum),
           0,
         );
+  const percentileScale = p95 ?? p50 ?? 0;
 
   return (
     <section>
       <h2>Metrics <span className="count">(since daemon start)</span></h2>
       <div className="stats">
-        <Stat label="runs tracked" value={String(runCount)} />
-        <Stat label="run p50" value={p50 === null ? '—' : `≤${formatMs(p50)}`} />
-        <Stat label="run p95" value={p95 === null ? '—' : `≤${formatMs(p95)}`} />
+        <Stat label="runs tracked" value={formatCompactNumber(runCount)} />
+        <Stat
+          barPercent={p50 === null || percentileScale <= 0 ? undefined : (p50 / percentileScale) * 100}
+          label="run p50"
+          value={p50 === null ? '—' : `≤${formatMs(p50)}`}
+        />
+        <Stat
+          barPercent={p95 === null || percentileScale <= 0 ? undefined : (p95 / percentileScale) * 100}
+          label="run p95"
+          value={p95 === null ? '—' : `≤${formatMs(p95)}`}
+        />
         <Stat label="run mean" value={meanMs === null ? '—' : formatMs(meanMs)} />
         <Stat
           label={`wait p50 (last ${waits.length})`}
           value={waitP50 === null ? '—' : formatMs(waitP50)}
         />
         <Stat label="wait max" value={waitMax === null ? '—' : formatMs(waitMax)} />
-        <Stat label="runs avoided" value={String(attachTotal)} />
+        <Stat label="runs avoided" value={formatCompactNumber(attachTotal)} />
       </div>
       <div className="stats metricsdetail">
         <Stat label="outcomes" value={frequencyText(metrics?.job_outcome)} />
         <Stat label="attach modes" value={frequencyText(attach)} />
+      </div>
+    </section>
+  );
+};
+
+const KacheSection = ({ value }: { readonly value: unknown }): ReactNode => {
+  const kache = asRecord(value) as KacheShape | null;
+  if (kache?.available !== true) {
+    return null;
+  }
+  const roots = arrayOrEmpty<KacheRootRow>(kache.recentHeartbeatRoots).filter(
+    (row) => typeof row.root === 'string' && typeof row.count === 'number',
+  );
+  const topCrates = arrayOrEmpty<KacheTopCrateRow>(kache.topCrates).filter(
+    (row) =>
+      typeof row.crate === 'string' &&
+      typeof row.profile === 'string' &&
+      typeof row.ms === 'number' &&
+      row.ms > 0,
+  );
+  const maximumMs = topCrates.reduce(
+    (maximum, row) => Math.max(maximum, typeof row.ms === 'number' ? row.ms : 0),
+    0,
+  );
+  const countValue = (value: unknown): string =>
+    typeof value === 'number' ? formatCompactNumber(value) : '—';
+
+  return (
+    <section className="kache-section">
+      <h2>Kache <span className="count">(machine-wide)</span></h2>
+      <div className="stats">
+        <Stat label="entries" value={countValue(kache.entryCount)} />
+        <Stat label="crates" value={countValue(kache.distinctCrates)} />
+        <Stat
+          label="index bytes"
+          value={
+            typeof kache.indexSizeBytes === 'number'
+              ? `${formatCompactNumber(kache.indexSizeBytes)}B`
+              : '—'
+          }
+        />
+        <Stat
+          label="events fresh"
+          value={
+            typeof kache.eventsFreshMs === 'number'
+              ? `${formatMs(kache.eventsFreshMs)} ago`
+              : '—'
+          }
+        />
+      </div>
+      <div className="kache-columns">
+        <div>
+          <h3>Compiling roots <span>(last 5m)</span></h3>
+          {roots.length === 0 ? (
+            <p className="empty">No recent heartbeats.</p>
+          ) : (
+            <div className="root-list">
+              {roots.map((row, index) => {
+                const root = typeof row.root === 'string' ? row.root : '';
+                return (
+                  <div className="compact-row" key={`${root}-${index}`}>
+                    <span className="path" title={root}>{shortenPath(root)}</span>
+                    <span className="row-value">{countValue(row.count)}</span>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+        <div>
+          <h3>Slowest crates</h3>
+          {topCrates.length === 0 ? (
+            <p className="empty">No compile timings.</p>
+          ) : (
+            <div className="crate-list">
+              {topCrates.map((row, index) => {
+                const crate = typeof row.crate === 'string' ? row.crate : '';
+                const profile = typeof row.profile === 'string' ? row.profile : '';
+                const ms = typeof row.ms === 'number' ? row.ms : 0;
+                return (
+                  <div className="crate-row" key={`${crate}-${profile}-${index}`}>
+                    <div className="crate-label">
+                      <span className="crate-name" title={crate}>{crate}</span>
+                      <span className="profile">{profile}</span>
+                      <span className="row-value">{formatMs(ms)}</span>
+                    </div>
+                    <div className="crate-meter" aria-hidden="true">
+                      <div
+                        className="crate-meter-fill"
+                        style={{ width: `${maximumMs > 0 ? (ms / maximumMs) * 100 : 0}%` }}
+                      />
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
       </div>
     </section>
   );
@@ -432,6 +591,7 @@ const DashboardContent = ({ structured }: { readonly structured: StructuredConte
         <h2>In flight <span className="count">({running.length})</span></h2>
         <Table
           headers={['ticket', 'command', 'workspace', 'who', 'elapsed']}
+          numericColumns={[4]}
           rows={running.map((row) => [
             ...requestCells(row),
             progress(row.startedAtMs ?? row.createdAtMs, row.estimateMs, nowMs),
@@ -442,6 +602,7 @@ const DashboardContent = ({ structured }: { readonly structured: StructuredConte
         <h2>Queue <span className="count">({queueRows.length})</span></h2>
         <Table
           headers={['ticket', 'command', 'workspace', 'who', 'waiting', 'attached']}
+          numericColumns={[4]}
           rows={queueRows.map((row) => [
             ...requestCells(row),
             progress(row.createdAtMs, row.estimateMs, nowMs),
@@ -450,10 +611,12 @@ const DashboardContent = ({ structured }: { readonly structured: StructuredConte
         />
       </section>
       <MetricsSection finished={finished} metrics={metrics} />
+      <KacheSection value={structured?.kache} />
       <section>
         <h2>Lanes <span className="count">({laneCount})</span></h2>
         <Table
           headers={['workspace', 'running', 'queued']}
+          numericColumns={[2]}
           rows={activeLanes.map((lane) => [
             workspace(lane.workspaceRoot),
             ticket(typeof lane.runningTicket === 'string' ? lane.runningTicket : null),
@@ -465,6 +628,7 @@ const DashboardContent = ({ structured }: { readonly structured: StructuredConte
         <h2>History <span className="count">({finished.length})</span></h2>
         <Table
           headers={['ticket', 'status', 'who', 'age', 'wait', 'run', 'command']}
+          numericColumns={[3, 4, 5]}
           rows={finished.map((row) => [
             ticket(row.ticket),
             <StatusPill status={row.status} />,

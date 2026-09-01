@@ -1,5 +1,3 @@
-import { closeSync, fstatSync, openSync, readSync } from 'node:fs';
-import { dirname, join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 
 import * as Context from 'effect/Context';
@@ -9,7 +7,21 @@ import * as SynchronizedRef from 'effect/SynchronizedRef';
 
 import { DaemonConfig } from './config.js';
 import type { NormalizedCargoIntent } from './intent-normalizer.js';
+import {
+  emptyEventPriors,
+  emptyIndexPriors,
+  KacheStatus,
+} from './kache-status.js';
+import type {
+  KacheEventPriors,
+  KacheIndexPriors,
+  KachePriorSnapshot,
+} from './kache-status.js';
 import { Ledger } from './ledger.js';
+import type { KacheStatusReport } from './protocol.js';
+
+export { readKacheEventPriors } from './kache-status.js';
+export type { KacheEventPriors, KacheIndexPriors } from './kache-status.js';
 
 export interface CostEstimate {
   readonly estimateMs: number;
@@ -21,6 +33,7 @@ export interface CostModelApi {
     intent: NormalizedCargoIntent,
     closurePackages?: ReadonlySet<string> | readonly string[],
   ) => Effect.Effect<CostEstimate>;
+  readonly kacheStatus: Effect.Effect<KacheStatusReport | null>;
   readonly recordOutcome: (intentKey: string, runMs: number) => Effect.Effect<void>;
 }
 
@@ -48,10 +61,8 @@ const ewmaSeedLimit = 5;
 const minimumEstimateMs = 100;
 const maximumEstimateMs = 24 * 60 * 60_000;
 const defaultEffectiveParallelism = 4;
-const defaultEventTailBytes = 8 * 1024 * 1024;
 const defaultEventTtlMs = 5 * 60_000;
 const defaultIndexTtlMs = 10 * 60_000;
-const eventEwmaAlpha = 0.25;
 const eventPriorWeight = 0.65;
 const observationCacheLimit = 4_096;
 
@@ -89,178 +100,8 @@ interface KacheReader {
   readonly close: () => void;
 }
 
-export interface KacheIndexPriors {
-  readonly compileTimeMs: (crateName: string, profiles: readonly string[]) => number | null;
-}
-
-export interface KacheEventPriors {
-  readonly bytesRead: number;
-  readonly crateCount: number;
-  readonly sampleCount: number;
-  readonly compileTimeMs: (crateName: string, profiles: readonly string[]) => number | null;
-}
-
-const emptyEventPriors: KacheEventPriors = {
-  bytesRead: 0,
-  crateCount: 0,
-  sampleCount: 0,
-  compileTimeMs: () => null,
-};
-
-const emptyIndexPriors: KacheIndexPriors = {
-  compileTimeMs: () => null,
-};
-
-interface EventAggregate {
-  compileEwmaMs: number | null;
-  heartbeatMaxMs: number | null;
-}
-
-const isRecord = (value: unknown): value is Record<string, unknown> =>
-  typeof value === 'object' && value !== null && !Array.isArray(value);
-
-const eventProfile = (event: Record<string, unknown>): string => {
-  if (typeof event.profile === 'string' && event.profile.length > 0) {
-    return event.profile;
-  }
-  if (typeof event.root === 'string') {
-    const match = /(?:^|[/\\])target[/\\](debug|release)(?:[/\\]|$)/u.exec(event.root);
-    if (match?.[1] !== undefined) {
-      return match[1];
-    }
-  }
-  // Current kache schema 15 events often omit profile. Retain those as a
-  // profile-agnostic prior rather than pretending they are dev builds.
-  return '*';
-};
-
 const eventPriorKey = (crateName: string, profile: string): string =>
   `${crateName}\0${profile}`;
-
-/**
- * Reads only the newest bytes of kache's append-only event stream. A partial
- * first record is discarded when the read begins mid-file. Outcome timings
- * use a chronological EWMA; repeated heartbeats contribute only their maximum
- * elapsed lower bound so a long in-progress compile is not overweighted.
- */
-export const readKacheEventPriors = (
-  eventsPath: string,
-  maxBytes = defaultEventTailBytes,
-): KacheEventPriors => {
-  if (eventsPath.length === 0) {
-    return emptyEventPriors;
-  }
-  const requestedBytes =
-    Number.isFinite(maxBytes) && maxBytes > 0 ? Math.floor(maxBytes) : defaultEventTailBytes;
-  let fileDescriptor: number | undefined;
-  try {
-    fileDescriptor = openSync(eventsPath, 'r');
-    const fileBytes = fstatSync(fileDescriptor).size;
-    const bytesToRead = Math.min(fileBytes, requestedBytes);
-    const start = Math.max(0, fileBytes - bytesToRead);
-    const buffer = Buffer.allocUnsafe(bytesToRead);
-    let bytesRead = 0;
-    while (bytesRead < bytesToRead) {
-      const count = readSync(
-        fileDescriptor,
-        buffer,
-        bytesRead,
-        bytesToRead - bytesRead,
-        start + bytesRead,
-      );
-      if (count === 0) {
-        break;
-      }
-      bytesRead += count;
-    }
-    let text = buffer.subarray(0, bytesRead).toString('utf8');
-    if (start > 0) {
-      const firstNewline = text.indexOf('\n');
-      text = firstNewline === -1 ? '' : text.slice(firstNewline + 1);
-    }
-    const aggregates = new Map<string, EventAggregate>();
-    const crates = new Set<string>();
-    let sampleCount = 0;
-    for (const line of text.split('\n')) {
-      if (line.length === 0) {
-        continue;
-      }
-      let parsed: unknown;
-      try {
-        parsed = JSON.parse(line);
-      } catch {
-        continue;
-      }
-      if (!isRecord(parsed) || typeof parsed.crate_name !== 'string') {
-        continue;
-      }
-      const crateName = parsed.crate_name;
-      if (crateName.length === 0 || crateName === 'unknown') {
-        continue;
-      }
-      const key = eventPriorKey(crateName, eventProfile(parsed));
-      const aggregate = aggregates.get(key) ?? {
-        compileEwmaMs: null,
-        heartbeatMaxMs: null,
-      };
-      const compileMs =
-        typeof parsed.compile_time_ms === 'number'
-          ? finitePositiveMs(parsed.compile_time_ms)
-          : null;
-      const heartbeatMs =
-        parsed.event === 'heartbeat' && typeof parsed.elapsed_s === 'number'
-          ? finitePositiveMs(parsed.elapsed_s * 1_000)
-          : null;
-      if (compileMs === null && heartbeatMs === null) {
-        continue;
-      }
-      if (compileMs !== null) {
-        aggregate.compileEwmaMs =
-          aggregate.compileEwmaMs === null
-            ? compileMs
-            : aggregate.compileEwmaMs + eventEwmaAlpha * (compileMs - aggregate.compileEwmaMs);
-      }
-      if (heartbeatMs !== null) {
-        aggregate.heartbeatMaxMs = Math.max(aggregate.heartbeatMaxMs ?? 0, heartbeatMs);
-      }
-      aggregates.set(key, aggregate);
-      crates.add(crateName);
-      sampleCount += 1;
-    }
-    return {
-      bytesRead,
-      crateCount: crates.size,
-      sampleCount,
-      compileTimeMs: (crateName, profiles) => {
-        let value: number | null = null;
-        for (const profile of [...profiles, '*']) {
-          const aggregate = aggregates.get(eventPriorKey(crateName, profile));
-          if (aggregate === undefined) {
-            continue;
-          }
-          const timing = Math.max(
-            aggregate.compileEwmaMs ?? 0,
-            aggregate.heartbeatMaxMs ?? 0,
-          );
-          if (timing > 0) {
-            value = Math.max(value ?? 0, timing);
-          }
-        }
-        return value;
-      },
-    };
-  } catch {
-    return emptyEventPriors;
-  } finally {
-    if (fileDescriptor !== undefined) {
-      try {
-        closeSync(fileDescriptor);
-      } catch {
-        // Event priors are best-effort; close failures do not affect estimates.
-      }
-    }
-  }
-};
 
 /**
  * Read-only view over kache's index.db (per-crate compile_time_ms priors).
@@ -356,6 +197,8 @@ export interface KachePriorCacheOptions {
 export interface CreateCostModelOptions {
   readonly effectiveParallelism?: number;
   readonly eventPriors?: EventPriorCacheOptions;
+  readonly kacheSnapshot?: Effect.Effect<KachePriorSnapshot>;
+  readonly kacheStatus?: Effect.Effect<KacheStatusReport | null>;
   readonly kachePriors?: KachePriorCacheOptions;
   readonly kacheReader: KacheReader | null;
   readonly now?: () => number;
@@ -534,6 +377,7 @@ export const createCostModel = (options: CreateCostModelOptions): CostModelWithP
     });
 
   return {
+    kacheStatus: options.kacheStatus ?? Effect.succeed(null),
     prewarmIndexPriors: Effect.gen(function* () {
       const cached = indexCache;
       if (cached === undefined || now() - cached.atMs >= indexTtlMs) {
@@ -565,8 +409,12 @@ export const createCostModel = (options: CreateCostModelOptions): CostModelWithP
             source: 'default' as const,
           };
         }
-        const events = yield* currentEventPriors();
-        const indexPriors = yield* currentIndexPriors();
+        const sharedKache =
+          options.kacheSnapshot === undefined ? null : yield* options.kacheSnapshot;
+        const events =
+          sharedKache === null ? yield* currentEventPriors() : sharedKache.eventPriors;
+        const indexPriors =
+          sharedKache === null ? yield* currentIndexPriors() : sharedKache.indexPriors;
         const profiles = kacheProfilesFor(intent.profile);
         const fallback = defaultEstimateFor(intent);
         let hasCrateObservation = false;
@@ -633,35 +481,22 @@ export const createCostModel = (options: CreateCostModelOptions): CostModelWithP
   };
 };
 
-export const CostModelLive: Layer.Layer<CostModel, never, DaemonConfig | Ledger> = Layer.effect(
+export const CostModelLive: Layer.Layer<
+  CostModel,
+  never,
+  DaemonConfig | KacheStatus | Ledger
+> = Layer.effect(
   CostModel,
   Effect.gen(function* () {
     const config = yield* DaemonConfig;
+    const kacheStatus = yield* KacheStatus;
     const ledger = yield* Ledger;
-    const kacheReader = yield* Effect.acquireRelease(
-      Effect.sync(() => openKacheReader(config.kacheIndexPath)),
-      (reader) =>
-        reader === null
-          ? Effect.void
-          : Effect.sync(() => {
-              reader.close();
-            }),
-    );
-    const model = createCostModel({
+    return createCostModel({
       effectiveParallelism: config.jobsGrant > 0 ? config.jobsGrant : configuredParallelism(),
-      eventPriors:
-        config.kacheIndexPath.length === 0
-          ? undefined
-          : {
-              load: () =>
-                Effect.sync(() =>
-                  readKacheEventPriors(join(dirname(config.kacheIndexPath), 'events.jsonl')),
-                ),
-            },
-      kacheReader,
+      kacheReader: null,
+      kacheSnapshot: kacheStatus.priors,
+      kacheStatus: kacheStatus.current,
       seedDurations: (intentKey, limit) => ledger.recentDurations(intentKey, limit),
     });
-    yield* Effect.forkScoped(model.prewarmIndexPriors);
-    return model;
   }),
 );
