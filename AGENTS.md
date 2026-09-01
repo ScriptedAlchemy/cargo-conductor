@@ -1,0 +1,33 @@
+# Agent instructions
+
+## Effect version
+
+This branch is **Effect v4** (`effect` 4.0.0-rc.112), not v3. v3 idioms
+(`Context.Tag`, `Data.TaggedError`, `@effect/platform` as a separate package)
+often do not apply; check the vendored v4 source before assuming an API exists.
+
+## `repos/` — vendored reference source (read-only)
+
+`repos/effect` is the Effect monorepo vendored as a git subtree, pinned to the
+`effect@4.0.0-rc.112` tag — the exact version in `package.json`. It exists so
+agents can read real source instead of guessing or searching the web.
+
+Rules:
+
+- **Never edit anything under `repos/`.** It is reference material, not part of
+  this codebase. It is updated only by re-running `git subtree pull`.
+- **Never import from `repos/` in application code.** Runtime dependencies come
+  from `node_modules` via `package.json`. `repos/effect` is not a workspace
+  package and is excluded from `tsconfig.json` includes, test globs, and the
+  build.
+- **Prefer the vendored source over web search.** Web results are dominated by
+  Effect v3 and are frequently wrong for this branch. The tree in
+  `repos/effect` is the ground truth for 4.0.0-rc.112.
+- **Read `repos/effect/LLMS.md` first** when writing Effect code. It is the
+  agent-facing guide to v4 idioms (`Effect.gen`, `Effect.fn`,
+  `Context.Service`, `Schema.TaggedError`, Layers, testing) and links into
+  runnable examples under `repos/effect/ai-docs/`.
+- When writing Effect v4 code, inspect `repos/effect/packages/effect/src/` for
+  idiomatic usage. `specs/reference/reference-repos.md` indexes the paths that
+  matter for this project.
+- Migrating v3-shaped code? See `repos/effect/MIGRATION.md`.

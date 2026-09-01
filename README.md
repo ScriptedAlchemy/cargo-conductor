@@ -260,6 +260,10 @@ widget's MCP App messages with live `conductor status` output, so the page
 shows real daemon data with the same 5s polling. Run `npm run build` first —
 the harness reads the artifact, not the sources.
 
+`repos/effect` vendors the Effect v4 source (subtree pinned to
+`effect@4.0.0-rc.112`) as read-only reference for coding agents — it is not a
+runtime dependency; see `AGENTS.md`.
+
 agent-bundle has no npm release yet; this repo pins the
 [pkg.pr.new](https://pkg.pr.new) preview of main SHA
 [`560124af`](https://github.com/ScriptedAlchemy/agent-bundle/commit/560124af).
