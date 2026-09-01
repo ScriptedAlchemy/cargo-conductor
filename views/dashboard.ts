@@ -141,25 +141,48 @@ const render = (structured: StructuredContent | null): void => {
     typeof structured?.summary === 'string' ? structured.summary : 'Updated.';
 };
 
-window.addEventListener('message', (event: MessageEvent) => {
-  if (event.source !== window.parent) {
-    return;
+const asRecord = (value: unknown): StructuredContent | null =>
+  value !== null && typeof value === 'object' ? (value as StructuredContent) : null;
+
+const structuredFrom = (value: unknown): StructuredContent | null => {
+  const record = asRecord(value);
+  if (record === null) {
+    return null;
   }
+  const nested = asRecord(record.structuredContent);
+  if (nested !== null) {
+    return nested;
+  }
+  if (record.daemon !== undefined || record.operation === 'status' || Array.isArray(record.recent)) {
+    return record;
+  }
+  return null;
+};
+
+const applyResult = (value: unknown): void => {
+  render(structuredFrom(value));
+};
+
+window.addEventListener('message', (event: MessageEvent) => {
   const message = event.data as JsonRpcMessage | null;
   if (message === null || message.jsonrpc !== '2.0') {
     return;
   }
-  if (typeof message.id === 'number') {
-    const waiter = pending.get(message.id);
+  if (message.id !== undefined && pending.has(message.id as number)) {
+    const waiter = pending.get(message.id as number);
     if (waiter === undefined) {
       return;
     }
-    pending.delete(message.id);
+    pending.delete(message.id as number);
     if (message.error) {
       waiter.reject(message.error);
       return;
     }
     waiter.resolve(message.result as ToolCallResult);
+    return;
+  }
+  if (message.method === 'ui/notifications/tool-result') {
+    applyResult(message.params);
   }
 });
 
@@ -168,17 +191,19 @@ const load = async (): Promise<void> => {
     arguments: { limit: 40 },
     name: 'conductor_status',
   });
-  render(response.structuredContent ?? null);
+  applyResult(response);
 };
 
 void rpcRequest('ui/initialize', {
-  appCapabilities: {},
+  appCapabilities: { availableDisplayModes: ['inline'] },
   appInfo: { name: 'cargo-conductor', version: '0.1.0' },
   protocolVersion: '2026-01-26',
 })
   .then(() => {
     postMessage({ jsonrpc: '2.0', method: 'ui/notifications/initialized', params: {} });
-    return load();
+    if (statusEl.textContent === 'Connecting…') {
+      statusEl.textContent = 'Waiting for host…';
+    }
   })
   .catch((error: unknown) => {
     statusEl.textContent = error instanceof Error ? error.message : String(error);
@@ -186,6 +211,6 @@ void rpcRequest('ui/initialize', {
 
 setInterval(() => {
   void load().catch(() => undefined);
-}, 4000);
+}, 15_000);
 
 export {};
