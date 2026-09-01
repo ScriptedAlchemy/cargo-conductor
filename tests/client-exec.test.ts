@@ -238,7 +238,31 @@ describe('runExecClient', () => {
       }),
     ));
 
-  it('emits heartbeat progress while a brokered run is in flight', () =>
+  it('suppresses heartbeat progress while brokered output keeps streaming', () =>
+    withDaemon(5, (fixture) =>
+      Effect.gen(function* () {
+        const collected = collectIo();
+        const result = yield* runExecClient({
+          argv: ['cargo', 'check'],
+          autoSpawn: false,
+          config: fixture.config,
+          cwd: fixture.ws1,
+          env: cargoEnv(fixture, {
+            FAKE_OUTPUT_COUNT: '8',
+            FAKE_OUTPUT_INTERVAL: '0.04',
+          }),
+          heartbeatMs: 30,
+          io: collected.io,
+        });
+
+        expect(result.mode).toBe('brokered');
+        expect(result.exitCode).toBe(0);
+        expect(collected.stdout()).toContain('fake-tick:7');
+        expect(collected.stderr()).not.toContain('still running');
+      }),
+    ));
+
+  it('emits heartbeat progress after brokered output becomes silent', () =>
     withDaemon(5, (fixture) =>
       Effect.gen(function* () {
         const collected = collectIo();
@@ -250,6 +274,7 @@ describe('runExecClient', () => {
           env: cargoEnv(fixture, { FAKE_SLEEP: '0.35' }),
           heartbeatMs: 80,
           io: collected.io,
+          silenceThresholdMs: 120,
         });
 
         expect(result.mode).toBe('brokered');

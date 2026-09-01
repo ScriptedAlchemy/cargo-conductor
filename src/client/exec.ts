@@ -57,6 +57,7 @@ export interface RunExecOptions {
   readonly host?: string;
   readonly io: ExecIo;
   readonly session?: string;
+  readonly silenceThresholdMs?: number;
   /**
    * Whether the consumer of stderr renders ANSI color. When false, cargo
    * output chunks (demux-rendered diagnostics keep their color on the wire)
@@ -75,6 +76,11 @@ export interface RunExecResult {
 }
 
 const defaultHeartbeatMs = 15_000;
+/**
+ * Heartbeats prove liveness during silent stretches; streaming output already
+ * proves the brokered run is alive and should not be interrupted with noise.
+ */
+const silenceThresholdMs = 30_000;
 
 const writeChannel = (io: ExecIo, channel: 'stdout' | 'stderr', data: Uint8Array): void => {
   if (channel === 'stdout') {
@@ -172,6 +178,7 @@ const handleServerMessage = (
   message: ServerMessage,
   ticket: Ref.Ref<string | null>,
   phase: Ref.Ref<'queued' | 'running'>,
+  lastOutputAtMs: Ref.Ref<number>,
   finished: Deferred.Deferred<RunExecResult>,
   detach: (ticket: string) => Effect.Effect<void>,
 ): Effect.Effect<void> =>
@@ -231,6 +238,7 @@ const handleServerMessage = (
         );
         return;
       case 'output':
+        yield* Ref.set(lastOutputAtMs, Date.now());
         writeChannel(options.io, message.channel, Buffer.from(message.data, 'base64'));
         return;
       case 'exit':
@@ -278,6 +286,7 @@ const streamBrokered = (
     const ticket = yield* Ref.make<string | null>(null);
     const phase = yield* Ref.make<'queued' | 'running'>('queued');
     const submittedAtMs = Date.now();
+    const lastOutputAtMs = yield* Ref.make(submittedAtMs);
     const id = shortId();
 
     // v4 sockets connect lazily: open failures surface through the pump's
@@ -319,10 +328,17 @@ const streamBrokered = (
               if (message.type !== 'output') {
                 received.push(message);
               }
-              yield* handleServerMessage(options, message, ticket, phase, finished, (target) =>
-                write(encodeClientMessage({ type: 'detach', id: `${id}-detach`, ticket: target })).pipe(
-                  Effect.ignore,
-                ),
+              yield* handleServerMessage(
+                options,
+                message,
+                ticket,
+                phase,
+                lastOutputAtMs,
+                finished,
+                (target) =>
+                  write(
+                    encodeClientMessage({ type: 'detach', id: `${id}-detach`, ticket: target }),
+                  ).pipe(Effect.ignore),
               );
             }
           }),
@@ -367,6 +383,7 @@ const streamBrokered = (
     ).pipe(Effect.mapError((error) => mapOpenError(error, config.socketPath)));
 
     const heartbeatMs = options.heartbeatMs ?? defaultHeartbeatMs;
+    const heartbeatSilenceThresholdMs = options.silenceThresholdMs ?? silenceThresholdMs;
     yield* Effect.forkScoped(
       Effect.repeat(
         Effect.gen(function* () {
@@ -374,10 +391,15 @@ const streamBrokered = (
           if (currentTicket === null) {
             return;
           }
+          const now = Date.now();
+          const lastOutput = yield* Ref.get(lastOutputAtMs);
+          if (now - lastOutput < heartbeatSilenceThresholdMs) {
+            return;
+          }
           const currentPhase = yield* Ref.get(phase);
           options.io.writeStderr(
             formatProgressLine({
-              elapsedMs: Date.now() - submittedAtMs,
+              elapsedMs: now - submittedAtMs,
               kind: 'heartbeat',
               phase: currentPhase,
               ticket: currentTicket,

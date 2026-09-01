@@ -22,6 +22,14 @@ const fakeCargoScript = `#!/usr/bin/env bash
 echo "fake-out:$*"
 echo "fake-err:$*" >&2
 echo "fake-jobs:\${CARGO_BUILD_JOBS:-none}" >&2
+if [ -n "\${FAKE_OUTPUT_COUNT:-}" ]; then
+  fake_output_index=0
+  while [ "\$fake_output_index" -lt "\$FAKE_OUTPUT_COUNT" ]; do
+    sleep "\${FAKE_OUTPUT_INTERVAL:-0.04}"
+    echo "fake-tick:\$fake_output_index"
+    fake_output_index=\$((fake_output_index + 1))
+  done
+fi
 if [ -n "\${FAKE_SLEEP:-}" ]; then sleep "\$FAKE_SLEEP"; fi
 if [ -n "\${FAKE_LATE_OUT:-}" ]; then echo "\$FAKE_LATE_OUT"; fi
 exit "\${FAKE_EXIT:-0}"
