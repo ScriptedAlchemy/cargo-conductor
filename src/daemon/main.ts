@@ -20,6 +20,12 @@ import { Ledger, LedgerLive } from './ledger.js';
 import { makeConnectionHandler } from './server.js';
 import type { SingletonLockError } from './singleton.js';
 import { acquireSingletonLock } from './singleton.js';
+import {
+  monitorSocketOwnership,
+  readSocketIdentity,
+  removeSocketIfOwned,
+  SocketOwnershipLostError,
+} from './socket-ownership.js';
 import { TopologyLive } from './topology.js';
 
 export const daemonVersion = packageVersion;
@@ -52,13 +58,27 @@ const daemonProgram = Effect.gen(function* () {
   const removeStaleSocket = isNamedPipePath(config.socketPath)
     ? Effect.void
     : Effect.sync(() => rmSync(config.socketPath, { force: true }));
-  yield* Effect.addFinalizer(() => removeStaleSocket.pipe(Effect.ignore));
   yield* removeStaleSocket;
   const ledger = yield* Ledger;
   const reaped = yield* ledger.reapOrphans(Date.now(), 'orphaned by daemon restart');
   const broker = yield* Broker;
   const shutdownLatch = yield* Deferred.make<void>();
   const server = yield* NodeSocketServer.make({ path: config.socketPath });
+  const socketOwnership = isNamedPipePath(config.socketPath)
+    ? Effect.never
+    : Effect.gen(function* () {
+        const identity = yield* Effect.tryPromise({
+          try: () => readSocketIdentity(config.socketPath),
+          catch: (cause) =>
+            new SocketOwnershipLostError({ cause, socketPath: config.socketPath }),
+        });
+        yield* Effect.addFinalizer(() =>
+          Effect.ignore(
+            Effect.tryPromise(() => removeSocketIfOwned(config.socketPath, identity)),
+          ),
+        );
+        return yield* monitorSocketOwnership(config.socketPath, identity);
+      });
   const suffix = reaped > 0 ? `, reaped ${reaped} orphaned requests` : '';
   yield* Effect.logInfo(
     `cargo-hauler daemon listening on ${config.socketPath} (pid ${process.pid}${suffix})`,
@@ -69,7 +89,10 @@ const daemonProgram = Effect.gen(function* () {
     startedAtMs: Date.now(),
     version: daemonVersion,
   });
-  yield* Effect.raceFirst(server.run(handler), Deferred.await(shutdownLatch));
+  yield* Effect.raceFirst(
+    Effect.raceFirst(server.run(handler), Deferred.await(shutdownLatch)),
+    socketOwnership,
+  );
   yield* Effect.logInfo('cargo-hauler daemon shutting down');
 });
 
@@ -82,7 +105,10 @@ export type DaemonOutcome = 'completed' | 'already-running';
  */
 export const runDaemon = (
   config: DaemonConfigShape = resolveDaemonConfig(),
-): Effect.Effect<DaemonOutcome, SingletonLockError | SocketServer.SocketServerError> =>
+): Effect.Effect<
+  DaemonOutcome,
+  SingletonLockError | SocketOwnershipLostError | SocketServer.SocketServerError
+> =>
   Effect.scoped(daemonProgram).pipe(
     // Defects escaping any daemon fiber must land in the log at Error, not
     // vanish at the default level.

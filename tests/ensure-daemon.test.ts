@@ -1,4 +1,12 @@
-import { existsSync, fstatSync, mkdtempSync, rmSync } from 'node:fs';
+import {
+  existsSync,
+  fstatSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -7,7 +15,11 @@ import * as Effect from 'effect/Effect';
 import * as Schedule from 'effect/Schedule';
 
 import { resolveDaemonConfig, type DaemonConfigShape } from '../src/daemon/config.js';
-import { daemonIsAbsent, spawnDetachedDaemon } from '../src/client/ensure-daemon.js';
+import {
+  daemonIsAbsent,
+  ensureDaemonRunning,
+  spawnDetachedDaemon,
+} from '../src/client/ensure-daemon.js';
 import { pingDaemon } from '../src/daemon/control.js';
 import { runDaemon } from '../src/daemon/main.js';
 
@@ -62,6 +74,32 @@ describe('spawnDetachedDaemon', () => {
   });
 });
 
+describe('ensureDaemonRunning', () => {
+  it('refuses to spawn when a live daemon already answers the socket', async () => {
+    const expected = {
+      type: 'pong' as const,
+      id: 'existing',
+      pid: 777,
+      startedAtMs: 1,
+      version: 'test',
+    };
+    let spawned = 0;
+    const actual = await Effect.runPromise(
+      ensureDaemonRunning(configAt('/tmp/cargo-hauler-existing-daemon'), {
+        pingDaemon: () => Effect.succeed(expected),
+        spawnDetachedDaemon: () =>
+          Effect.sync(() => {
+            spawned += 1;
+          }),
+        waitForDaemon: () => Effect.die(new Error('wait should not run')),
+      }),
+    );
+
+    expect(actual).toBe(expected);
+    expect(spawned).toBe(0);
+  });
+});
+
 describe('daemon start without a machine-specific mount', () => {
   it('starts in a fresh temp state dir that does not exist yet (no /fast anywhere)', async () => {
     const root = mkdtempSync(join(tmpdir(), 'cc-portable-state-'));
@@ -81,11 +119,40 @@ describe('daemon start without a machine-specific mount', () => {
             );
             // Assert while the daemon is still up; scope close removes it.
             expect(existsSync(config.socketPath)).toBe(true);
+            expect(readFileSync(config.lockTargetPath, 'utf8')).toBe(`${process.pid}\n`);
             return reply;
           }),
         ),
       );
       expect(pong.type).toBe('pong');
+      expect(existsSync(config.lockTargetPath)).toBe(false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('rewrites a stale pid record while holding the lock and removes it on shutdown', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'cc-stale-pid-'));
+    const config = resolveDaemonConfig({
+      CARGO_HAULER_STATE_DIR: join(root, 'state'),
+      CARGO_HAULER_KACHE_INDEX: '',
+    });
+    mkdirSync(config.stateDir, { recursive: true });
+    writeFileSync(config.lockTargetPath, '4184464\n');
+    try {
+      await Effect.runPromise(
+        Effect.scoped(
+          Effect.gen(function* () {
+            yield* Effect.forkScoped(runDaemon(config));
+            yield* pingDaemon(config.socketPath, 500).pipe(
+              Effect.retry(Schedule.spaced('50 millis').pipe(Schedule.upTo({ times: 100 }))),
+            );
+            expect(readFileSync(config.lockTargetPath, 'utf8')).toBe(`${process.pid}\n`);
+          }),
+        ),
+      );
+      expect(existsSync(config.lockTargetPath)).toBe(false);
+      expect(existsSync(config.socketPath)).toBe(false);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

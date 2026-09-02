@@ -26,6 +26,19 @@ export type WaitForDaemonError =
 
 export type EnsureDaemonError = WaitForDaemonError | SpawnDaemonError;
 
+export interface EnsureDaemonDependencies {
+  readonly pingDaemon: (
+    socketPath: string,
+    timeoutMs: number,
+  ) => Effect.Effect<PongMessage, WaitForDaemonError>;
+  readonly spawnDetachedDaemon: (
+    config: DaemonConfigShape,
+  ) => Effect.Effect<void, SpawnDaemonError>;
+  readonly waitForDaemon: (
+    socketPath: string,
+  ) => Effect.Effect<PongMessage, WaitForDaemonError>;
+}
+
 export interface SpawnDetachedDaemonDependencies {
   readonly spawnProcess: (
     command: string,
@@ -121,9 +134,14 @@ export const spawnDetachedDaemon = (
 
 export const ensureDaemonRunning = (
   config: DaemonConfigShape = resolveDaemonConfig(),
+  dependencies: EnsureDaemonDependencies = {
+    pingDaemon,
+    spawnDetachedDaemon,
+    waitForDaemon,
+  },
 ): Effect.Effect<PongMessage, EnsureDaemonError> =>
   Effect.gen(function* () {
-    const already = yield* pingDaemon(config.socketPath, 500).pipe(
+    const already = yield* dependencies.pingDaemon(config.socketPath, 500).pipe(
       Effect.catchTag('DaemonUnreachable', (error) =>
         daemonIsAbsent(error.cause) ? Effect.succeed(null) : Effect.fail(error),
       ),
@@ -131,6 +149,6 @@ export const ensureDaemonRunning = (
     if (already !== null) {
       return already;
     }
-    yield* spawnDetachedDaemon(config);
-    return yield* waitForDaemon(config.socketPath);
+    yield* dependencies.spawnDetachedDaemon(config);
+    return yield* dependencies.waitForDaemon(config.socketPath);
   });
