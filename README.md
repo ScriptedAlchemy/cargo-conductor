@@ -66,15 +66,15 @@ flowchart LR
   mcp["MCP hauler_request"] --> client
   hook --> client["hauler client<br/>ticket + live stream"]
   shim --> client
-  client -->|unix socket| daemon
-  subgraph daemon["hauler daemon (singleton)"]
+  client -->|unix socket| normalizer
+  subgraph daemon [hauler daemon singleton]
     normalizer["intent normalizer"] --> matcher["identity / coverage"]
     matcher --> lanes["lane per workspace<br/>+ target dir"]
     lanes --> scheduler["batching + cost scheduler<br/>+ admission control"]
     scheduler --> executor["one real cargo process<br/>JSON diagnostic demux"]
   end
   executor --> cargo["cargo → rustc<br/>(kache optional)"]
-  daemon --> ledger["SQLite ledger<br/>tickets + savings"]
+  executor --> ledger["SQLite ledger<br/>tickets + savings"]
   ledger --> surfaces["CLI + MCP tools<br/>dashboard"]
 ```
 
