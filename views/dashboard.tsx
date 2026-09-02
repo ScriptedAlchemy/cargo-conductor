@@ -23,6 +23,7 @@ import {
   laneIsActive,
   metricsWindowIds,
   metricsWindowLabel,
+  memoryStatView,
   outputTextFor,
   pathBasename,
   percentileMinSamples,
@@ -69,6 +70,11 @@ interface SystemLoadShape {
   readonly clampThresholdPerCore?: unknown;
   readonly ioWaitPercent?: unknown;
   readonly disks?: unknown;
+  readonly memAvailableBytes?: unknown;
+  readonly memClamp?: unknown;
+  readonly memFullAvg10?: unknown;
+  readonly memPressureLevel?: unknown;
+  readonly memSomeAvg10?: unknown;
 }
 
 interface DiskUtilShape {
@@ -675,6 +681,29 @@ const LoadStat = ({ system }: { readonly system: SystemLoadShape | null }): Reac
         <span className="est"> / {system.cores} cores{clamped ? ' · clamping' : ''}</span>
       </b>
       <span>loadavg (1m) · {perCore.toFixed(2)}/core</span>
+    </div>
+  );
+};
+
+const MemoryStat = ({ system }: { readonly system: SystemLoadShape | null }): ReactNode => {
+  const view = memoryStatView(system ?? {});
+  const pressureLevel =
+    typeof system?.memPressureLevel === 'number' ? system.memPressureLevel : null;
+  const some =
+    typeof system?.memSomeAvg10 === 'number' ? system.memSomeAvg10.toFixed(1) : 'n/a';
+  const title =
+    `Memory admission: soft when Linux full PSI avg10 reaches CARGO_HAULER_MEM_PRESSURE_SOFT (default 10), ` +
+    `hard when full avg10 reaches CARGO_HAULER_MEM_PRESSURE_HARD (default 20) and full avg60 reaches half that threshold, ` +
+    `or MemAvailable is below CARGO_HAULER_MEM_AVAILABLE_MIN_GB (default 8 GiB). ` +
+    `On macOS, level 2 is soft and level 4 is hard; configured soft minimum defaults to 2. ` +
+    `Current some PSI: ${some}%; macOS level: ${pressureLevel ?? 'n/a'}.`;
+  return (
+    <div className="stat" title={title}>
+      <b>
+        {view.value}
+        {view.clamp === 'none' ? null : <span className="est"> · clamping</span>}
+      </b>
+      <span>{view.label}</span>
     </div>
   );
 };
@@ -1303,6 +1332,7 @@ const DashboardContent = ({ structured }: { readonly structured: StructuredConte
             {daemonUp ? (
               <div className="stats">
                 <LoadStat system={system} />
+                <MemoryStat system={system} />
                 <DiskIoStat system={system} />
                 <AdmissionMeter
                   permitHolders={permitHolders}

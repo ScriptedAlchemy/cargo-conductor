@@ -47,6 +47,20 @@ export interface DaemonConfigShape {
    * overrides; any value <= 0 disables the arm.
    */
   readonly cpuStallThreshold: number | null;
+  /**
+   * Linux PSI memory `full avg10` soft threshold. Defers above the normal
+   * concurrency floor; null disables this arm.
+   */
+  readonly memPressureSoftThreshold: number | null;
+  /**
+   * Linux PSI memory `full avg10` hard threshold. Hard admission also
+   * requires `full avg60 >= threshold / 2` to reject transient spikes.
+   */
+  readonly memPressureHardThreshold: number | null;
+  /** Linux MemAvailable hard floor in bytes; null disables this arm. */
+  readonly memAvailableMinBytes: number | null;
+  /** macOS VM pressure level that enables soft admission; null disables it. */
+  readonly memPressureLevelThreshold: 2 | 4 | null;
 }
 
 export class DaemonConfig extends Context.Service<DaemonConfig, DaemonConfigShape>()(
@@ -56,6 +70,11 @@ export class DaemonConfig extends Context.Service<DaemonConfig, DaemonConfigShap
 const defaultMaxConcurrent = 5;
 const defaultCpuStallThreshold = 75;
 const defaultBatchWindowMs = 150;
+const defaultMemPressureSoftThreshold = 10;
+const defaultMemPressureHardThreshold = 20;
+const defaultMemAvailableMinGb = 8;
+const defaultMemPressureLevelThreshold = 2;
+const gibibyte = 1024 ** 3;
 
 export const resolveDaemonConfig = (
   env: Readonly<Record<string, string | undefined>> = process.env,
@@ -75,6 +94,10 @@ export const resolveDaemonConfig = (
   const loadMinValue = env.CARGO_HAULER_LOAD_MIN ?? env.CARGO_CONDUCTOR_LOAD_MIN;
   const cpuPressureValue =
     env.CARGO_HAULER_CPU_PRESSURE_THRESHOLD ?? env.CARGO_CONDUCTOR_CPU_PRESSURE_THRESHOLD;
+  const memPressureSoftValue = env.CARGO_HAULER_MEM_PRESSURE_SOFT;
+  const memPressureHardValue = env.CARGO_HAULER_MEM_PRESSURE_HARD;
+  const memAvailableMinValue = env.CARGO_HAULER_MEM_AVAILABLE_MIN_GB;
+  const memPressureLevelValue = env.CARGO_HAULER_MEM_PRESSURE_LEVEL;
   const batchValue = env.CARGO_HAULER_BATCH ?? env.CARGO_CONDUCTOR_BATCH;
   const batchWindowValue =
     env.CARGO_HAULER_BATCH_WINDOW_MS ?? env.CARGO_CONDUCTOR_BATCH_WINDOW_MS;
@@ -88,6 +111,10 @@ export const resolveDaemonConfig = (
   const parsedLoadThreshold = Number.parseFloat(loadThresholdValue ?? '');
   const parsedLoadMin = Number.parseInt(loadMinValue ?? '', 10);
   const parsedCpuStall = Number.parseFloat(cpuPressureValue ?? '');
+  const parsedMemPressureSoft = Number.parseFloat(memPressureSoftValue ?? '');
+  const parsedMemPressureHard = Number.parseFloat(memPressureHardValue ?? '');
+  const parsedMemAvailableMin = Number.parseFloat(memAvailableMinValue ?? '');
+  const parsedMemPressureLevel = Number.parseInt(memPressureLevelValue ?? '', 10);
   const parsedBatchWindow = Number.parseInt(batchWindowValue ?? '', 10);
   // Divide the cores between the admitted builds so N concurrent cargos do
   // not each assume they own the whole machine (rheo's grant idea).
@@ -121,6 +148,38 @@ export const resolveDaemonConfig = (
         : Number.isFinite(parsedCpuStall) && parsedCpuStall > 0
           ? parsedCpuStall
           : null,
+    memPressureSoftThreshold:
+      platform !== 'linux'
+        ? null
+        : memPressureSoftValue === undefined
+          ? defaultMemPressureSoftThreshold
+          : Number.isFinite(parsedMemPressureSoft) && parsedMemPressureSoft > 0
+            ? parsedMemPressureSoft
+            : null,
+    memPressureHardThreshold:
+      platform !== 'linux'
+        ? null
+        : memPressureHardValue === undefined
+          ? defaultMemPressureHardThreshold
+          : Number.isFinite(parsedMemPressureHard) && parsedMemPressureHard > 0
+            ? parsedMemPressureHard
+            : null,
+    memAvailableMinBytes:
+      platform !== 'linux'
+        ? null
+        : memAvailableMinValue === undefined
+          ? defaultMemAvailableMinGb * gibibyte
+          : Number.isFinite(parsedMemAvailableMin) && parsedMemAvailableMin > 0
+            ? parsedMemAvailableMin * gibibyte
+            : null,
+    memPressureLevelThreshold:
+      platform !== 'darwin'
+        ? null
+        : memPressureLevelValue === undefined
+          ? defaultMemPressureLevelThreshold
+          : parsedMemPressureLevel === 2 || parsedMemPressureLevel === 4
+            ? parsedMemPressureLevel
+            : null,
   };
 };
 

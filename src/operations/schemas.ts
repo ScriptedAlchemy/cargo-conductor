@@ -139,6 +139,11 @@ const systemLoadSchema = z.object({
       }),
     )
     .optional(),
+  memFullAvg10: z.number().nonnegative().optional(),
+  memSomeAvg10: z.number().nonnegative().optional(),
+  memAvailableBytes: z.number().int().nonnegative().optional(),
+  memPressureLevel: z.union([z.literal(1), z.literal(2), z.literal(4)]).optional(),
+  memClamp: z.enum(['none', 'soft', 'hard']).optional(),
 }) satisfies z.ZodType<SystemLoadReport>;
 
 const kacheStatusSchema = z.object({

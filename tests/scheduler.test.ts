@@ -86,4 +86,105 @@ describe('shouldDeferAdmission', () => {
     expect(shouldDeferAdmission({ ...base, minConcurrent: 0, running: 1 })).toBe(true);
     expect(shouldDeferAdmission({ ...base, minConcurrent: 0, running: 0 })).toBe(false);
   });
+
+  const memoryBase = {
+    loadPerCore: 0.1,
+    memAvailableBytes: 32 * 1024 ** 3,
+    memAvailableMinBytes: 8 * 1024 ** 3,
+    memFullAvg10: 0,
+    memFullAvg60: 0,
+    memHardThreshold: 20,
+    memPressureLevel: null,
+    memPressureLevelThreshold: null,
+    memSoftThreshold: 10,
+    minConcurrent: 2,
+    running: 3,
+    thresholdPerCore: Number.POSITIVE_INFINITY,
+  };
+
+  it('soft memory pressure defers only above the concurrency floor', () => {
+    expect(shouldDeferAdmission({ ...memoryBase, memFullAvg10: 10 })).toBe(true);
+    expect(
+      shouldDeferAdmission({ ...memoryBase, memFullAvg10: 10, running: 1 }),
+    ).toBe(false);
+  });
+
+  it('hard memory pressure defers regardless of the concurrency floor', () => {
+    expect(
+      shouldDeferAdmission({
+        ...memoryBase,
+        memFullAvg10: 20,
+        memFullAvg60: 10,
+        running: 0,
+      }),
+    ).toBe(true);
+    expect(
+      shouldDeferAdmission({
+        ...memoryBase,
+        memPressureLevel: 4,
+        memPressureLevelThreshold: 2,
+        running: 0,
+      }),
+    ).toBe(true);
+  });
+
+  it('requires avg60 hysteresis before a transient PSI spike hard-blocks', () => {
+    expect(
+      shouldDeferAdmission({
+        ...memoryBase,
+        memFullAvg10: 25,
+        memFullAvg60: 9.9,
+        running: 0,
+      }),
+    ).toBe(false);
+  });
+
+  it('hard-blocks when MemAvailable falls below the configured floor', () => {
+    expect(
+      shouldDeferAdmission({
+        ...memoryBase,
+        memAvailableBytes: 8 * 1024 ** 3 - 1,
+        running: 0,
+      }),
+    ).toBe(true);
+  });
+
+  it('maps macOS warn to soft and critical to hard', () => {
+    expect(
+      shouldDeferAdmission({
+        ...memoryBase,
+        memPressureLevel: 2,
+        memPressureLevelThreshold: 2,
+      }),
+    ).toBe(true);
+    expect(
+      shouldDeferAdmission({
+        ...memoryBase,
+        memPressureLevel: 2,
+        memPressureLevelThreshold: 4,
+      }),
+    ).toBe(false);
+  });
+
+  it('disables memory arms when knobs or signals are null', () => {
+    expect(
+      shouldDeferAdmission({
+        ...memoryBase,
+        memAvailableBytes: 1,
+        memAvailableMinBytes: null,
+        memFullAvg10: 100,
+        memFullAvg60: 100,
+        memHardThreshold: null,
+        memSoftThreshold: null,
+      }),
+    ).toBe(false);
+    expect(
+      shouldDeferAdmission({
+        ...memoryBase,
+        memAvailableBytes: null,
+        memFullAvg10: null,
+        memFullAvg60: null,
+      }),
+    ).toBe(false);
+  });
 });

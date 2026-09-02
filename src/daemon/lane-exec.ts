@@ -43,7 +43,12 @@ import {
 } from './job-state.js';
 import type { Attachment, Job, JobState, SubmitCallbacks, SubmitInput } from './job-state.js';
 import type { LedgerApi } from './ledger.js';
-import { cpuSomeAvg10 } from './pressure.js';
+import {
+  cpuSomeAvg10,
+  memoryAvailableBytes,
+  memoryPressureLevel,
+  memoryPsi,
+} from './pressure.js';
 import type { FinishedStatus, LaneStatus } from './protocol.js';
 import { ReplayBuffer } from './replay.js';
 import { selectNextIndex, shouldDeferAdmission } from './scheduler.js';
@@ -586,14 +591,19 @@ export const makeLaneRuntime = (deps: LaneRuntimeDeps): Effect.Effect<LaneRuntim
         }),
       );
 
-    // Load clamp: defer new admissions while per-core loadavg exceeds its
-    // opt-in threshold or PSI CPU stall exceeds its default-on threshold —
-    // but never below loadMinConcurrent running builds, and never beyond a
-    // bounded wait, so a saturated machine still makes progress and jobs
-    // stay killable (the job is still 'queued' while gated).
+    // Admission clamp: load, CPU PSI, and soft memory pressure respect the
+    // loadMinConcurrent progress floor. Sustained hard memory PSI (avg60 must
+    // reach half the hard threshold), low MemAvailable, and macOS critical
+    // pressure bypass that floor. Every arm still shares this bounded wait,
+    // so the queue cannot deadlock and gated jobs remain killable.
     const loadGateDeadlineMs = 120_000;
     const waitForLoadHeadroom: Effect.Effect<void> =
-      config.loadThresholdPerCore === null && config.cpuStallThreshold === null
+      config.loadThresholdPerCore === null &&
+      config.cpuStallThreshold === null &&
+      config.memPressureSoftThreshold === null &&
+      config.memPressureHardThreshold === null &&
+      config.memAvailableMinBytes === null &&
+      config.memPressureLevelThreshold === null
         ? Effect.void
         : Effect.gen(function* () {
             // A disabled loadavg arm never trips; PSI can gate on its own.
@@ -603,11 +613,28 @@ export const makeLaneRuntime = (deps: LaneRuntimeDeps): Effect.Effect<LaneRuntim
               const running = yield* Ref.get(admittedCount);
               const loadPerCore = loadavg()[0] / availableParallelism();
               const cpuStallPercent = config.cpuStallThreshold === null ? null : cpuSomeAvg10();
+              const memPsi =
+                config.memPressureSoftThreshold === null &&
+                config.memPressureHardThreshold === null
+                  ? null
+                  : memoryPsi();
+              const memAvailable =
+                config.memAvailableMinBytes === null ? null : memoryAvailableBytes();
+              const memLevel =
+                config.memPressureLevelThreshold === null ? null : memoryPressureLevel();
               if (
                 !shouldDeferAdmission({
                   cpuStallPercent,
                   cpuStallThreshold: config.cpuStallThreshold,
                   loadPerCore,
+                  memAvailableBytes: memAvailable,
+                  memAvailableMinBytes: config.memAvailableMinBytes,
+                  memFullAvg10: memPsi?.fullAvg10 ?? null,
+                  memFullAvg60: memPsi?.fullAvg60 ?? null,
+                  memHardThreshold: config.memPressureHardThreshold,
+                  memPressureLevel: memLevel,
+                  memPressureLevelThreshold: config.memPressureLevelThreshold,
+                  memSoftThreshold: config.memPressureSoftThreshold,
                   minConcurrent: config.loadMinConcurrent,
                   running,
                   thresholdPerCore,
@@ -616,7 +643,7 @@ export const makeLaneRuntime = (deps: LaneRuntimeDeps): Effect.Effect<LaneRuntim
                 return;
               }
               yield* Effect.logDebug(
-                `admission deferred: load/core ${loadPerCore.toFixed(2)} (threshold ${thresholdPerCore}), cpu stall ${cpuStallPercent?.toFixed(1) ?? 'n/a'}% (threshold ${config.cpuStallThreshold ?? 'off'}) with ${running} running`,
+                `admission deferred: load/core ${loadPerCore.toFixed(2)} (threshold ${thresholdPerCore}), cpu stall ${cpuStallPercent?.toFixed(1) ?? 'n/a'}% (threshold ${config.cpuStallThreshold ?? 'off'}), memory full avg10 ${memPsi?.fullAvg10.toFixed(1) ?? 'n/a'}%, avg60 ${memPsi?.fullAvg60.toFixed(1) ?? 'n/a'}%, available ${memAvailable ?? 'n/a'} bytes, macOS level ${memLevel ?? 'n/a'} with ${running} running`,
               );
               yield* Effect.sleep('2 seconds');
             }

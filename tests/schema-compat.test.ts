@@ -436,6 +436,49 @@ describe('schema forward compatibility (issue #4)', () => {
     expect(withoutIo.system?.disks).toBeUndefined();
   });
 
+  it('round-trips additive memory pressure fields and tolerates older daemons', () => {
+    const base = {
+      active: [],
+      daemon: 'running',
+      lanes: [],
+      maxConcurrent: 5,
+      operation: 'status',
+      pid: 42,
+      recent: [],
+      socketPath: '/tmp/cc/daemon.sock',
+      startedAtMs: 1,
+      stateRoot: '/tmp/cc',
+      summary: 'running',
+    };
+    const withMemory = statusResultSchema.parse({
+      ...base,
+      system: {
+        clampThresholdPerCore: null,
+        cores: 16,
+        loadAvg1: 3.2,
+        memAvailableBytes: 12 * 1024 ** 3,
+        memClamp: 'hard',
+        memFullAvg10: 24.5,
+        memPressureLevel: 4,
+        memSomeAvg10: 30.1,
+      },
+    });
+    expect(withMemory.system).toMatchObject({
+      memAvailableBytes: 12 * 1024 ** 3,
+      memClamp: 'hard',
+      memFullAvg10: 24.5,
+      memPressureLevel: 4,
+      memSomeAvg10: 30.1,
+    });
+
+    const older = statusResultSchema.parse({
+      ...base,
+      system: { clampThresholdPerCore: null, cores: 16, loadAvg1: 3.2 },
+    });
+    expect(older.system?.memClamp).toBeUndefined();
+    expect(older.system?.memAvailableBytes).toBeUndefined();
+  });
+
   it('accepts denied and passthrough terminal request records', () => {
     expect(requestRecordSchema.parse({ ...baseRecord, status: 'denied' }).status).toBe('denied');
     expect(

@@ -22,6 +22,66 @@ describe('daemon config platform posture', () => {
     expect(resolveDaemonConfig({ CARGO_HAULER_BATCH_WINDOW_MS: '275' }).batchWindowMs).toBe(275);
   });
 
+  it('enables machine-tuned memory defaults only where signals exist', () => {
+    expect(resolveDaemonConfig({}, 'linux')).toMatchObject({
+      memAvailableMinBytes: 8 * 1024 ** 3,
+      memPressureHardThreshold: 20,
+      memPressureLevelThreshold: null,
+      memPressureSoftThreshold: 10,
+    });
+    expect(resolveDaemonConfig({}, 'darwin')).toMatchObject({
+      memAvailableMinBytes: null,
+      memPressureHardThreshold: null,
+      memPressureLevelThreshold: 2,
+      memPressureSoftThreshold: null,
+    });
+    expect(resolveDaemonConfig({}, 'win32')).toMatchObject({
+      memAvailableMinBytes: null,
+      memPressureHardThreshold: null,
+      memPressureLevelThreshold: null,
+      memPressureSoftThreshold: null,
+    });
+  });
+
+  it('parses memory overrides and treats explicit zero as disabled', () => {
+    expect(
+      resolveDaemonConfig(
+        {
+          CARGO_HAULER_MEM_AVAILABLE_MIN_GB: '12.5',
+          CARGO_HAULER_MEM_PRESSURE_HARD: '30',
+          CARGO_HAULER_MEM_PRESSURE_SOFT: '15',
+        },
+        'linux',
+      ),
+    ).toMatchObject({
+      memAvailableMinBytes: 12.5 * 1024 ** 3,
+      memPressureHardThreshold: 30,
+      memPressureSoftThreshold: 15,
+    });
+    expect(
+      resolveDaemonConfig(
+        {
+          CARGO_HAULER_MEM_AVAILABLE_MIN_GB: '0',
+          CARGO_HAULER_MEM_PRESSURE_HARD: '0',
+          CARGO_HAULER_MEM_PRESSURE_SOFT: '0',
+        },
+        'linux',
+      ),
+    ).toMatchObject({
+      memAvailableMinBytes: null,
+      memPressureHardThreshold: null,
+      memPressureSoftThreshold: null,
+    });
+    expect(
+      resolveDaemonConfig({ CARGO_HAULER_MEM_PRESSURE_LEVEL: '4' }, 'darwin')
+        .memPressureLevelThreshold,
+    ).toBe(4);
+    expect(
+      resolveDaemonConfig({ CARGO_HAULER_MEM_PRESSURE_LEVEL: '0' }, 'darwin')
+        .memPressureLevelThreshold,
+    ).toBeNull();
+  });
+
   it('falls back to legacy config variables and gives hauler variables precedence', () => {
     const legacy = resolveDaemonConfig({
       CARGO_CONDUCTOR_BATCH: '0',

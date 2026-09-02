@@ -687,6 +687,37 @@ export const formatBytes = (bytes: number): string => {
   return `${unit === 0 ? String(Math.round(value)) : value.toFixed(1)} ${units[unit]}`;
 };
 
+export interface MemoryStatView {
+  readonly clamp: 'none' | 'soft' | 'hard';
+  readonly label: string;
+  readonly value: string;
+}
+
+/** Stable memory-pressure display shape for both current and older daemons. */
+export const memoryStatView = (system: {
+  readonly memAvailableBytes?: unknown;
+  readonly memClamp?: unknown;
+  readonly memFullAvg10?: unknown;
+}): MemoryStatView => {
+  const available =
+    typeof system.memAvailableBytes === 'number'
+      ? formatBytes(system.memAvailableBytes)
+      : '—';
+  const psi =
+    typeof system.memFullAvg10 === 'number'
+      ? system.memFullAvg10.toFixed(1)
+      : '—';
+  const clamp =
+    system.memClamp === 'soft' || system.memClamp === 'hard'
+      ? system.memClamp
+      : 'none';
+  return {
+    clamp,
+    label: `mem free · psi ${psi}`,
+    value: available,
+  };
+};
+
 export const formatCompactNumber = (value: number): string => {
   const absolute = Math.abs(value);
   const unit =

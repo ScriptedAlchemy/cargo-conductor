@@ -45,6 +45,7 @@ import {
   ticketDetailFrom,
   waitMetricsView,
   metricsWindowLabel,
+  memoryStatView,
 } from '../views/dashboard-lib.js';
 
 const repoRoot = fileURLToPath(new URL('..', import.meta.url));
@@ -623,6 +624,30 @@ describe('display formatting', () => {
     expect(shortenPath('/srv/some/deeply/nested/workspace/checkout/target/debug', 20)).toBe(
       '…/target/debug',
     );
+  });
+});
+
+describe('memoryStatView', () => {
+  it('formats MemAvailable with full PSI and clamp state', () => {
+    expect(
+      memoryStatView({
+        memAvailableBytes: 44.2 * 1024 ** 3,
+        memClamp: 'soft',
+        memFullAvg10: 1.24,
+      }),
+    ).toEqual({
+      clamp: 'soft',
+      label: 'mem free · psi 1.2',
+      value: '44.2 GB',
+    });
+  });
+
+  it('keeps a stable placeholder for older daemons', () => {
+    expect(memoryStatView({})).toEqual({
+      clamp: 'none',
+      label: 'mem free · psi —',
+      value: '—',
+    });
   });
 });
 

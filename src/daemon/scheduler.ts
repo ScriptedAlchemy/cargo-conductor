@@ -54,16 +54,72 @@ export interface AdmissionLoadInput {
   readonly cpuStallPercent?: number | null;
   /** Stall percentage above which admission defers; null disables the PSI arm. */
   readonly cpuStallThreshold?: number | null;
+  /** Linux PSI memory `full avg10`; null disables PSI memory admission. */
+  readonly memFullAvg10?: number | null;
+  /** Linux PSI memory `full avg60`, used to reject transient hard spikes. */
+  readonly memFullAvg60?: number | null;
+  /** Soft PSI threshold; null disables the soft memory arm. */
+  readonly memSoftThreshold?: number | null;
+  /** Hard PSI threshold; null disables the hard memory arm. */
+  readonly memHardThreshold?: number | null;
+  /** Linux MemAvailable in bytes. */
+  readonly memAvailableBytes?: number | null;
+  /** Hard minimum MemAvailable; null disables the availability arm. */
+  readonly memAvailableMinBytes?: number | null;
+  /** macOS VM pressure level (1 normal, 2 warn, 4 critical). */
+  readonly memPressureLevel?: number | null;
+  /** Minimum macOS level for soft admission; null disables the macOS arm. */
+  readonly memPressureLevelThreshold?: number | null;
 }
+
+export type MemoryClampState = 'none' | 'soft' | 'hard';
+
+/** Memory-only clamp state, independent of the current concurrency floor. */
+export const memoryClampState = (input: AdmissionLoadInput): MemoryClampState => {
+  const hardPsi =
+    input.memFullAvg10 != null &&
+    input.memFullAvg60 != null &&
+    input.memHardThreshold != null &&
+    input.memFullAvg10 >= input.memHardThreshold &&
+    // Sustained storms keep avg60 elevated; requiring half the hard threshold
+    // prevents a transient 10-second spike from bypassing the progress floor.
+    input.memFullAvg60 >= input.memHardThreshold / 2;
+  const hardAvailable =
+    input.memAvailableBytes != null &&
+    input.memAvailableMinBytes != null &&
+    input.memAvailableBytes < input.memAvailableMinBytes;
+  const hardDarwin =
+    input.memPressureLevelThreshold != null && input.memPressureLevel === 4;
+  if (hardPsi || hardAvailable || hardDarwin) {
+    return 'hard';
+  }
+  const softPsi =
+    input.memFullAvg10 != null &&
+    input.memSoftThreshold != null &&
+    input.memFullAvg10 >= input.memSoftThreshold;
+  const softDarwin =
+    input.memPressureLevel != null &&
+    input.memPressureLevelThreshold != null &&
+    input.memPressureLevel >= input.memPressureLevelThreshold;
+  return softPsi || softDarwin ? 'soft' : 'none';
+};
 
 /**
  * True when admission should wait for machine load to subside. The clamp
- * never throttles below minConcurrent running builds, so a loaded machine
- * still makes progress and the gate cannot deadlock the queue.
+ * normally never throttles below minConcurrent running builds. Hard memory
+ * pressure bypasses that floor, but the caller's bounded deadline still
+ * prevents a deadlocked queue.
  */
 export const shouldDeferAdmission = (input: AdmissionLoadInput): boolean => {
+  const memClamp = memoryClampState(input);
+  if (memClamp === 'hard') {
+    return true;
+  }
   if (input.running < Math.max(1, input.minConcurrent)) {
     return false;
+  }
+  if (memClamp === 'soft') {
+    return true;
   }
   if (input.loadPerCore > input.thresholdPerCore) {
     return true;

@@ -345,6 +345,16 @@ export interface SystemLoadReport {
   readonly ioWaitPercent?: number;
   /** Busy share of devices backing the state dir and in-flight target dirs (Linux only). */
   readonly disks?: readonly DiskUtilReport[];
+  /** Linux PSI memory `full avg10` percentage. */
+  readonly memFullAvg10?: number;
+  /** Linux PSI memory `some avg10` percentage, for diagnosis. */
+  readonly memSomeAvg10?: number;
+  /** Linux MemAvailable at report time. */
+  readonly memAvailableBytes?: number;
+  /** macOS VM pressure level: 1 normal, 2 warn, 4 critical. */
+  readonly memPressureLevel?: 1 | 2 | 4;
+  /** Memory admission state computed from the configured thresholds. */
+  readonly memClamp?: 'none' | 'soft' | 'hard';
 }
 
 /**

@@ -34,6 +34,7 @@ import type {
 } from './job-state.js';
 import { laneKeyFor, makeLaneRuntime } from './lane-exec.js';
 import { Ledger } from './ledger.js';
+import { memoryAvailableBytes, memoryPressureLevel, memoryPsi } from './pressure.js';
 import type {
   AttachMode,
   HistogramMetricSnapshot,
@@ -43,6 +44,7 @@ import type {
   SessionPendingRecord,
   StatusReport,
 } from './protocol.js';
+import { memoryClampState } from './scheduler.js';
 import { makeTicketDirectory } from './ticket-directory.js';
 import { Topology } from './topology.js';
 import { findConfiguredTargetDir, locateWorkspaceRoot } from './workspace.js';
@@ -507,6 +509,26 @@ export const BrokerLive: Layer.Layer<
               .map((lane) => lane.targetDir),
           ]),
         );
+        const memorySample = yield* Effect.sync(() => {
+          const psi = memoryPsi();
+          const availableBytes = memoryAvailableBytes();
+          const pressureLevel = memoryPressureLevel();
+          const clamp = memoryClampState({
+            loadPerCore: 0,
+            memAvailableBytes: availableBytes,
+            memAvailableMinBytes: config.memAvailableMinBytes,
+            memFullAvg10: psi?.fullAvg10 ?? null,
+            memFullAvg60: psi?.fullAvg60 ?? null,
+            memHardThreshold: config.memPressureHardThreshold,
+            memPressureLevel: pressureLevel,
+            memPressureLevelThreshold: config.memPressureLevelThreshold,
+            memSoftThreshold: config.memPressureSoftThreshold,
+            minConcurrent: config.loadMinConcurrent,
+            running: 0,
+            thresholdPerCore: Number.POSITIVE_INFINITY,
+          });
+          return { availableBytes, clamp, pressureLevel, psi };
+        });
         return {
           pid: process.pid,
           startedAtMs,
@@ -526,6 +548,19 @@ export const BrokerLive: Layer.Layer<
             ...(ioSample !== null && ioSample.disks.length > 0
               ? { disks: ioSample.disks }
               : {}),
+            ...(memorySample.psi === null
+              ? {}
+              : {
+                  memFullAvg10: memorySample.psi.fullAvg10,
+                  memSomeAvg10: memorySample.psi.someAvg10,
+                }),
+            ...(memorySample.availableBytes === null
+              ? {}
+              : { memAvailableBytes: memorySample.availableBytes }),
+            ...(memorySample.pressureLevel === null
+              ? {}
+              : { memPressureLevel: memorySample.pressureLevel }),
+            memClamp: memorySample.clamp,
           },
           metrics: {
             cargo_run_ms: histogramSnapshot(cargoRun),

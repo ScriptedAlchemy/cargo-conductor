@@ -27,6 +27,10 @@ const configAt = (stateDir: string): DaemonConfigShape => ({
   loadThresholdPerCore: null,
   loadMinConcurrent: 2,
   cpuStallThreshold: null,
+  memPressureSoftThreshold: null,
+  memPressureHardThreshold: null,
+  memAvailableMinBytes: null,
+  memPressureLevelThreshold: null,
 });
 
 describe('spawnDetachedDaemon', () => {
