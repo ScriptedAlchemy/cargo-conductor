@@ -250,7 +250,7 @@ The daemon and hooks read the following environment variables:
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `CARGO_HAULER_STATE_DIR` | Per-user cache directory | Unix socket or Windows named pipe source, SQLite ledger, daemon log, pid lock, and `hook-events.jsonl`. |
+| `CARGO_HAULER_STATE_DIR` | Per-user cache directory | Unix socket or Windows named pipe source, SQLite ledger, daemon log, pid lock, and `hook-events.jsonl`. The legacy `CARGO_CONDUCTOR_STATE_DIR` alias was removed on 2026-09-01. |
 | `CARGO_HAULER_CARGO_BIN` | `$CARGO_HOME/bin/cargo` | Cargo binary for daemon-started work; bare `cargo` is the last fallback. The daemon does not resolve it through `PATH`. |
 | `CARGO_HAULER_MAX_CONCURRENT` | `5` | Global admission permits for Cargo processes across all lanes. |
 | `CARGO_HAULER_JOBS_GRANT` | `max(4, cores / max concurrent)` | `CARGO_BUILD_JOBS` added to each Cargo process; `0` disables injection and caller-provided `-j` or environment values take precedence. |
@@ -263,9 +263,12 @@ The daemon and hooks read the following environment variables:
 | `CARGO_HAULER_BATCH_WINDOW_MS` | `150` | Delay applied to a batchable lane head so nearby requests can fold; `0` disables the delay. |
 | `CARGO_HAULER_STOP_WAIT_MS` | `30000` | Maximum wait for one stop-hook invocation. |
 
-Each `CARGO_HAULER_*` setting takes precedence over its legacy
-`CARGO_CONDUCTOR_*` alias. The legacy aliases remain supported for existing
-configurations.
+Each `CARGO_HAULER_*` setting takes precedence over its retained legacy
+`CARGO_CONDUCTOR_*` alias. Legacy aliases remain supported only for settings
+that cannot select persistent daemon identity, including tuning values and the
+read-only kache index. `CARGO_CONDUCTOR_STATE_DIR` is ignored with a warning:
+on 2026-09-01, a stale login-session value recreated a migrated directory and
+split the daemon socket and ledger from the active cargo-hauler store.
 
 The state directory defaults to `$XDG_CACHE_HOME/cargo-hauler` when
 `XDG_CACHE_HOME` is set, otherwise `~/.cache/cargo-hauler` on Linux,

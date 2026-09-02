@@ -81,9 +81,9 @@ export const resolveDaemonConfig = (
   platform: NodeJS.Platform = process.platform,
 ): DaemonConfigShape => {
   const stateDir = resolveStateDir(env);
-  // Backward compatibility: each CARGO_HAULER_* setting wins when present,
-  // while the corresponding CARGO_CONDUCTOR_* setting remains a fallback for
-  // operator environments created before the rebrand.
+  // Legacy aliases remain compatible only when a stale value cannot select
+  // persistent daemon identity. Tuning values and the read-only kache index
+  // are safe; state, socket, and database locations accept CARGO_HAULER_* only.
   const maxConcurrentValue =
     env.CARGO_HAULER_MAX_CONCURRENT ?? env.CARGO_CONDUCTOR_MAX_CONCURRENT;
   const replayBufferValue =

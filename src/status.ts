@@ -44,11 +44,10 @@ export const defaultStateDir = (
 ): string => join(userCacheDir(env, platform, home), 'cargo-hauler');
 
 /**
- * The one state-dir resolution: a non-empty CARGO_HAULER_STATE_DIR wins, then
- * a non-empty legacy CARGO_CONDUCTOR_STATE_DIR remains an explicit
- * backward-compatible fallback. Filesystem existence never influences
- * identity. Daemon config and hook clients both call this, so they cannot
- * drift apart.
+ * The one state-dir resolution: a non-empty CARGO_HAULER_STATE_DIR wins,
+ * otherwise use the per-user default. Legacy aliases are never accepted for
+ * persistent state identity. Daemon config and hook clients both call this,
+ * so they cannot drift apart.
  */
 export const resolveStateDir = (
   env: Readonly<Record<string, string | undefined>> = process.env,
@@ -57,8 +56,7 @@ export const resolveStateDir = (
   if (current !== undefined && current.length > 0) {
     return current;
   }
-  const legacy = env.CARGO_CONDUCTOR_STATE_DIR;
-  return legacy !== undefined && legacy.length > 0 ? legacy : defaultStateDir(env);
+  return defaultStateDir(env);
 };
 
 const namedPipePrefix = '\\\\.\\pipe\\';

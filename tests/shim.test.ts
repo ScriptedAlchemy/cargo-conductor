@@ -23,7 +23,7 @@ describe('PATH cargo shim', () => {
     );
   });
 
-  it('passes daemon-spawned cargo straight through instead of re-brokering it', () => {
+  it('retains the legacy recursion marker because it cannot change state identity', () => {
     const script = renderCargoShim({
       haulerArgv: ['hauler'],
       realCargo: '/usr/bin/cargo',

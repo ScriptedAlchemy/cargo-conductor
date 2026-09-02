@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { describe, expect, it } from '@rstest/core';
 import * as Effect from 'effect/Effect';
 
-import { runCli, type HaulerOperations } from '../src/cli.js';
+import { runCli, type HaulerOperations, warnRemovedLegacyStateDir } from '../src/cli.js';
 import type { RunExecOptions, RunExecResult } from '../src/client/exec.js';
 
 const stoppedSnapshot = {
@@ -88,6 +88,17 @@ const run = async (
 };
 
 describe('hauler cli', () => {
+  it('warns once when the removed legacy state-dir variable is present', () => {
+    const lines: string[] = [];
+    warnRemovedLegacyStateDir(
+      { CARGO_CONDUCTOR_STATE_DIR: '/tmp/dead-path' },
+      (line) => lines.push(typeof line === 'string' ? line : Buffer.from(line).toString('utf8')),
+    );
+    expect(lines).toEqual([
+      'warning: CARGO_CONDUCTOR_STATE_DIR is no longer supported; use CARGO_HAULER_STATE_DIR instead.\n',
+    ]);
+  });
+
   it('prints usage and exits 2 without arguments', async () => {
     const result = await run([]);
     expect(result.code).toBe(2);
@@ -143,7 +154,7 @@ describe('hauler cli', () => {
     expect(() => JSON.parse(result.text)).toThrow();
   });
 
-  it('falls back to legacy host/session variables and prefers hauler variables', async () => {
+  it('retains legacy host/session metadata because it cannot change state identity', async () => {
     const names = [
       'CARGO_CONDUCTOR_HOST',
       'CARGO_CONDUCTOR_SESSION',

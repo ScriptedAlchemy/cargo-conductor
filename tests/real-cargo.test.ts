@@ -11,7 +11,7 @@ describe('realCargoBin', () => {
     expect(realCargoBin({ CARGO_HAULER_CARGO_BIN: '/opt/rust/cargo' })).toBe('/opt/rust/cargo');
   });
 
-  it('falls back to the legacy override and prefers the hauler variable', () => {
+  it('retains the legacy process override because it cannot change state identity', () => {
     expect(realCargoBin({ CARGO_CONDUCTOR_CARGO_BIN: '/legacy/cargo' })).toBe('/legacy/cargo');
     expect(
       realCargoBin({

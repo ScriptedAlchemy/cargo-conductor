@@ -82,7 +82,7 @@ describe('daemon config platform posture', () => {
     ).toBeNull();
   });
 
-  it('falls back to legacy config variables and gives hauler variables precedence', () => {
+  it('retains legacy tuning aliases because they cannot change state identity', () => {
     const legacy = resolveDaemonConfig({
       CARGO_CONDUCTOR_BATCH: '0',
       CARGO_CONDUCTOR_BATCH_WINDOW_MS: '275',

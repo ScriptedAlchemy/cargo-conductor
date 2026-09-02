@@ -94,6 +94,17 @@ const defaultWriteStderr = (data: string | Uint8Array): void => {
   process.stderr.write(data);
 };
 
+export const warnRemovedLegacyStateDir = (
+  env: Readonly<Record<string, string | undefined>> = process.env,
+  writeStderr: (data: string | Uint8Array) => void = defaultWriteStderr,
+): void => {
+  if (env.CARGO_CONDUCTOR_STATE_DIR !== undefined) {
+    writeStderr(
+      'warning: CARGO_CONDUCTOR_STATE_DIR is no longer supported; use CARGO_HAULER_STATE_DIR instead.\n',
+    );
+  }
+};
+
 const runExecCommand = async (argv: readonly string[], options: CliOptions): Promise<number> => {
   const write = options.write ?? defaultWrite;
   try {
@@ -202,4 +213,7 @@ export const runCli = async (
  * envelope. The same module is the package bin (`src/cli.ts` convention →
  * `dist/bin/cargo-hauler.js`) and the `hauler` artifact script.
  */
-export const main = async (argv: readonly string[]): Promise<number> => runCli(argv);
+export const main = async (argv: readonly string[]): Promise<number> => {
+  warnRemovedLegacyStateDir();
+  return runCli(argv);
+};

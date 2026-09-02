@@ -51,11 +51,12 @@ describe('portable state root', () => {
     expect(resolveHookStateDir(env)).toBe('/fast/cache/cargo-hauler');
   });
 
-  it('falls back to the legacy state dir while preferring the hauler variable', () => {
+  it('ignores the removed legacy state-dir alias while preferring the hauler variable', () => {
     const legacy = { CARGO_CONDUCTOR_STATE_DIR: '/fast/cache/cargo-conductor' };
-    expect(resolveStateDir(legacy)).toBe('/fast/cache/cargo-conductor');
-    expect(resolveDaemonConfig(legacy).stateDir).toBe('/fast/cache/cargo-conductor');
-    expect(resolveHookStateDir(legacy)).toBe('/fast/cache/cargo-conductor');
+    const expected = defaultStateDir(legacy);
+    expect(resolveStateDir(legacy)).toBe(expected);
+    expect(resolveDaemonConfig(legacy).stateDir).toBe(expected);
+    expect(resolveHookStateDir(legacy)).toBe(expected);
 
     expect(
       resolveStateDir({
@@ -65,14 +66,15 @@ describe('portable state root', () => {
     ).toBe('/current');
   });
 
-  it('treats an empty hauler override as unset before consulting the legacy variable', () => {
+  it('treats an empty hauler override as unset without consulting the legacy variable', () => {
     const env = {
       CARGO_CONDUCTOR_STATE_DIR: '/legacy',
       CARGO_HAULER_STATE_DIR: '',
     };
-    expect(resolveStateDir(env)).toBe('/legacy');
-    expect(resolveDaemonConfig(env).stateDir).toBe('/legacy');
-    expect(resolveHookStateDir(env)).toBe('/legacy');
+    const expected = defaultStateDir(env);
+    expect(resolveStateDir(env)).toBe(expected);
+    expect(resolveDaemonConfig(env).stateDir).toBe(expected);
+    expect(resolveHookStateDir(env)).toBe(expected);
   });
 
   it('never selects a legacy directory merely because it exists', () => {
@@ -226,7 +228,7 @@ describe('portable kache index default', () => {
     expect(resolveDaemonConfig({ CARGO_HAULER_KACHE_INDEX: '' }).kacheIndexPath).toBe('');
   });
 
-  it('falls back to the legacy kache index while preferring the hauler variable', () => {
+  it('retains the legacy read-only kache index while preferring the hauler variable', () => {
     expect(
       resolveDaemonConfig({ CARGO_CONDUCTOR_KACHE_INDEX: '/legacy/kache/index.db' })
         .kacheIndexPath,
