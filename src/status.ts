@@ -44,18 +44,21 @@ export const defaultStateDir = (
 ): string => join(userCacheDir(env, platform, home), 'cargo-hauler');
 
 /**
- * The one state-dir resolution: CARGO_HAULER_STATE_DIR wins, then the legacy
- * CARGO_CONDUCTOR_STATE_DIR remains a backward-compatible fallback so existing
- * operator setups do not silently move to a fresh ledger. Daemon config and
- * hook clients both call this, so they cannot drift apart.
+ * The one state-dir resolution: a non-empty CARGO_HAULER_STATE_DIR wins, then
+ * a non-empty legacy CARGO_CONDUCTOR_STATE_DIR remains an explicit
+ * backward-compatible fallback. Filesystem existence never influences
+ * identity. Daemon config and hook clients both call this, so they cannot
+ * drift apart.
  */
 export const resolveStateDir = (
   env: Readonly<Record<string, string | undefined>> = process.env,
 ): string => {
-  const override = env.CARGO_HAULER_STATE_DIR ?? env.CARGO_CONDUCTOR_STATE_DIR;
-  return override !== undefined && override.length > 0
-    ? override
-    : defaultStateDir(env);
+  const current = env.CARGO_HAULER_STATE_DIR;
+  if (current !== undefined && current.length > 0) {
+    return current;
+  }
+  const legacy = env.CARGO_CONDUCTOR_STATE_DIR;
+  return legacy !== undefined && legacy.length > 0 ? legacy : defaultStateDir(env);
 };
 
 const namedPipePrefix = '\\\\.\\pipe\\';

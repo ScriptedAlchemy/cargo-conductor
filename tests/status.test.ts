@@ -1,4 +1,5 @@
-import { homedir } from 'node:os';
+import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { homedir, tmpdir } from 'node:os';
 import { join, sep } from 'node:path';
 
 import { describe, expect, it } from '@rstest/core';
@@ -62,6 +63,31 @@ describe('portable state root', () => {
         CARGO_HAULER_STATE_DIR: '/current',
       }),
     ).toBe('/current');
+  });
+
+  it('treats an empty hauler override as unset before consulting the legacy variable', () => {
+    const env = {
+      CARGO_CONDUCTOR_STATE_DIR: '/legacy',
+      CARGO_HAULER_STATE_DIR: '',
+    };
+    expect(resolveStateDir(env)).toBe('/legacy');
+    expect(resolveDaemonConfig(env).stateDir).toBe('/legacy');
+    expect(resolveHookStateDir(env)).toBe('/legacy');
+  });
+
+  it('never selects a legacy directory merely because it exists', () => {
+    const cacheRoot = mkdtempSync(join(tmpdir(), 'cargo-hauler-state-resolution-'));
+    const legacyDir = join(cacheRoot, 'cargo-conductor');
+    mkdirSync(legacyDir);
+    try {
+      const env = { XDG_CACHE_HOME: cacheRoot };
+      const expected = join(cacheRoot, 'cargo-hauler');
+      expect(resolveStateDir(env)).toBe(expected);
+      expect(resolveDaemonConfig(env).stateDir).toBe(expected);
+      expect(resolveHookStateDir(env)).toBe(expected);
+    } finally {
+      rmSync(cacheRoot, { recursive: true, force: true });
+    }
   });
 
   it('keeps daemon config and hook clients on the same default', () => {
