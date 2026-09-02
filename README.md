@@ -66,7 +66,9 @@ attached request returns to its lane unless its required compilation units were
 already observed as successful. Folded tests share the composite process,
 output, and exit code.
 
-![cargo-hauler request normalization, lanes, admission, and concurrent Cargo processes](docs/media/cargo-hauler-scheduler.png)
+### How it works
+
+![cargo-hauler request normalization, lane-local serialization, scheduling, admission, and concurrent Cargo processes](docs/media/how-it-works.png)
 
 The scheduler estimates run cost from per-intent EWMA history. It can also use
 per-crate timing data from kache. Lower-cost work, requests with more attached
