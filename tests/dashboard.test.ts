@@ -48,6 +48,8 @@ import {
   waitMetricsView,
   metricsWindowLabel,
   memoryStatView,
+  admissionHoldDetail,
+  heavyAdmissionNote,
 } from '../src/dashboard/lib.js';
 
 const repoRoot = fileURLToPath(new URL('..', import.meta.url));
@@ -666,6 +668,28 @@ describe('memoryStatView', () => {
       label: 'mem free · psi —',
       value: '—',
     });
+  });
+});
+
+describe('heavy admission cues', () => {
+  it('notes the heavy count and cap only while relevant', () => {
+    expect(
+      heavyAdmissionNote({ heavy: { capActive: true, maxConcurrent: 1, running: 1 } }),
+    ).toBe('1 heavy, cap 1 under low memory');
+    expect(
+      heavyAdmissionNote({ heavy: { capActive: false, maxConcurrent: 1, running: 2 } }),
+    ).toBe('2 heavy');
+    expect(heavyAdmissionNote({ heavy: { capActive: false, maxConcurrent: 1, running: 0 } })).toBeNull();
+    expect(heavyAdmissionNote({})).toBeNull();
+    expect(heavyAdmissionNote({ heavy: { running: 'many' } })).toBeNull();
+  });
+
+  it('extracts the hold detail defensively', () => {
+    expect(admissionHoldDetail({ detail: 'load 3.10/core above 2.5/core', reason: 'load' })).toBe(
+      'load 3.10/core above 2.5/core',
+    );
+    expect(admissionHoldDetail(undefined)).toBeNull();
+    expect(admissionHoldDetail({ detail: '' })).toBeNull();
   });
 });
 

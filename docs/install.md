@@ -18,10 +18,10 @@ pnpm run build   # or `pnpm run check` to also run the typecheck and test gate
 `artifact/plugin` is the installable multi-host bundle (or `pnpm run dev` and
 open the portable target in the workbench playground). The same build writes
 the package binaries to `dist/bin/`: `hauler.js` (process entry) and
-`cargo-hauler.js` (routed CLI). The bundle's own `scripts/hauler.mjs` only
-provides `exec`, `daemon`, and `install-shim`; use `node dist/bin/hauler.js`
-for `status`, `log`, `last`, `await`, `result`, and `request`. The commands
-below assume you run them from `artifact/plugin`.
+`cargo-hauler.js` (routed CLI). The bundle's `scripts/hauler.mjs` handles
+`exec`, `daemon`, and `install-shim` itself and forwards `status`, `log`,
+`last`, `await`, `result`, and `request` to the bundle's `bin/cargo-hauler.mjs`.
+The commands below assume you run them from `artifact/plugin`.
 
 The bundle also ships `INSTALL.md` and `AGENTS.md` with the same commands for
 the exact compiled version.

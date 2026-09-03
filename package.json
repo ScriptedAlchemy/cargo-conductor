@@ -52,7 +52,7 @@
     "release:version": "changeset version"
   },
   "dependencies": {
-    "@agent-bundle/runtime": "https://pkg.pr.new/ScriptedAlchemy/agent-bundle/@agent-bundle/runtime@105c65d8f",
+    "@agent-bundle/runtime": "https://pkg.pr.new/ScriptedAlchemy/agent-bundle/@agent-bundle/runtime@4edbd493b",
     "@effect/atom-react": "4.0.0-rc.112",
     "@effect/platform-node": "4.0.0-rc.112",
     "@modelcontextprotocol/server": "2.0.0",
@@ -73,7 +73,7 @@
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.5",
     "@typescript/native-preview": "^7.0.0-dev.20260707.2",
-    "agent-bundle": "https://pkg.pr.new/ScriptedAlchemy/agent-bundle/agent-bundle@105c65d8f",
+    "agent-bundle": "https://pkg.pr.new/ScriptedAlchemy/agent-bundle/agent-bundle@4edbd493b",
     "effect-rstest": "https://pkg.pr.new/ScriptedAlchemy/effect-rstest@e5f8d5f",
     "typescript": "7.0.2"
   },

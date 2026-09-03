@@ -99,7 +99,11 @@ pressure level. Soft pressure (PSI at or above 10%, or macOS level `warn`)
 defers admission like load does, respecting the same floor. Hard pressure
 (PSI at or above 20% with `full avg60` at least half that, `MemAvailable`
 below 8 GiB, or macOS level `critical`) defers admission regardless of the
-floor; a bounded wait still prevents a deadlocked queue.
+floor; a bounded wait still prevents a deadlocked queue. While Linux
+`MemAvailable` is below 16 GiB, heavy leaders (`--release`/`-r`, non-dev
+`--profile`, `cargo bench`, `--workspace`/`--all`) are additionally capped to
+one at a time; other leaders, riders, and machines without the signal are
+unaffected.
 
 The per-run `CARGO_BUILD_JOBS` grant defaults to the available cores divided
 across the configured permit count, with a floor of four jobs. Separately, the
@@ -260,10 +264,10 @@ directory on `PATH`. Replacing an existing destination requires `--force`.
 
 `hauler` is the process entry (`src/scripts/hauler.ts`). It owns `exec`,
 `daemon`, and `install-shim` and forwards every other command to the routed
-`cargo-hauler` CLI (`src/cli/*`) when that binary sits beside it, which is the
-case for the package binaries in `dist/bin/`. The copy shipped inside each
-host artifact (`scripts/hauler.mjs`) has only the three process commands.
-Routed commands accept `--json` for the canonical result.
+`cargo-hauler` CLI (`src/cli/*`): `dist/bin/cargo-hauler.js` beside it in the
+package, or `bin/cargo-hauler.mjs` inside each host artifact, so an installed
+plugin's `scripts/hauler.mjs status` works too. Routed commands accept
+`--json` for the canonical result.
 
 | Command | Behavior |
 | --- | --- |
@@ -312,6 +316,8 @@ The daemon and hooks read the following environment variables:
 | `CARGO_HAULER_MEM_PRESSURE_HARD` | `20` (Linux) | Memory PSI `full avg10` percentage for hard deferral, confirmed by `full avg60` at half the value; `0` disables it. |
 | `CARGO_HAULER_MEM_AVAILABLE_MIN_GB` | `8` (Linux) | `MemAvailable` floor in GiB for hard deferral; `0` disables it. |
 | `CARGO_HAULER_MEM_PRESSURE_LEVEL` | `2` (macOS) | Kernel VM pressure level that starts soft deferral (`2` warn, `4` critical); level `4` is always hard. Any other value disables it. |
+| `CARGO_HAULER_HEAVY_MEM_AVAILABLE_GB` | `16` (Linux) | `MemAvailable` in GiB below which concurrent heavy leaders (release/perf/bench profiles, workspace-wide runs) are capped; `0` or `off` disables the cap. On a machine with 16 GB or less this is always below the default, so heavy leaders serialize unless you lower or disable it. |
+| `CARGO_HAULER_HEAVY_MAX_CONCURRENT` | `1` | Heavy leaders admitted at once while the cap is active. |
 | `CARGO_HAULER_REPLAY_BUFFER_BYTES` | `4194304` | Leader output retained in memory for late-attacher replay. |
 | `CARGO_HAULER_KACHE_INDEX` | kache's configured store | kache index for per-crate timing priors; an empty string disables it. |
 | `CARGO_HAULER_BATCH` | Enabled | `0` disables the batch composer. |
@@ -394,7 +400,7 @@ repository.
 
 agent-bundle does not yet have an npm release. This repository pins a
 [pkg.pr.new](https://pkg.pr.new) preview of main commit
-[`105c65d8f`](https://github.com/ScriptedAlchemy/agent-bundle/commit/105c65d8f).
+[`4edbd493b`](https://github.com/ScriptedAlchemy/agent-bundle/commit/4edbd493b).
 The compile targets are `plugin`, which produces the multi-host artifact, and
 `portable`, which runs in the Workbench.
 

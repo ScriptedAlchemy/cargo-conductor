@@ -17,6 +17,10 @@
  *   build cannot be starved forever by a stream of quick checks.
  */
 
+import { parseCargoArgv } from './intent-normalizer.js';
+import type { ParsedCargoArgv } from './intent-normalizer.js';
+import type { AdmissionDeferReason, AdmissionHold } from './protocol.js';
+
 export interface ScheduleCandidate {
   readonly id: number;
   readonly estimateMs: number;
@@ -70,9 +74,55 @@ export interface AdmissionLoadInput {
   readonly memPressureLevel?: number | null;
   /** Minimum macOS level for soft admission; null disables the macOS arm. */
   readonly memPressureLevelThreshold?: number | null;
+  /** True when the candidate leader is a heavy (release/perf/workspace) build. */
+  readonly heavy?: boolean;
+  /** Heavy leaders currently admitted. */
+  readonly heavyRunning?: number;
+  /** MemAvailable below which heavy leaders are capped; null disables the cap. */
+  readonly heavyMemAvailableBytes?: number | null;
+  /** Heavy leaders allowed at once while the cap is active (floor 1). */
+  readonly heavyMaxConcurrent?: number;
 }
 
 export type MemoryClampState = 'none' | 'soft' | 'hard';
+
+export type AdmissionDecision =
+  | { readonly defer: false }
+  | { readonly defer: true; readonly reason: AdmissionDeferReason };
+
+/** Profiles cheap enough that a stacked pair does not risk an OOM storm. */
+const lightProfiles = new Set(['dev', 'test', 'check']);
+
+type HeavyIntentShape = Pick<ParsedCargoArgv, 'profile' | 'subcommand' | 'workspace'>;
+
+/**
+ * Release/perf/bench-style profiles and workspace-wide invocations: the
+ * builds whose rustc RSS stacks into the OOM kill storms the cap prevents.
+ */
+export const isHeavyIntent = (intent: HeavyIntentShape): boolean =>
+  intent.workspace || intent.subcommand === 'bench' || !lightProfiles.has(intent.profile);
+
+/** `isHeavyIntent` over raw argv; unparsable invocations are not heavy. */
+export const isHeavyProfile = (argv: readonly string[]): boolean => {
+  try {
+    return isHeavyIntent(parseCargoArgv(argv));
+  } catch {
+    return false;
+  }
+};
+
+/** True when MemAvailable is known and below the heavy-cap threshold. */
+export const heavyCapActive = (
+  input: Pick<AdmissionLoadInput, 'memAvailableBytes' | 'heavyMemAvailableBytes'>,
+): boolean =>
+  input.memAvailableBytes != null &&
+  input.heavyMemAvailableBytes != null &&
+  input.memAvailableBytes < input.heavyMemAvailableBytes;
+
+const heavyCapDefers = (input: AdmissionLoadInput): boolean =>
+  input.heavy === true &&
+  heavyCapActive(input) &&
+  (input.heavyRunning ?? 0) >= Math.max(1, input.heavyMaxConcurrent ?? 1);
 
 /** Memory-only clamp state, independent of the current concurrency floor. */
 export const memoryClampState = (input: AdmissionLoadInput): MemoryClampState => {
@@ -105,32 +155,84 @@ export const memoryClampState = (input: AdmissionLoadInput): MemoryClampState =>
 };
 
 /**
- * True when admission should wait for machine load to subside. The clamp
- * normally never throttles below minConcurrent running builds. Hard memory
- * pressure bypasses that floor, but the caller's bounded deadline still
- * prevents a deadlocked queue.
+ * Whether admission should wait for machine load to subside, and which arm
+ * tripped. The clamp normally never throttles below minConcurrent running
+ * builds. Hard memory pressure and the heavy-leader cap bypass that floor,
+ * but the caller's bounded deadline still prevents a deadlocked queue.
  */
-export const shouldDeferAdmission = (input: AdmissionLoadInput): boolean => {
+export const admissionDecision = (input: AdmissionLoadInput): AdmissionDecision => {
   const memClamp = memoryClampState(input);
   if (memClamp === 'hard') {
-    return true;
+    return { defer: true, reason: 'memory-hard' };
+  }
+  if (heavyCapDefers(input)) {
+    return { defer: true, reason: 'heavy-profile-cap' };
   }
   if (input.running < Math.max(1, input.minConcurrent)) {
-    return false;
+    return { defer: false };
   }
   if (memClamp === 'soft') {
-    return true;
+    return { defer: true, reason: 'memory-soft' };
   }
   if (input.loadPerCore > input.thresholdPerCore) {
-    return true;
+    return { defer: true, reason: 'load' };
   }
-  return (
+  if (
     input.cpuStallPercent !== undefined &&
     input.cpuStallPercent !== null &&
     input.cpuStallThreshold !== undefined &&
     input.cpuStallThreshold !== null &&
     input.cpuStallPercent > input.cpuStallThreshold
-  );
+  ) {
+    return { defer: true, reason: 'cpu-stall' };
+  }
+  return { defer: false };
+};
+
+export const shouldDeferAdmission = (input: AdmissionLoadInput): boolean =>
+  admissionDecision(input).defer;
+
+const formatGib = (bytes: number): string => {
+  const gib = bytes / 1024 ** 3;
+  return `${Number.isInteger(gib) ? String(gib) : gib.toFixed(1)} GiB`;
+};
+
+/** Human-readable hold text for a deferred decision, from the same input. */
+export const admissionHoldFor = (
+  input: AdmissionLoadInput,
+  reason: AdmissionDeferReason,
+): AdmissionHold => {
+  switch (reason) {
+    case 'heavy-profile-cap': {
+      const heavyRunning = input.heavyRunning ?? 0;
+      const memory =
+        input.memAvailableBytes != null && input.heavyMemAvailableBytes != null
+          ? ` and MemAvailable ${formatGib(input.memAvailableBytes)} < ${formatGib(input.heavyMemAvailableBytes)}`
+          : '';
+      return {
+        reason,
+        detail: `${heavyRunning} heavy (release/perf/workspace) build${heavyRunning === 1 ? '' : 's'} already running${memory}`,
+      };
+    }
+    case 'memory-hard':
+      return { reason, detail: 'hard memory pressure (admission paused)' };
+    case 'memory-soft':
+      return { reason, detail: 'memory pressure (admission reduced)' };
+    case 'load':
+      return {
+        reason,
+        detail: `load ${input.loadPerCore.toFixed(2)}/core above ${input.thresholdPerCore}/core`,
+      };
+    case 'cpu-stall':
+      return {
+        reason,
+        detail: `cpu stall ${input.cpuStallPercent?.toFixed(1) ?? '?'}% above ${input.cpuStallThreshold ?? '?'}%`,
+      };
+    default: {
+      const exhaustive: never = reason;
+      return exhaustive;
+    }
+  }
 };
 
 /** Index of the candidate to run next, or -1 when empty. Ties go to the older (lower) id. */

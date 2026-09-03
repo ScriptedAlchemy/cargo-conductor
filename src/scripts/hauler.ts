@@ -22,9 +22,8 @@ import {
  * The process-level entry: `exec` owns stdout/stderr byte-for-byte for the
  * cargo stream, `install-shim` embeds its own path, and `daemon` is what the
  * detached spawn re-enters. Everything else is a routed CLI command
- * (`src/cli/**`) and is forwarded to the generated `cargo-hauler` bin when it
- * sits next to this script (the npm package); inside a host artifact only
- * the three process commands exist.
+ * (`src/cli/**`) and is forwarded to the generated `cargo-hauler` bin: beside
+ * this script in the npm package, or under `bin/` in a host artifact.
  */
 const usage = `Usage: hauler <command>
 
@@ -210,10 +209,19 @@ const runDaemonCommand = async (
   }
 };
 
-/** The generated routed CLI, emitted beside this script in the npm package. */
+/**
+ * The generated routed CLI: `dist/bin/cargo-hauler.js` beside this script in
+ * the npm package, or `bin/cargo-hauler.mjs` one level up in a host artifact
+ * (where this script lives under `scripts/`).
+ */
 const routedCliPath = (): string | null => {
-  const sibling = fileURLToPath(new URL('./cargo-hauler.js', import.meta.url));
-  return existsSync(sibling) ? sibling : null;
+  for (const candidate of ['./cargo-hauler.js', '../bin/cargo-hauler.mjs']) {
+    const path = fileURLToPath(new URL(candidate, import.meta.url));
+    if (existsSync(path)) {
+      return path;
+    }
+  }
+  return null;
 };
 
 const forwardToRoutedCli = (argv: readonly string[], options: ScriptOptions): Promise<number> =>

@@ -7,6 +7,7 @@ import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { createRoot } from 'react-dom/client';
 
 import {
+  admissionHoldDetail,
   argvText,
   argvTitle,
   attachSavings,
@@ -20,6 +21,7 @@ import {
   formatMs,
   frequencyEntries,
   frequencyTotal,
+  heavyAdmissionNote,
   kacheColumns,
   kacheProfileGroups,
   laneIsActive,
@@ -90,6 +92,7 @@ interface SystemLoadShape {
   readonly memFullAvg10?: unknown;
   readonly memPressureLevel?: unknown;
   readonly memSomeAvg10?: unknown;
+  readonly heavy?: unknown;
 }
 
 interface DiskUtilShape {
@@ -183,6 +186,7 @@ interface RequestRow {
   readonly startedAtMs?: unknown;
   readonly estimateMs?: unknown;
   readonly delayed?: unknown;
+  readonly admissionHold?: unknown;
   readonly quietMs?: unknown;
   readonly workspaceRoot?: unknown;
   readonly intentJson?: unknown;
@@ -492,12 +496,14 @@ const waitingCell = (
   sinceMs: unknown,
   estimateMs: unknown,
   delayed: unknown,
+  admissionHold: unknown,
   nowMs: number,
 ): ReactNode => {
   if (typeof sinceMs !== 'number') {
     return '—';
   }
   const cue = delayedWaitCue(delayed);
+  const held = admissionHoldDetail(admissionHold);
   return (
     <>
       <span className="dur">{formatMs(Math.max(0, nowMs - sinceMs))}</span>
@@ -506,6 +512,14 @@ const waitingCell = (
           {' '}· est ~{formatMs(estimateMs)}
         </span>
       ) : null}
+      {held === null ? null : (
+        <>
+          {' '}
+          <span className="pill neutral" title={`admission held: ${held}`}>
+            held
+          </span>
+        </>
+      )}
       {cue === null ? null : (
         <>
           {' '}
@@ -673,10 +687,12 @@ const Stat = ({
 );
 
 const AdmissionMeter = ({
+  heavyNote,
   maxConcurrent,
   permitHolders,
   riders,
 }: {
+  readonly heavyNote: string | null;
   readonly maxConcurrent: number;
   readonly permitHolders: number;
   readonly riders: number;
@@ -691,11 +707,12 @@ const AdmissionMeter = ({
       <b>
         {permitHolders}/{maxConcurrent > 0 ? maxConcurrent : '—'}
         {riders > 0 ? <span className="est"> +{riders} riding</span> : null}
+        {heavyNote === null ? null : <span className="est"> · {heavyNote}</span>}
       </b>
       <span>admission</span>
       <div
         className="meter"
-        title={`${permitHolders} of ${maxConcurrent} admission permits in use; ${riders} attached request${riders === 1 ? '' : 's'} riding leaders`}
+        title={`${permitHolders} of ${maxConcurrent} admission permits in use; ${riders} attached request${riders === 1 ? '' : 's'} riding leaders${heavyNote === null ? '' : `; ${heavyNote} (CARGO_HAULER_HEAVY_MEM_AVAILABLE_GB / CARGO_HAULER_HEAVY_MAX_CONCURRENT)`}`}
       >
         <div className="meter-fill" style={{ width: `${percent}%` }} />
       </div>
@@ -1363,6 +1380,7 @@ const DashboardContent = ({ structured }: { readonly structured: StructuredConte
                 <MemoryStat system={system} />
                 <DiskIoStat system={system} />
                 <AdmissionMeter
+                  heavyNote={heavyAdmissionNote(system ?? {})}
                   permitHolders={permitHolders}
                   riders={riders}
                   maxConcurrent={maxConcurrent}
@@ -1416,7 +1434,7 @@ const DashboardContent = ({ structured }: { readonly structured: StructuredConte
               rows={queueRows.map((row) => ({
                 cells: [
                   ...requestCells(row),
-                  waitingCell(row.createdAtMs, row.estimateMs, row.delayed, nowMs),
+                  waitingCell(row.createdAtMs, row.estimateMs, row.delayed, row.admissionHold, nowMs),
                   typeof row.attachedTo === 'string' ? <AttachChip row={row} /> : '—',
                 ],
                 onSelect: selectRow(row),

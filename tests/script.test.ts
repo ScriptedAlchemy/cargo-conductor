@@ -1,3 +1,4 @@
+import { spawnSync } from 'node:child_process';
 import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -190,4 +191,25 @@ describe('hauler script', () => {
     expect(result.code).toBe(2);
     expect(result.text).toContain('cargo-hauler --help');
   });
+
+  const artifactScript = join(import.meta.dirname, '..', 'artifact', 'plugin', 'scripts', 'hauler.mjs');
+
+  it.skipIf(!existsSync(artifactScript))(
+    'forwards routed commands to bin/cargo-hauler.mjs inside a built host artifact',
+    async () => {
+      const stateDir = mkdtempSync(join(tmpdir(), 'cargo-hauler-artifact-'));
+      try {
+        const child = spawnSync(process.execPath, [artifactScript, 'status', '--json'], {
+          encoding: 'utf8',
+          env: { ...process.env, CARGO_HAULER_KACHE_INDEX: '', CARGO_HAULER_STATE_DIR: stateDir },
+        });
+        expect(child.status).toBe(0);
+        const parsed: unknown = JSON.parse(child.stdout);
+        expect(parsed).toMatchObject({ daemon: 'stopped' });
+      } finally {
+        rmSync(stateDir, { recursive: true, force: true });
+      }
+    },
+    30_000,
+  );
 });

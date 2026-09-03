@@ -82,6 +82,30 @@ describe('daemon config platform posture', () => {
     ).toBeNull();
   });
 
+  it('caps heavy leaders under low MemAvailable only where the signal exists', () => {
+    expect(resolveDaemonConfig({}, 'linux')).toMatchObject({
+      heavyMaxConcurrent: 1,
+      heavyMemAvailableBytes: 16 * 1024 ** 3,
+    });
+    expect(resolveDaemonConfig({}, 'darwin').heavyMemAvailableBytes).toBeNull();
+    expect(resolveDaemonConfig({}, 'win32').heavyMemAvailableBytes).toBeNull();
+    expect(
+      resolveDaemonConfig(
+        { CARGO_HAULER_HEAVY_MAX_CONCURRENT: '2', CARGO_HAULER_HEAVY_MEM_AVAILABLE_GB: '24' },
+        'linux',
+      ),
+    ).toMatchObject({ heavyMaxConcurrent: 2, heavyMemAvailableBytes: 24 * 1024 ** 3 });
+    for (const disabled of ['0', 'off']) {
+      expect(
+        resolveDaemonConfig({ CARGO_HAULER_HEAVY_MEM_AVAILABLE_GB: disabled }, 'linux')
+          .heavyMemAvailableBytes,
+      ).toBeNull();
+    }
+    expect(
+      resolveDaemonConfig({ CARGO_HAULER_HEAVY_MAX_CONCURRENT: '0' }, 'linux').heavyMaxConcurrent,
+    ).toBe(1);
+  });
+
   it('retains legacy tuning aliases because they cannot change state identity', () => {
     const legacy = resolveDaemonConfig({
       CARGO_CONDUCTOR_BATCH: '0',

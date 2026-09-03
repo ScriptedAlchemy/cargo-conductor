@@ -267,6 +267,7 @@ export const parseCargoArgv = (input: readonly string[]): ParsedCargoArgv => {
       case '--no-default-features':
         noDefaultFeatures = true;
         break;
+      case '-r':
       case '--release':
         profile = 'release';
         break;

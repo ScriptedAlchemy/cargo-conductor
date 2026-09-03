@@ -72,6 +72,7 @@ const formatAwaitedRecord = (ticket: string, record: RequestRecord): string => {
         delayed: record.delayed,
         elapsedMs: Date.now() - (record.queuedAtMs ?? record.createdAtMs),
         estimateMs: record.estimateMs,
+        hold: record.admissionHold,
         kind: 'heartbeat',
         laneName: basename(record.workspaceRoot),
         phase: 'queued',

@@ -2,6 +2,7 @@ import { z } from 'zod';
 
 import { awaitCeilingMs } from '../daemon/protocol.js';
 import type {
+  AdmissionHold,
   AttachmentSavingsReport,
   SystemLoadReport,
   KacheStatusReport,
@@ -36,6 +37,11 @@ const queueContextSchema = z.object({
   position: z.number().int().nonnegative(),
   waitEtaMs: z.number().nonnegative(),
 });
+
+const admissionHoldSchema = z.object({
+  detail: z.string(),
+  reason: z.enum(['memory-hard', 'heavy-profile-cap', 'memory-soft', 'load', 'cpu-stall']),
+}) satisfies z.ZodType<AdmissionHold>;
 
 // Daemon-sourced payloads deliberately STRIP unknown keys instead of
 // rejecting them (issue #4): plugin snapshots outlive daemon upgrades, and a
@@ -81,6 +87,7 @@ export const requestRecordSchema = z.object({
   queue: queueContextSchema.optional(),
   delayed: z.boolean().optional(),
   quietMs: z.number().nonnegative().optional(),
+  admissionHold: admissionHoldSchema.optional(),
 }) satisfies z.ZodType<RequestRecord>;
 
 const laneStatusSchema = z.object({
@@ -158,6 +165,13 @@ const systemLoadSchema = z.object({
   memAvailableBytes: z.number().int().nonnegative().optional(),
   memPressureLevel: z.union([z.literal(1), z.literal(2), z.literal(4)]).optional(),
   memClamp: z.enum(['none', 'soft', 'hard']).optional(),
+  heavy: z
+    .object({
+      capActive: z.boolean(),
+      maxConcurrent: z.number().int().positive(),
+      running: z.number().int().nonnegative(),
+    })
+    .optional(),
 }) satisfies z.ZodType<SystemLoadReport>;
 
 const kacheStatusSchema = z.object({

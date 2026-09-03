@@ -8,7 +8,7 @@ import { cargoJsonDemuxFlag } from '../lib/argv.js';
 import { hasLibKind } from './cargo-json.js';
 import type { TailBuffer } from './executor.js';
 import type { NormalizedCargoIntent } from './intent-normalizer.js';
-import type { AttachMode, FinishedStatus } from './protocol.js';
+import type { AdmissionHold, AttachMode, FinishedStatus } from './protocol.js';
 import type { ReplayAudience, ReplayBuffer, ReplayChunk } from './replay.js';
 
 /**
@@ -165,6 +165,8 @@ export interface Job {
   startedAtMs: number | null;
   /** Start time or most recent brokered output, for output-silence visibility. */
   lastOutputAtMs: number | null;
+  /** Set while an admission arm holds this lane head back from its permit. */
+  admissionHold: AdmissionHold | null;
   /** Fail-fast signal captured at submission (topology stat, cached). */
   readonly editedRecently: boolean;
   /** Workspace-internal transitive deps of this job's packages (topology, cached). */

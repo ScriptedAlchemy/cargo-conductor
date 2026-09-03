@@ -10,7 +10,7 @@ import { defineConfig } from 'agent-bundle/config';
  * - `src/events/**` → tool/before, tool/after, and stop event handlers.
  * - `src/cli/**` → the generated `cargo-hauler` routed CLI (package bin).
  * - `src/scripts/hauler.ts` → `scripts/hauler.mjs` in every host artifact
- *   (the hook rewrite target; see `scripts`) and the package `hauler` bin.
+ *   (the hook rewrite target) and the package `hauler` bin.
  * - `src/providers/daemon-config.ts` → per-request daemon config.
  * - `src/skills/*` → skills.
  * - Version comes from package.json (`agent-bundle/meta` in code).
@@ -31,16 +31,7 @@ export default defineConfig({
     name: 'cargo-hauler',
   },
   runtime: { node: '22.19.0' },
-  // Declared explicitly rather than discovered: a `bin` claim removes the
-  // module from conventional route discovery, and the artifact script is
-  // what the hooks rewrite cargo to (`scripts/hauler.mjs exec …`).
-  scripts: {
-    hauler: './src/scripts/hauler.ts',
-  },
-  // `plugin` emits Claude, Codex, and Cursor into one bundle (and AGENTS.md).
-  // Listing `claude`/`cursor`/`plugin` together trips AB6017: those names are
-  // all 6 chars, and pathInTargetOutputLayout slices by name length, so each
-  // target's MCP entries are attributed to the others.
-  // `portable` is the workbench playground target (different name length).
+  // `plugin` emits Claude, Codex, and Cursor into one bundle (and AGENTS.md);
+  // `portable` is the workbench playground target.
   targets: ['plugin', 'portable'],
 });

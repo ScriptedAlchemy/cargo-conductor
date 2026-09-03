@@ -51,9 +51,22 @@ import {
   memoryPressureLevel,
   memoryPsi,
 } from './pressure.js';
-import type { FinishedStatus, LaneStatus, QueueContext } from './protocol.js';
+import type {
+  AdmissionHold,
+  FinishedStatus,
+  HeavyAdmissionReport,
+  LaneStatus,
+  QueueContext,
+} from './protocol.js';
 import { ReplayBuffer } from './replay.js';
-import { selectNextIndex, shouldDeferAdmission } from './scheduler.js';
+import {
+  admissionDecision,
+  admissionHoldFor,
+  heavyCapActive,
+  isHeavyIntent,
+  selectNextIndex,
+} from './scheduler.js';
+import type { AdmissionLoadInput } from './scheduler.js';
 import type { TicketDirectory } from './ticket-directory.js';
 import type { TopologyApi } from './topology.js';
 
@@ -109,8 +122,13 @@ export interface LaneRuntime {
     readonly queue?: QueueContext;
     readonly delayed?: true;
     readonly quietMs?: number;
+    readonly admissionHold?: AdmissionHold;
   }>;
   readonly interruptWorkers: () => Effect.Effect<void>;
+  /** Heavy-cap state for status; null when the cap is disabled. */
+  readonly heavyAdmission: (
+    memAvailableBytes: number | null,
+  ) => Effect.Effect<HeavyAdmissionReport | null>;
 }
 
 export const makeLaneRuntime = (deps: LaneRuntimeDeps): Effect.Effect<LaneRuntime> =>
@@ -119,6 +137,9 @@ export const makeLaneRuntime = (deps: LaneRuntimeDeps): Effect.Effect<LaneRuntim
 
     const admission = yield* Semaphore.make(config.maxConcurrent);
     const admittedCount = yield* Ref.make(0);
+    // Heavy leaders claim their slot as the gate admits them, before the
+    // permit wait, so two heavies parked on the semaphore cannot both pass.
+    const heavyAdmittedCount = yield* Ref.make(0);
     const laneCreation = yield* Semaphore.make(1);
     const lanes = new Map<string, Lane>();
     const laneWorkers = new Set<Fiber.Fiber<never, never>>();
@@ -175,6 +196,7 @@ export const makeLaneRuntime = (deps: LaneRuntimeDeps): Effect.Effect<LaneRuntim
           estimateMs,
           startedAtMs: null,
           lastOutputAtMs: null,
+          admissionHold: null,
           editedRecently,
           depClosure,
         };
@@ -578,59 +600,102 @@ export const makeLaneRuntime = (deps: LaneRuntimeDeps): Effect.Effect<LaneRuntim
 
     // Admission clamp: load, CPU PSI, and soft memory pressure respect the
     // loadMinConcurrent progress floor. Sustained hard memory PSI (avg60 must
-    // reach half the hard threshold), low MemAvailable, and macOS critical
-    // pressure bypass that floor. Every arm still shares this bounded wait,
-    // so the queue cannot deadlock and gated jobs remain killable.
+    // reach half the hard threshold), low MemAvailable, macOS critical
+    // pressure, and the heavy-leader cap bypass that floor. Every arm still
+    // shares this bounded wait, so the queue cannot deadlock and gated jobs
+    // remain killable.
     const loadGateDeadlineMs = 120_000;
-    const waitForLoadHeadroom: Effect.Effect<void> =
+    const gateDisabled =
       config.loadThresholdPerCore === null &&
       config.cpuStallThreshold === null &&
       config.memPressureSoftThreshold === null &&
       config.memPressureHardThreshold === null &&
       config.memAvailableMinBytes === null &&
-      config.memPressureLevelThreshold === null
+      config.memPressureLevelThreshold === null &&
+      config.heavyMemAvailableBytes === null;
+    const sampleMemAvailable =
+      config.memAvailableMinBytes !== null || config.heavyMemAvailableBytes !== null;
+
+    const sampleAdmissionInput = (running: number, heavy: boolean): AdmissionLoadInput => {
+      const memPsi =
+        config.memPressureSoftThreshold === null && config.memPressureHardThreshold === null
+          ? null
+          : memoryPsi();
+      return {
+        cpuStallPercent: config.cpuStallThreshold === null ? null : cpuSomeAvg10(),
+        cpuStallThreshold: config.cpuStallThreshold,
+        heavy,
+        heavyMaxConcurrent: config.heavyMaxConcurrent,
+        heavyMemAvailableBytes: config.heavyMemAvailableBytes,
+        loadPerCore: loadavg()[0] / availableParallelism(),
+        memAvailableBytes: sampleMemAvailable ? memoryAvailableBytes() : null,
+        memAvailableMinBytes: config.memAvailableMinBytes,
+        memFullAvg10: memPsi?.fullAvg10 ?? null,
+        memFullAvg60: memPsi?.fullAvg60 ?? null,
+        memHardThreshold: config.memPressureHardThreshold,
+        memPressureLevel:
+          config.memPressureLevelThreshold === null ? null : memoryPressureLevel(),
+        memPressureLevelThreshold: config.memPressureLevelThreshold,
+        memSoftThreshold: config.memPressureSoftThreshold,
+        minConcurrent: config.loadMinConcurrent,
+        running,
+        // A disabled loadavg arm never trips; PSI can gate on its own.
+        thresholdPerCore: config.loadThresholdPerCore ?? Number.POSITIVE_INFINITY,
+      };
+    };
+
+    const claimHeavy = Ref.update(heavyAdmittedCount, (count) => count + 1);
+    const releaseHeavy = Ref.update(heavyAdmittedCount, (count) => count - 1);
+    const heavyLeader = (job: Job): boolean =>
+      config.heavyMemAvailableBytes !== null && isHeavyIntent(job.intent);
+
+    /**
+     * Resolves once every admission arm clears or the bounded deadline
+     * passes. A heavy leader returns holding its heavy slot, claimed in the
+     * same atomic step as the decision and recorded in `claimed` so the
+     * caller's finalizer releases it even if the fiber is interrupted between
+     * this wait and the permit acquisition.
+     */
+    const waitForLoadHeadroom = (
+      job: Job,
+      heavy: boolean,
+      claimed: { value: boolean },
+    ): Effect.Effect<void> =>
+      gateDisabled
         ? Effect.void
         : Effect.gen(function* () {
-            // A disabled loadavg arm never trips; PSI can gate on its own.
-            const thresholdPerCore = config.loadThresholdPerCore ?? Number.POSITIVE_INFINITY;
             const deadline = Date.now() + loadGateDeadlineMs;
             while (Date.now() < deadline) {
               const running = yield* Ref.get(admittedCount);
-              const loadPerCore = loadavg()[0] / availableParallelism();
-              const cpuStallPercent = config.cpuStallThreshold === null ? null : cpuSomeAvg10();
-              const memPsi =
-                config.memPressureSoftThreshold === null &&
-                config.memPressureHardThreshold === null
-                  ? null
-                  : memoryPsi();
-              const memAvailable =
-                config.memAvailableMinBytes === null ? null : memoryAvailableBytes();
-              const memLevel =
-                config.memPressureLevelThreshold === null ? null : memoryPressureLevel();
-              if (
-                !shouldDeferAdmission({
-                  cpuStallPercent,
-                  cpuStallThreshold: config.cpuStallThreshold,
-                  loadPerCore,
-                  memAvailableBytes: memAvailable,
-                  memAvailableMinBytes: config.memAvailableMinBytes,
-                  memFullAvg10: memPsi?.fullAvg10 ?? null,
-                  memFullAvg60: memPsi?.fullAvg60 ?? null,
-                  memHardThreshold: config.memPressureHardThreshold,
-                  memPressureLevel: memLevel,
-                  memPressureLevelThreshold: config.memPressureLevelThreshold,
-                  memSoftThreshold: config.memPressureSoftThreshold,
-                  minConcurrent: config.loadMinConcurrent,
-                  running,
-                  thresholdPerCore,
-                })
-              ) {
+              const sample = yield* Effect.sync(() => sampleAdmissionInput(running, heavy));
+              const { decision, input } = yield* Ref.modify(heavyAdmittedCount, (heavyRunning) => {
+                const input: AdmissionLoadInput = { ...sample, heavyRunning };
+                const decision = admissionDecision(input);
+                const claim = !decision.defer && heavy;
+                claimed.value = claim;
+                return [{ decision, input }, claim ? heavyRunning + 1 : heavyRunning] as const;
+              });
+              if (!decision.defer) {
+                yield* Effect.sync(() => {
+                  job.admissionHold = null;
+                });
                 return;
               }
+              const hold = admissionHoldFor(input, decision.reason);
+              yield* Effect.sync(() => {
+                job.admissionHold = hold;
+              });
               yield* Effect.logDebug(
-                `admission deferred: load/core ${loadPerCore.toFixed(2)} (threshold ${thresholdPerCore}), cpu stall ${cpuStallPercent?.toFixed(1) ?? 'n/a'}% (threshold ${config.cpuStallThreshold ?? 'off'}), memory full avg10 ${memPsi?.fullAvg10.toFixed(1) ?? 'n/a'}%, avg60 ${memPsi?.fullAvg60.toFixed(1) ?? 'n/a'}%, available ${memAvailable ?? 'n/a'} bytes, macOS level ${memLevel ?? 'n/a'} with ${running} running`,
+                `admission deferred (${hold.reason}): ${hold.detail}; load/core ${input.loadPerCore.toFixed(2)}, cpu stall ${input.cpuStallPercent?.toFixed(1) ?? 'n/a'}%, memory full avg10 ${input.memFullAvg10?.toFixed(1) ?? 'n/a'}%, avg60 ${input.memFullAvg60?.toFixed(1) ?? 'n/a'}%, available ${input.memAvailableBytes ?? 'n/a'} bytes, macOS level ${input.memPressureLevel ?? 'n/a'} with ${running} running (${input.heavyRunning ?? 0} heavy)`,
               );
               yield* Effect.sleep('2 seconds');
+            }
+            yield* Effect.sync(() => {
+              job.admissionHold = null;
+            });
+            if (heavy) {
+              yield* claimHeavy;
+              claimed.value = true;
             }
           });
 
@@ -644,12 +709,18 @@ export const makeLaneRuntime = (deps: LaneRuntimeDeps): Effect.Effect<LaneRuntim
         if (state === 'finished') {
           return;
         }
-        yield* waitForLoadHeadroom;
-        yield* admission.withPermits(1)(
-          Ref.update(admittedCount, (count) => count + 1).pipe(
-            Effect.andThen(runAdmitted(lane, job)),
-            Effect.ensuring(Ref.update(admittedCount, (count) => count - 1)),
+        const heavy = heavyLeader(job);
+        const claimed = { value: false };
+        yield* waitForLoadHeadroom(job, heavy, claimed).pipe(
+          Effect.andThen(
+            admission.withPermits(1)(
+              Ref.update(admittedCount, (count) => count + 1).pipe(
+                Effect.andThen(runAdmitted(lane, job)),
+                Effect.ensuring(Ref.update(admittedCount, (count) => count - 1)),
+              ),
+            ),
           ),
+          Effect.ensuring(Effect.suspend(() => (claimed.value ? releaseHeavy : Effect.void))),
         );
       }).pipe(Effect.onInterrupt(() => settleInterruptedJob(job)));
 
@@ -804,14 +875,17 @@ export const makeLaneRuntime = (deps: LaneRuntimeDeps): Effect.Effect<LaneRuntim
         const ownEstimateMs =
           entry.kind === 'leader' ? entry.job.estimateMs : entry.attachment.estimateMs;
         const delayed = queuedWaitIsDelayed(Math.max(0, atMs - ownCreatedAtMs), ownEstimateMs);
+        // A lane head parked at the admission gate is neither pending nor running.
+        const held =
+          leader.admissionHold === null ? {} : { admissionHold: leader.admissionHold };
         const lane = lanes.get(leader.laneKey);
         if (lane === undefined) {
-          return delayed ? { delayed: true } : {};
+          return delayed ? { delayed: true, ...held } : held;
         }
         const pending = orderedPending(lane, atMs);
         const targetIndex = pending.indexOf(leader);
         if (targetIndex === -1) {
-          return delayed ? { delayed: true } : {};
+          return delayed ? { delayed: true, ...held } : held;
         }
 
         const ahead = pending.slice(0, targetIndex);
@@ -855,6 +929,20 @@ export const makeLaneRuntime = (deps: LaneRuntimeDeps): Effect.Effect<LaneRuntim
         yield* Effect.sync(() => laneWorkers.clear());
       });
 
+    const heavyAdmission: LaneRuntime['heavyAdmission'] = (memAvailableBytes) =>
+      config.heavyMemAvailableBytes === null
+        ? Effect.succeed(null)
+        : Ref.get(heavyAdmittedCount).pipe(
+            Effect.map((running) => ({
+              running,
+              maxConcurrent: config.heavyMaxConcurrent,
+              capActive: heavyCapActive({
+                heavyMemAvailableBytes: config.heavyMemAvailableBytes,
+                memAvailableBytes,
+              }),
+            })),
+          );
+
     return {
       attachments,
       getOrCreateLane,
@@ -864,5 +952,6 @@ export const makeLaneRuntime = (deps: LaneRuntimeDeps): Effect.Effect<LaneRuntim
       laneStatuses,
       requestStatusFields,
       interruptWorkers,
+      heavyAdmission,
     } satisfies LaneRuntime;
   });

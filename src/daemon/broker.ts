@@ -550,6 +550,7 @@ export const BrokerLive: Layer.Layer<
           });
           return { availableBytes, clamp, pressureLevel, psi };
         });
+        const heavy = yield* lanesRuntime.heavyAdmission(memorySample.availableBytes);
         return {
           pid: process.pid,
           startedAtMs,
@@ -582,6 +583,7 @@ export const BrokerLive: Layer.Layer<
               ? {}
               : { memPressureLevel: memorySample.pressureLevel }),
             memClamp: memorySample.clamp,
+            ...(heavy === null ? {} : { heavy }),
           },
           metrics: {
             cargo_run_ms: histogramSnapshot(cargoRun),

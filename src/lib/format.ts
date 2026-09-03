@@ -82,3 +82,20 @@ export const commandDisplay = (argv: readonly string[]): string => {
   const [program, ...args] = argv;
   return program === undefined ? '' : [pathBasename(program), ...args].join(' ');
 };
+
+/**
+ * Admission note for the heavy-leader cap, e.g. "1 heavy, cap 1 under low
+ * memory". Null unless the cap is currently active or a heavy build is running.
+ */
+export const heavyCapNote = (
+  heavy:
+    | { readonly running: number; readonly maxConcurrent: number; readonly capActive: boolean }
+    | undefined,
+): string | null => {
+  if (heavy === undefined || (!heavy.capActive && heavy.running === 0)) {
+    return null;
+  }
+  return heavy.capActive
+    ? `${heavy.running} heavy, cap ${heavy.maxConcurrent} under low memory`
+    : `${heavy.running} heavy`;
+};

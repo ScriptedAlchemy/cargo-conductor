@@ -1,4 +1,4 @@
-import type { AttachMode, QueueContext } from '../daemon/protocol.js';
+import type { AdmissionHold, AttachMode, QueueContext } from '../daemon/protocol.js';
 
 export type ProgressEvent =
   | {
@@ -34,6 +34,7 @@ export type ProgressEvent =
       readonly estimateMs?: number | null;
       readonly laneName?: string;
       readonly queue?: QueueContext;
+      readonly hold?: AdmissionHold;
     }
   | {
       readonly kind: 'passthrough';
@@ -84,7 +85,8 @@ export const formatProgressLine = (event: ProgressEvent): string => {
       return `${prefix} ticket ${event.ticket} started (waited ${event.waitMs}ms)\n`;
     case 'heartbeat': {
       if (event.command !== undefined) {
-        const delayed = event.delayed === true ? ' · wait exceeds estimate — lane busy' : '';
+        const held = event.hold === undefined ? '' : ` · waiting: ${event.hold.detail}`;
+        const delayed = `${held}${event.delayed === true ? ' · wait exceeds estimate — lane busy' : ''}`;
         if (event.phase === 'queued' && event.queue !== undefined) {
           const head =
             event.queue.headTicket === undefined

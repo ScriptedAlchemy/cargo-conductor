@@ -45,6 +45,21 @@ export interface QueueContext {
   readonly waitEtaMs: number;
 }
 
+/** Which admission arm is holding a lane head back from its permit. */
+export type AdmissionDeferReason =
+  | 'memory-hard'
+  | 'heavy-profile-cap'
+  | 'memory-soft'
+  | 'load'
+  | 'cpu-stall';
+
+/** Live admission hold on a lane head that has left the queue but not yet started. */
+export interface AdmissionHold {
+  readonly reason: AdmissionDeferReason;
+  /** Human-readable cause, e.g. "1 heavy build already running and MemAvailable 11.2 GiB < 16 GiB". */
+  readonly detail: string;
+}
+
 /** One ledgered cargo request, as stored in SQLite and reported over the socket. */
 export interface RequestRecord {
   readonly id: number;
@@ -110,6 +125,8 @@ export interface RequestRecord {
   readonly delayed?: boolean;
   /** Milliseconds since the running leader last emitted output, once over five minutes. */
   readonly quietMs?: number;
+  /** Present while the (leader) request is held by an admission arm; never persisted. */
+  readonly admissionHold?: AdmissionHold;
 }
 
 export interface TransitionRecord {
@@ -374,6 +391,17 @@ export interface SystemLoadReport {
   readonly memPressureLevel?: 1 | 2 | 4;
   /** Memory admission state computed from the configured thresholds. */
   readonly memClamp?: 'none' | 'soft' | 'hard';
+  /** Heavy-leader cap state; absent when the cap is disabled. */
+  readonly heavy?: HeavyAdmissionReport;
+}
+
+/** Heavy (release/perf/workspace) leaders under the low-memory concurrency cap. */
+export interface HeavyAdmissionReport {
+  /** Heavy leaders currently holding or about to take a permit. */
+  readonly running: number;
+  readonly maxConcurrent: number;
+  /** True when MemAvailable is known and below the configured threshold. */
+  readonly capActive: boolean;
 }
 
 /**

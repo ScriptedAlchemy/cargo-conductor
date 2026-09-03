@@ -1,7 +1,15 @@
 import { Effect, Schedule, Stream, type Duration } from 'effect';
 
 import { cargoJsonDemuxFlag, namedPackagesInArgv } from '../lib/argv.js';
-import { commandDisplay, formatBytes, formatMs, pathBasename, relativeTime, shortenPath } from '../lib/format.js';
+import {
+  commandDisplay,
+  formatBytes,
+  formatMs,
+  heavyCapNote,
+  pathBasename,
+  relativeTime,
+  shortenPath,
+} from '../lib/format.js';
 
 export { formatBytes, formatMs, pathBasename, relativeTime, shortenPath };
 
@@ -646,6 +654,34 @@ export const memoryStatView = (system: {
     label: `mem free · psi ${psi}`,
     value: available,
   };
+};
+
+/** Detail text of an untyped `admissionHold` record field; null when absent or malformed. */
+export const admissionHoldDetail = (value: unknown): string | null => {
+  if (typeof value !== 'object' || value === null) {
+    return null;
+  }
+  const shape: { readonly detail?: unknown } = value;
+  return typeof shape.detail === 'string' && shape.detail.length > 0 ? shape.detail : null;
+};
+
+/** Heavy-cap admission note from an untyped daemon `system.heavy` payload; null for older daemons. */
+export const heavyAdmissionNote = (system: { readonly heavy?: unknown }): string | null => {
+  const heavy = system.heavy;
+  if (typeof heavy !== 'object' || heavy === null) {
+    return null;
+  }
+  const shape: { readonly running?: unknown; readonly maxConcurrent?: unknown; readonly capActive?: unknown } =
+    heavy;
+  return typeof shape.running === 'number' &&
+    typeof shape.maxConcurrent === 'number' &&
+    typeof shape.capActive === 'boolean'
+    ? heavyCapNote({
+        capActive: shape.capActive,
+        maxConcurrent: shape.maxConcurrent,
+        running: shape.running,
+      })
+    : null;
 };
 
 export const formatCompactNumber = (value: number): string => {

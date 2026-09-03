@@ -61,6 +61,14 @@ export interface DaemonConfigShape {
   readonly memAvailableMinBytes: number | null;
   /** macOS VM pressure level that enables soft admission; null disables it. */
   readonly memPressureLevelThreshold: 2 | 4 | null;
+  /**
+   * Linux MemAvailable in bytes below which concurrent heavy leaders
+   * (release/perf/bench profiles, workspace-wide runs) are capped; null
+   * disables the cap.
+   */
+  readonly heavyMemAvailableBytes: number | null;
+  /** Heavy leaders admitted at once while the cap is active (floor 1). */
+  readonly heavyMaxConcurrent: number;
 }
 
 export class DaemonConfig extends Context.Service<DaemonConfig, DaemonConfigShape>()(
@@ -74,6 +82,8 @@ const defaultMemPressureSoftThreshold = 10;
 const defaultMemPressureHardThreshold = 20;
 const defaultMemAvailableMinGb = 8;
 const defaultMemPressureLevelThreshold = 2;
+const defaultHeavyMemAvailableGb = 16;
+const defaultHeavyMaxConcurrent = 1;
 const gibibyte = 1024 ** 3;
 
 export const resolveDaemonConfig = (
@@ -98,6 +108,8 @@ export const resolveDaemonConfig = (
   const memPressureHardValue = env.CARGO_HAULER_MEM_PRESSURE_HARD;
   const memAvailableMinValue = env.CARGO_HAULER_MEM_AVAILABLE_MIN_GB;
   const memPressureLevelValue = env.CARGO_HAULER_MEM_PRESSURE_LEVEL;
+  const heavyMemAvailableValue = env.CARGO_HAULER_HEAVY_MEM_AVAILABLE_GB;
+  const heavyMaxConcurrentValue = env.CARGO_HAULER_HEAVY_MAX_CONCURRENT;
   const batchValue = env.CARGO_HAULER_BATCH ?? env.CARGO_CONDUCTOR_BATCH;
   const batchWindowValue =
     env.CARGO_HAULER_BATCH_WINDOW_MS ?? env.CARGO_CONDUCTOR_BATCH_WINDOW_MS;
@@ -115,6 +127,8 @@ export const resolveDaemonConfig = (
   const parsedMemPressureHard = Number.parseFloat(memPressureHardValue ?? '');
   const parsedMemAvailableMin = Number.parseFloat(memAvailableMinValue ?? '');
   const parsedMemPressureLevel = Number.parseInt(memPressureLevelValue ?? '', 10);
+  const parsedHeavyMemAvailable = Number.parseFloat(heavyMemAvailableValue ?? '');
+  const parsedHeavyMaxConcurrent = Number.parseInt(heavyMaxConcurrentValue ?? '', 10);
   const parsedBatchWindow = Number.parseInt(batchWindowValue ?? '', 10);
   // Divide the cores between the admitted builds so N concurrent cargos do
   // not each assume they own the whole machine (rheo's grant idea).
@@ -180,6 +194,18 @@ export const resolveDaemonConfig = (
           : parsedMemPressureLevel === 2 || parsedMemPressureLevel === 4
             ? parsedMemPressureLevel
             : null,
+    heavyMemAvailableBytes:
+      platform !== 'linux'
+        ? null
+        : heavyMemAvailableValue === undefined
+          ? defaultHeavyMemAvailableGb * gibibyte
+          : Number.isFinite(parsedHeavyMemAvailable) && parsedHeavyMemAvailable > 0
+            ? parsedHeavyMemAvailable * gibibyte
+            : null,
+    heavyMaxConcurrent:
+      Number.isInteger(parsedHeavyMaxConcurrent) && parsedHeavyMaxConcurrent >= 1
+        ? parsedHeavyMaxConcurrent
+        : defaultHeavyMaxConcurrent,
   };
 };
 

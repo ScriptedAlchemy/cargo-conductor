@@ -88,4 +88,25 @@ describe('formatProgressLine', () => {
       }),
     ).toBe('[cargo-hauler] cc-10 queued 1m35s — check -p cargo-hauler\n');
   });
+
+  it('names the admission arm holding a lane head at the gate', () => {
+    expect(
+      formatProgressLine({
+        command: 'build --release -p core',
+        elapsedMs: 40_000,
+        estimateMs: 300_000,
+        hold: {
+          detail:
+            '1 heavy (release/perf/workspace) build already running and MemAvailable 11.2 GiB < 16 GiB',
+          reason: 'heavy-profile-cap',
+        },
+        kind: 'heartbeat',
+        laneName: 'core',
+        phase: 'queued',
+        ticket: 'cc-11',
+      }),
+    ).toBe(
+      '[cargo-hauler] cc-11 queued 40s (est ~5m) · waiting: 1 heavy (release/perf/workspace) build already running and MemAvailable 11.2 GiB < 16 GiB — build --release -p core\n',
+    );
+  });
 });

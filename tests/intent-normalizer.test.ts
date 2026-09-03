@@ -105,6 +105,7 @@ describe('parseCargoArgv', () => {
     expect(parseCargoArgv(['cargo', 'test']).profile).toBe('test');
     expect(parseCargoArgv(['cargo', 'bench']).profile).toBe('bench');
     expect(parseCargoArgv(['cargo', 'check', '--release']).profile).toBe('release');
+    expect(parseCargoArgv(['cargo', 'build', '-r']).profile).toBe('release');
   });
 
   it('models install as release by default and honors its debug switch', () => {

@@ -28,17 +28,21 @@ const attachText = (record: RequestRecord): string | null => {
 
 const queueText = (record: RequestRecord): string | null => {
   const queue = record.queue;
-  if (record.status !== 'queued' || queue === undefined) {
+  if (record.status !== 'queued') {
     return null;
   }
   const head =
-    queue.headTicket === undefined
+    queue?.headTicket === undefined
       ? ''
       : ` behind ${queue.headTicket}${
           queue.headElapsedMs === undefined ? '' : ` (running ${formatMs(queue.headElapsedMs)})`
         }`;
-  const delayed = record.delayed === true ? '; wait exceeds estimate — lane busy' : '';
-  return `${queue.position} ahead${head}, wait ~${formatMs(queue.waitEtaMs)}${delayed}`;
+  const parts = [
+    queue === undefined ? null : `${queue.position} ahead${head}, wait ~${formatMs(queue.waitEtaMs)}`,
+    record.admissionHold === undefined ? null : `waiting: ${record.admissionHold.detail}`,
+    record.delayed === true ? 'wait exceeds estimate — lane busy' : null,
+  ].filter((part) => part !== null);
+  return parts.length === 0 ? null : parts.join('; ');
 };
 
 const lastLines = (text: string, limit: number): string => {

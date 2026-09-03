@@ -19,6 +19,16 @@ describe('localQueryReason', () => {
     expect(localQueryReason(['cargo', 'pkgid'])).toContain('pkgid');
   });
 
+  it('classifies rustfmt, lockfile, and manifest operations as local', () => {
+    expect(localQueryReason(['cargo', 'fmt', '--all', '--', '--check'])).toContain('fmt');
+    expect(localQueryReason(['/home/me/.cargo/bin/cargo', 'fmt', '--all'])).toContain('fmt');
+    expect(localQueryReason(['cargo', 'update', '-p', 'serde'])).toContain('update');
+    expect(localQueryReason(['cargo', 'fetch', '--locked'])).toContain('fetch');
+    expect(localQueryReason(['cargo', 'add', 'serde', '--features', 'derive'])).toContain('add');
+    expect(localQueryReason(['cargo', 'remove', 'serde'])).toContain('remove');
+    expect(localQueryReason(['cargo', 'generate-lockfile'])).toContain('generate-lockfile');
+  });
+
   it('classifies a bare cargo invocation, which prints usage locally', () => {
     expect(localQueryReason(['cargo'])).not.toBeNull();
   });
@@ -29,6 +39,9 @@ describe('localQueryReason', () => {
     expect(localQueryReason(['cargo', 'test', '-p', 'alpha'])).toBeNull();
     expect(localQueryReason(['cargo', 'nextest', 'run'])).toBeNull();
     expect(localQueryReason(['cargo', 'clippy'])).toBeNull();
+    expect(localQueryReason(['cargo', 'doc', '--no-deps'])).toBeNull();
+    expect(localQueryReason(['cargo', 'install', '--path', '.'])).toBeNull();
+    expect(localQueryReason(['cargo', 'publish', '--dry-run'])).toBeNull();
   });
 
   it('keeps unknown third-party subcommands brokered', () => {

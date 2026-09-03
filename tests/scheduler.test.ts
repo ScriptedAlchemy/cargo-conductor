@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'effect-rstest';
 
 import {
+  admissionDecision,
+  admissionHoldFor,
+  isHeavyProfile,
   scheduleScore,
   selectNextIndex,
   shouldDeferAdmission,
@@ -186,5 +189,109 @@ describe('shouldDeferAdmission', () => {
         memFullAvg60: null,
       }),
     ).toBe(false);
+  });
+});
+
+describe('isHeavyProfile', () => {
+  it('marks release, perf/custom profiles, bench, and workspace-wide runs as heavy', () => {
+    expect(isHeavyProfile(['cargo', 'build', '--release'])).toBe(true);
+    expect(isHeavyProfile(['cargo', 'test', '-r', '-p', 'core'])).toBe(true);
+    expect(isHeavyProfile(['cargo', 'build', '--profile', 'perf'])).toBe(true);
+    expect(isHeavyProfile(['cargo', 'build', '--profile=release'])).toBe(true);
+    expect(isHeavyProfile(['cargo', 'build', '--profile', 'bench'])).toBe(true);
+    expect(isHeavyProfile(['cargo', 'bench', '-p', 'core'])).toBe(true);
+    expect(isHeavyProfile(['cargo', 'check', '--workspace'])).toBe(true);
+    expect(isHeavyProfile(['cargo', 'clippy', '--all'])).toBe(true);
+  });
+
+  it('leaves dev, test, and check profiles scoped to packages as light', () => {
+    expect(isHeavyProfile(['cargo', 'check', '-p', 'core'])).toBe(false);
+    expect(isHeavyProfile(['cargo', 'build'])).toBe(false);
+    expect(isHeavyProfile(['cargo', 'test', '-p', 'core'])).toBe(false);
+    expect(isHeavyProfile(['cargo', 'build', '--profile', 'dev'])).toBe(false);
+    expect(isHeavyProfile(['cargo', 'build', '--profile=test'])).toBe(false);
+    expect(isHeavyProfile(['cargo', 'build', '--profile', 'check'])).toBe(false);
+    expect(isHeavyProfile(['cargo', 'build', '--release', '--debug'])).toBe(false);
+  });
+
+  it('never throws on unparsable invocations', () => {
+    expect(isHeavyProfile([])).toBe(false);
+    expect(isHeavyProfile(['cargo'])).toBe(false);
+    expect(isHeavyProfile(['cargo', 'build', '--profile'])).toBe(false);
+  });
+});
+
+describe('heavy-profile cap', () => {
+  const gib = 1024 ** 3;
+  const base = {
+    heavy: true,
+    heavyMaxConcurrent: 1,
+    heavyMemAvailableBytes: 16 * gib,
+    heavyRunning: 1,
+    loadPerCore: 0.1,
+    memAvailableBytes: 11.2 * gib,
+    memAvailableMinBytes: 8 * gib,
+    minConcurrent: 2,
+    running: 1,
+    thresholdPerCore: Number.POSITIVE_INFINITY,
+  };
+
+  it('defers a second heavy leader below the threshold, bypassing the concurrency floor', () => {
+    expect(admissionDecision(base)).toEqual({ defer: true, reason: 'heavy-profile-cap' });
+    expect(shouldDeferAdmission(base)).toBe(true);
+  });
+
+  it('admits non-heavy leaders and heavy leaders under the cap', () => {
+    expect(admissionDecision({ ...base, heavy: false })).toEqual({ defer: false });
+    expect(admissionDecision({ ...base, heavyRunning: 0 })).toEqual({ defer: false });
+    expect(admissionDecision({ ...base, heavyMaxConcurrent: 2 })).toEqual({ defer: false });
+    expect(admissionDecision({ ...base, heavyMaxConcurrent: 2, heavyRunning: 2 })).toEqual({
+      defer: true,
+      reason: 'heavy-profile-cap',
+    });
+  });
+
+  it('does not cap when MemAvailable is at or above the threshold', () => {
+    expect(admissionDecision({ ...base, memAvailableBytes: 16 * gib })).toEqual({ defer: false });
+    expect(admissionDecision({ ...base, memAvailableBytes: 40 * gib })).toEqual({ defer: false });
+  });
+
+  it('fails open when MemAvailable is unknown', () => {
+    expect(admissionDecision({ ...base, memAvailableBytes: null })).toEqual({ defer: false });
+    expect(admissionDecision({ ...base, memAvailableBytes: undefined })).toEqual({ defer: false });
+  });
+
+  it('is disabled by a null threshold', () => {
+    expect(admissionDecision({ ...base, heavyMemAvailableBytes: null })).toEqual({ defer: false });
+  });
+
+  it('still hard-blocks everything below the MemAvailable floor', () => {
+    expect(admissionDecision({ ...base, heavy: false, memAvailableBytes: 7 * gib })).toEqual({
+      defer: true,
+      reason: 'memory-hard',
+    });
+  });
+
+  it('explains the hold in GiB with the heavy count', () => {
+    expect(admissionHoldFor(base, 'heavy-profile-cap')).toEqual({
+      reason: 'heavy-profile-cap',
+      detail:
+        '1 heavy (release/perf/workspace) build already running and MemAvailable 11.2 GiB < 16 GiB',
+    });
+    expect(admissionHoldFor({ ...base, heavyRunning: 2 }, 'heavy-profile-cap').detail).toBe(
+      '2 heavy (release/perf/workspace) builds already running and MemAvailable 11.2 GiB < 16 GiB',
+    );
+  });
+
+  it('reports the tripped arm for the other deferrals', () => {
+    const loaded = { loadPerCore: 5, minConcurrent: 2, running: 3, thresholdPerCore: 2.5 };
+    expect(admissionDecision(loaded)).toEqual({ defer: true, reason: 'load' });
+    expect(admissionHoldFor(loaded, 'load').detail).toBe('load 5.00/core above 2.5/core');
+    expect(
+      admissionDecision({ ...loaded, loadPerCore: 0, cpuStallPercent: 80, cpuStallThreshold: 75 }),
+    ).toEqual({ defer: true, reason: 'cpu-stall' });
+    expect(
+      admissionDecision({ ...loaded, loadPerCore: 0, memFullAvg10: 12, memSoftThreshold: 10 }),
+    ).toEqual({ defer: true, reason: 'memory-soft' });
   });
 });

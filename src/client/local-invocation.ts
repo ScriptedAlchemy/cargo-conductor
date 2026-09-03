@@ -1,26 +1,39 @@
 import { parseCargoArgv } from '../daemon/intent-normalizer.js';
 
 /**
- * Cargo subcommands that never compile: pure metadata reads and registry
- * operations. Brokering them buys nothing — they hold a lane slot, receive a
- * generic multi-minute cost estimate, and pollute the job-outcome metrics
- * (observed: `cargo hauler --help` ticketed with a ~120s ETA and recorded
- * as a failed job). Compile-shaped verbs (build/check/test/clippy/run/…) and
- * unknown third-party subcommands stay brokered: an unknown subcommand can
- * compile arbitrarily much, so only the closed known-query set bypasses.
+ * Cargo subcommands that never compile: metadata reads, registry and lockfile
+ * operations, manifest edits, and rustfmt. Brokering them buys nothing — they
+ * hold a lane slot, receive a generic multi-minute cost estimate, and pollute
+ * the job-outcome metrics (observed: `cargo hauler --help` ticketed with a
+ * ~120s ETA and recorded as a failed job; `cargo fmt --all` queued for
+ * minutes behind five compiles). Compile-shaped verbs (build/check/test/
+ * clippy/run/doc/install/publish/…) and unknown third-party subcommands stay
+ * brokered: an unknown subcommand can compile arbitrarily much, so only the
+ * closed known-query set bypasses.
  */
 const querySubcommands = new Set([
+  'add',
+  'fetch',
+  'fmt',
+  'generate-lockfile',
   'help',
+  'info',
+  'init',
   'locate-project',
   'login',
   'logout',
   'metadata',
+  'new',
   'owner',
   'pkgid',
   'read-manifest',
+  'remove',
   'report',
   'search',
   'tree',
+  'uninstall',
+  'update',
+  'vendor',
   'verify-project',
   'version',
   'yank',

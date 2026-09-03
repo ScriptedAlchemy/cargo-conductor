@@ -2,7 +2,7 @@ import { Agent } from '@agent-bundle/runtime';
 import React from 'react';
 
 import type { StatusResult } from '../lib/protocol-schemas.js';
-import { formatBytes, formatMs, pathBasename, relativeTime } from '../lib/format.js';
+import { formatBytes, formatMs, heavyCapNote, pathBasename, relativeTime } from '../lib/format.js';
 import { countWord } from '../lib/text.js';
 
 import { DataList, Table } from './primitives.js';
@@ -66,10 +66,11 @@ const daemonText = (status: StatusResult, nowMs: number): string => {
 export const StatusOverview = ({ nowMs, status }: StatusOverviewProps) => {
   const running = status.active.filter((record) => record.status === 'running');
   const queued = status.active.filter((record) => record.status === 'queued');
+  const heavy = heavyCapNote(status.system?.heavy);
   const admission =
     status.maxConcurrent === null
       ? null
-      : `${running.length} running of ${status.maxConcurrent} permits, ${queued.length} queued`;
+      : `${running.length} running of ${status.maxConcurrent} permits${heavy === null ? '' : ` (${heavy})`}, ${queued.length} queued`;
   const busyLanes = status.lanes.filter((lane) => lane.queued > 0 || lane.runningTicket !== null);
   return (
     <>
