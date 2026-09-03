@@ -16,8 +16,7 @@ import type { AttachmentRuntime } from './attachments.js';
 import {
   batchCompatibleFor,
   batchKindFor,
-  composeNextestBatchArgv,
-  composeTestBatchArgv,
+  composeTestFoldArgv,
   extraPackagesFor,
   maxBatchPackages,
   withExtraPackages,
@@ -232,9 +231,9 @@ export const makeLaneRuntime = (deps: LaneRuntimeDeps): Effect.Effect<LaneRuntim
 
     /**
      * Absorbs other queued compatible jobs onto `leader` as batch
-     * attachments. check/build/clippy composites gain the followers' `-p`
-     * flags; test/nextest composites rewrite the selection so one run serves
-     * every participant (union of packages, `--test` targets, and filters).
+     * attachments. Every composite is the leader's argv plus the followers'
+     * `-p` flags; test/nextest composites also add `--no-fail-fast`, and
+     * admit only followers with the leader's exact test selection (#53).
      */
     const foldBatch = (lane: Lane, leader: Job): Effect.Effect<void> =>
       Effect.gen(function* () {
@@ -336,16 +335,9 @@ export const makeLaneRuntime = (deps: LaneRuntimeDeps): Effect.Effect<LaneRuntim
               }
               break;
             case 'test':
-              leader.execArgv = composeTestBatchArgv(
-                leader.execArgv,
-                leader.intent,
-                absorbed.map((job) => job.intent),
-              );
-              break;
             case 'nextest':
-              leader.execArgv = composeNextestBatchArgv(
+              leader.execArgv = composeTestFoldArgv(
                 leader.execArgv,
-                leader.intent,
                 absorbed.map((job) => job.intent),
               );
               break;
