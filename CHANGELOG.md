@@ -1,5 +1,42 @@
 # Changelog
 
+## 0.4.0
+
+### Minor Changes
+
+- 5c14816: The plugin layer is now a full agent-bundle application. Every MCP tool, hook, skill, and CLI command keeps its name and semantics; the daemon is unchanged.
+  
+  - Targets are `claude`, `codex`, `cursor`, and `portable` — one independently installable pack each under `artifact/<host>` (`output.distPath`) — instead of the composite `plugin` bundle. Install with `agent-bundle install <host> --from artifact/<host>` (Cursor `--mode local|marketplace`, `--replace` after a same-version rebuild) or, from an `npm pack`ed tarball, `npx cargo-hauler-install install <host>`; `agent-bundle prepack` gates the tarball, which now carries `artifact/` beside `dist/`. The project ships no installer of its own (cargo-hauler#25).
+  - `src/layout.tsx`: the hauler shell around every rendered route — a daemon badge (what the request-start probe proved, with the permit/rider/queue summary), the route's document unchanged, a lineage footer naming the requesting conversation, and `_meta.hauler` (`route`, `surface`, `server`, `version`, `daemon`, `lineage`) on every MCP result.
+  - `src/providers/hauler-daemon.ts` replaces `daemon-config`: one request-scoped daemon connection (`config`, `health`, `probedAt`) with typed unavailable states (`stopped: socket-missing | connection-refused`, `unresponsive: accept-timeout | answer-timeout | connection-closed`, `unreachable: open-failed` with the errno, `unprobed: event-surface`). It never fabricates status, and the probe budget bounds the socket accept as well as the answer (`requestOverSocket` gains an optional `openTimeoutMs`).
+  - Components over pure view-models: `<TicketCard>`, `<TicketList>`, `<LaneBoard>`, `<AdmissionState>`, `<KacheStats>`, `<LogTail>`, `<BuildDiagnostics>` (an index of cargo `error[E…]`/`warning:` blocks — level/code/message/location — above the verbatim blocks), `<DashboardLink>`, `<DaemonBadge>`, `<LineageFooter>`, `Empty`/`Unavailable`/`Error` states; ticket guidance is one component per status.
+  - Streaming: `hauler_await` / `hauler await` render the live ticket card and a progress node while the daemon-side wait blocks, then the settled ticket; `hauler_log` / `hauler log` stream a progress frame before the listing. `structuredContent` and `--json` are unchanged.
+  - Attribution uses `request.lineage`: when a host publishes no session id (bare stdio MCP), the calling conversation becomes the ticket's session, so parallel agents' builds are attributable in the ledger, the dashboard, and `hauler status --session` (or the `hauler_status` tool's `session` field). `hauler_request` results carry `attribution` (`host`, `session`, `lineage`).
+  - New `session/start` event route: each new Claude, Codex, or Cursor session receives the daemon state and the no-kill rule as additional context.
+  - `hauler-dashboard` is a rendered skill (`SKILL.tsx`) computed from the tool and CLI spellings and the App resource URI it describes.
+  - Tests: route-unit (layout, streaming, lineage, events), cli-dispatch, script-dispatch, mcp-in-memory against a live fixture broker, workbench-surface, and the packed-stdio contract matrix against `artifact/cursor`.
+- f6765a1: Admission caps heavy leaders under low memory (#27): when `MemAvailable` is below `CARGO_HAULER_HEAVY_MEM_AVAILABLE_GB` (default 16 GiB, `off` to disable), at most `CARGO_HAULER_HEAVY_MAX_CONCURRENT` (default 1) release/perf/bench-profile or workspace-wide builds run at once. Held jobs report why in heartbeats, `hauler status`, and the dashboard (`admissionHold`, `heavy` in the load report). `cargo build -r` is now recognized as a release build for intent identity.
+  
+  Non-compiling cargo subcommands (`fmt`, `update`, `fetch`, `add`, `remove`, `generate-lockfile`, `vendor`, `new`, `init`, `info`, `uninstall`) run locally instead of queueing for a permit.
+  
+  The `hauler` script inside a host artifact forwards routed commands (`status`, `log`, `last`, `await`, `result`, `request`) to the bundled `bin/cargo-hauler.mjs`, so an installed plugin exposes the full CLI.
+  
+  agent-bundle re-pinned to preview `4edbd493b`; the framework now provides the `agent-bundle/meta` test alias, script discovery alongside `bin` claims, and same-version installer replacement, so the local workarounds for those are removed.
+
+### Patch Changes
+
+- c6b9bc6: The admission line in `hauler status` and the `hauler_status` tool counts permit holders only; requests riding a shared build are reported separately instead of inflating "running" past the permit cap.
+- dce27a7: Bump `agent-bundle` and `@agent-bundle/runtime` to the pkg.pr.new preview of agent-bundle `main` commit `886b192` (`0.0.0-preview-886b192`, previously `4edbd493b`).
+- 58a09e1: Paths are canonicalized through their nearest existing ancestor, so a target directory spells the same before and after cargo creates it (macOS `/var` → `/private/var`); lane keys and coverage attachment no longer diverge between a leader and its followers (#35, #36).
+- dbfc3c0: `hauler exec` (and the PATH shim) no longer converts a synchronous request to a background ticket on a cold-start estimate: only a measured ETA (`etaSource` `ewma` or `kache`, now carried on the ack) can exceed the host shell cap, so a compile error on a fresh crate reaches the caller instead of exit 0 (#37). When a request is auto-backgrounded it exits `75` (`EX_TEMPFAIL`) and says so; explicit `--bg` keeps exit 0. The shim borrows `CARGO_HAULER_HOST`'s cap when exported, failed runs feed the estimate history, and the client now waits for the daemon's `detach-result` before hanging up so a still-queued ticket is not killed as abandoned.
+  
+  `hauler await` / `hauler_await` bound one call to 55 s (`maxWaitMs` ceiling), under the framework's 60 s render session; longer waits used to fail with `Agent render elapsed time exceeds 60000ms` and lose the result (#32). Guidance, the skill, and the README say to call again.
+  
+  Brokered output preserves the program's stdout/stderr write order when the caller's two descriptors are one file (`cargo run 2>&1`, a shared terminal): the client sends `mergeStderr` and the daemon runs the child with stderr on the stdout pipe. Demultiplexed `build`/`check`/`clippy` runs keep separate channels (#38).
+- f242bd2: Forward caller environment variables through brokered Cargo executions while filtering cargo-hauler internal settings.
+- 929d96c: Publish releases through Changesets and npm trusted publishing with provenance.
+- fd3cf6d: When `CARGO_HAULER_STATE_DIR` is too deep for a unix socket path (103 bytes on macOS, 107 on Linux), the daemon socket moves to `$XDG_RUNTIME_DIR` / `$TMPDIR` as `cargo-hauler-<digest>.sock` instead of silently failing to bind; every client resolving the same state dir agrees on the endpoint.
+
 Notable changes per release, newest first. Versions are the `version` field in
 `package.json`; releases before 0.3.0 are described by their commit messages in
 `git log`.
