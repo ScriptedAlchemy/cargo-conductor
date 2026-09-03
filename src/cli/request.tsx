@@ -5,6 +5,7 @@ import { z } from 'zod';
 
 import { RequestDocument } from '../components/documents.js';
 import { cliSurface } from '../components/surface.js';
+import { lineageModel } from '../components/view-models.js';
 import { requestResultSchema } from '../lib/protocol-schemas.js';
 import { requestDaemonConfig } from '../lib/request-config.js';
 import { submitTicketRequest } from '../lib/tickets.js';
@@ -35,5 +36,12 @@ export default async function Request({ input, signal }: CliRouteProps<typeof in
     context,
     { config: requestDaemonConfig(context), signal },
   );
-  return <RequestDocument argv={input.argv} names={cliSurface} result={submitted} />;
+  return (
+    <RequestDocument
+      argv={input.argv}
+      lineage={lineageModel(context.lineage)}
+      names={cliSurface}
+      result={submitted}
+    />
+  );
 }

@@ -3,7 +3,7 @@ import type { CliRouteConfig, CliRouteProps } from 'agent-bundle';
 import React from 'react';
 import { z } from 'zod';
 
-import { LogDocument } from '../components/documents.js';
+import { LogStream } from '../components/streaming.js';
 import { cliSurface } from '../components/surface.js';
 import { loadLogResult } from '../lib/inspect.js';
 import { logResultSchema } from '../lib/protocol-schemas.js';
@@ -21,6 +21,10 @@ export const resultSchema = logResultSchema;
 
 export default async function Log({ input, signal }: CliRouteProps<typeof inputSchema>) {
   const context = await agent();
-  const log = await loadLogResult(input, { config: requestDaemonConfig(context), signal });
-  return <LogDocument names={cliSurface} nowMs={Date.now()} result={log} />;
+  return (
+    <LogStream
+      loading={loadLogResult(input, { config: requestDaemonConfig(context), signal })}
+      names={cliSurface}
+    />
+  );
 }

@@ -26,6 +26,7 @@
     ]
   },
   "include": [
+    ".agent-bundle/routes.d.ts",
     "agent-bundle.config.ts",
     "src/**/*.d.ts",
     "src/**/*.ts",

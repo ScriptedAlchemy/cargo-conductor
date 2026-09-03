@@ -1,0 +1,15 @@
+---
+"cargo-hauler": minor
+---
+
+The plugin layer is now a full agent-bundle application. Every MCP tool, hook, skill, and CLI command keeps its name and semantics; the daemon is unchanged.
+
+- Targets are `claude`, `codex`, `cursor`, and `portable` — one independently installable pack each under `artifact/<host>` (`output.distPath`) — instead of the composite `plugin` bundle. Install with `agent-bundle install <host> --from artifact/<host>` (Cursor `--mode local|marketplace`, `--replace` after a same-version rebuild) or, from an `npm pack`ed tarball, `npx cargo-hauler-install install <host>`; `agent-bundle prepack` gates the tarball, which now carries `artifact/` beside `dist/`. The project ships no installer of its own (cargo-hauler#25).
+- `src/layout.tsx`: the hauler shell around every rendered route — a daemon badge (what the request-start probe proved, with the permit/rider/queue summary), the route's document unchanged, a lineage footer naming the requesting conversation, and `_meta.hauler` (`route`, `surface`, `server`, `version`, `daemon`, `lineage`) on every MCP result.
+- `src/providers/hauler-daemon.ts` replaces `daemon-config`: one request-scoped daemon connection (`config`, `health`, `probedAt`) with typed unavailable states (`stopped: socket-missing | connection-refused`, `unresponsive: accept-timeout | answer-timeout | connection-closed`, `unreachable: open-failed` with the errno, `unprobed: event-surface`). It never fabricates status, and the probe budget bounds the socket accept as well as the answer (`requestOverSocket` gains an optional `openTimeoutMs`).
+- Components over pure view-models: `<TicketCard>`, `<TicketList>`, `<LaneBoard>`, `<AdmissionState>`, `<KacheStats>`, `<LogTail>`, `<BuildDiagnostics>` (an index of cargo `error[E…]`/`warning:` blocks — level/code/message/location — above the verbatim blocks), `<DashboardLink>`, `<DaemonBadge>`, `<LineageFooter>`, `Empty`/`Unavailable`/`Error` states; ticket guidance is one component per status.
+- Streaming: `hauler_await` / `hauler await` render the live ticket card and a progress node while the daemon-side wait blocks, then the settled ticket; `hauler_log` / `hauler log` stream a progress frame before the listing. `structuredContent` and `--json` are unchanged.
+- Attribution uses `request.lineage`: when a host publishes no session id (bare stdio MCP), the calling conversation becomes the ticket's session, so parallel agents' builds are attributable in the ledger, the dashboard, and `hauler_status --session`. `hauler_request` results carry `attribution` (`host`, `session`, `lineage`).
+- New `session/start` event route: each new Claude, Codex, or Cursor session receives the daemon state and the no-kill rule as additional context.
+- `hauler-dashboard` is a rendered skill (`SKILL.tsx`) computed from the tool and CLI spellings and the App resource URI it describes.
+- Tests: route-unit (layout, streaming, lineage, events), cli-dispatch, script-dispatch, mcp-in-memory against a live fixture broker, workbench-surface, and the packed-stdio contract matrix against `artifact/cursor`.

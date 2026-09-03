@@ -192,7 +192,7 @@ describe('hauler script', () => {
     expect(result.text).toContain('cargo-hauler --help');
   });
 
-  const artifactScript = join(import.meta.dirname, '..', 'artifact', 'plugin', 'scripts', 'hauler.mjs');
+  const artifactScript = join(import.meta.dirname, '..', 'artifact', 'cursor', 'scripts', 'hauler.mjs');
 
   it.skipIf(!existsSync(artifactScript))(
     'forwards routed commands to bin/cargo-hauler.mjs inside a built host artifact',

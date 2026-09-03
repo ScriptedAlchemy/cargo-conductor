@@ -9,7 +9,7 @@ import type { RequestRecord } from '../daemon/protocol.js';
 import { describeRequestRecord, displayRequestRecord } from '../query.js';
 
 import type { TicketRequestContext } from './attribution.js';
-import { enrichTicketRequest } from './attribution.js';
+import { enrichTicketRequest, ticketAttribution } from './attribution.js';
 import type {
   AwaitResult,
   RequestInput,
@@ -87,11 +87,13 @@ export const submitTicketRequest = async (
   requestContext: TicketRequestContext,
   options: TicketOptions,
 ): Promise<RequestSubmitResult> => {
+  const attribution = ticketAttribution(input, requestContext);
   const ticket = await runTicketEffect(
     submitBackground(enrichTicketRequest(input, requestContext), options.config),
     options.signal,
   );
   return {
+    attribution,
     operation: 'request',
     summary: ticket === null ? 'failed to submit background request' : `${ticket} submitted`,
     ticket,

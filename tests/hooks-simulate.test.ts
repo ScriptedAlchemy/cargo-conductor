@@ -21,7 +21,8 @@ import { pollReport, scopedDaemon } from './harness.js';
 const repoRoot = fileURLToPath(new URL('..', import.meta.url));
 const fixtureRoot = join(repoRoot, 'tests', 'fixtures', 'hooks');
 const artifactRoot = join(repoRoot, 'artifact');
-const pluginHooksRoot = join(artifactRoot, 'plugin', 'hooks');
+const claudeHooksRoot = join(artifactRoot, 'claude', 'hooks');
+const cursorHooksRoot = join(artifactRoot, 'cursor', 'hooks');
 
 const loadJson = (name: string): Record<string, unknown> =>
   JSON.parse(readFileSync(join(fixtureRoot, name), 'utf8')) as Record<string, unknown>;
@@ -73,13 +74,15 @@ const runWrapper = (
     child.stdin.end(`${JSON.stringify(input)}\n`);
   });
 
-/** The generated event-route wrapper for one hook (`event-route-tool-before[.cursor].mjs`). */
-const findWrapper = (event: 'tool-before' | 'tool-after', cursor: boolean): string | undefined => {
-  if (!existsSync(pluginHooksRoot)) {
+/** The generated event-route wrapper for one hook in one host pack (`event-route-tool-before.mjs`). */
+const findWrapper = (event: 'tool-before' | 'tool-after', host: 'claude' | 'cursor'): string | undefined => {
+  const root = host === 'cursor' ? cursorHooksRoot : claudeHooksRoot;
+  if (!existsSync(root)) {
     return undefined;
   }
-  const expected = `event-route-${event}${cursor ? '.cursor' : ''}.mjs`;
-  return readdirSync(pluginHooksRoot).find((name) => name === expected);
+  const expected = `event-route-${event}.mjs`;
+  const found = readdirSync(root).find((name) => name === expected);
+  return found === undefined ? undefined : join(root, found);
 };
 
 describe('host envelope fixtures', () => {
@@ -87,7 +90,7 @@ describe('host envelope fixtures', () => {
     const cases: readonly { readonly file: string; readonly context: HookContext; readonly host: string }[] = [
       { context: { nativeEvent: 'PreToolUse', target: 'claude' }, file: 'claude-before-cargo.json', host: 'claude' },
       { context: { nativeEvent: 'PreToolUse', target: 'codex' }, file: 'codex-before-cargo.json', host: 'codex' },
-      { context: { nativeEvent: 'preToolUse', target: 'plugin' }, file: 'cursor-before-cargo.json', host: 'cursor' },
+      { context: { nativeEvent: 'preToolUse', target: 'cursor' }, file: 'cursor-before-cargo.json', host: 'cursor' },
     ];
 
     for (const item of cases) {
@@ -102,7 +105,7 @@ describe('host envelope fixtures', () => {
     const records: HookRecord[] = [];
     const cases: readonly { readonly context: HookContext; readonly file: string }[] = [
       { context: { nativeEvent: 'PostToolUse', target: 'claude' }, file: 'claude-after-cargo.json' },
-      { context: { nativeEvent: 'postToolUse', target: 'plugin' }, file: 'cursor-after-cargo.json' },
+      { context: { nativeEvent: 'postToolUse', target: 'cursor' }, file: 'cursor-after-cargo.json' },
     ];
 
     for (const item of cases) {
@@ -138,7 +141,7 @@ describe('host envelope fixtures', () => {
             toolInput: { command: 'cargo clean' },
             toolName: 'Bash',
           },
-          { nativeEvent: 'preToolUse', target: 'plugin' },
+          { nativeEvent: 'preToolUse', target: 'cursor' },
           {
             hasActiveBuilds: () => true,
             record: () => undefined,
@@ -174,14 +177,14 @@ describe('host envelope fixtures', () => {
 
 describe('agent-bundle hooks simulate', () => {
   it.skipIf(!existsSync(join(artifactRoot, 'agent-bundle.hooks.json')))(
-    'simulates the plugin beforeTool and afterTool wrappers',
+    'simulates the Claude beforeTool, afterTool, and stop wrappers',
     async () => {
       const previousHost = process.env.AGENT_BUNDLE_HOOK_HOST;
       const previousState = process.env.CARGO_HAULER_STATE_DIR;
       process.env.AGENT_BUNDLE_HOOK_HOST = 'claude';
       process.env.CARGO_HAULER_STATE_DIR = join(repoRoot, '.tmp-hook-simulate');
       try {
-        const hooks = await listHooks({ artifact: artifactRoot, root: repoRoot, target: 'plugin' });
+        const hooks = await listHooks({ artifact: artifactRoot, root: repoRoot, target: 'claude' });
         const before = hooks.find((hook) => hook.event === 'beforeTool');
         const after = hooks.find((hook) => hook.event === 'afterTool');
         const stop = hooks.find((hook) => hook.event === 'stop');
@@ -196,7 +199,7 @@ describe('agent-bundle hooks simulate', () => {
           // Event routes receive the host-native envelope, never the canonical one.
           input: loadJson('claude-before-cargo.json'),
           root: repoRoot,
-          target: 'plugin',
+          target: 'claude',
         });
         // The generated wrapper projects the route decision onto Claude's
         // native PreToolUse output.
@@ -215,7 +218,7 @@ describe('agent-bundle hooks simulate', () => {
           hook: after!.name,
           input: loadJson('claude-after-cargo.json'),
           root: repoRoot,
-          target: 'plugin',
+          target: 'claude',
         });
         // afterTool without additionalContext encodes to empty host output.
         expect(recorded).toBeUndefined();
@@ -238,7 +241,7 @@ describe('agent-bundle hooks simulate', () => {
             transcript_path: '/tmp/transcript.json',
           },
           root: repoRoot,
-          target: 'plugin',
+          target: 'claude',
         });
         // Daemon is down: stop-hold fails open. Continue without extra
         // context encodes to empty host output (same as afterTool).
@@ -262,10 +265,10 @@ describe('agent-bundle hooks simulate', () => {
     90_000,
   );
 
-  it.skipIf(findWrapper('tool-before', false) === undefined)(
+  it.skipIf(findWrapper('tool-before', 'claude') === undefined)(
     'accepts native Claude and Codex PreToolUse envelopes on the generated wrapper',
     async () => {
-      const wrapper = join(pluginHooksRoot, findWrapper('tool-before', false)!);
+      const wrapper = findWrapper('tool-before', 'claude')!;
       for (const file of ['claude-before-cargo.json', 'codex-before-cargo.json'] as const) {
         const ran = await runWrapper(wrapper, loadJson(file));
         expect(ran.code).toBe(0);
@@ -279,10 +282,10 @@ describe('agent-bundle hooks simulate', () => {
     },
   );
 
-  it.skipIf(findWrapper('tool-before', true) === undefined)(
+  it.skipIf(findWrapper('tool-before', 'cursor') === undefined)(
     'accepts a native Cursor preToolUse envelope on the generated cursor wrapper',
     async () => {
-      const wrapper = join(pluginHooksRoot, findWrapper('tool-before', true)!);
+      const wrapper = findWrapper('tool-before', 'cursor')!;
       const ran = await runWrapper(wrapper, loadJson('cursor-before-cargo.json'));
       expect(ran.code).toBe(0);
       expect(ran.stdout.length).toBeGreaterThan(0);
