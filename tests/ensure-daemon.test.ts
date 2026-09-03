@@ -3,6 +3,7 @@ import {
   fstatSync,
   mkdirSync,
   readFileSync,
+  statSync,
   writeFileSync,
 } from 'node:fs';
 import { join } from 'node:path';
@@ -19,6 +20,7 @@ import {
 } from '../src/client/ensure-daemon.js';
 import { pingDaemon } from '../src/daemon/control.js';
 import { runDaemon } from '../src/daemon/main.js';
+import { passthroughSpoolFileName } from '../src/daemon/protocol.js';
 import { scopedTempDir } from './harness.js';
 
 const configAt = (stateDir: string): DaemonConfigShape => ({
@@ -145,6 +147,35 @@ describe('daemon start without a machine-specific mount', () => {
       expect(existsSync(config.lockTargetPath)).toBe(false);
       expect(existsSync(config.socketPath)).toBe(false);
     }));
+
+  it.live('a losing instance neither drains the passthrough spool nor touches the ledger', () =>
+    Effect.gen(function* () {
+      const root = yield* scopedTempDir('cc-losing-instance-');
+      const config = resolveDaemonConfig({
+        CARGO_HAULER_STATE_DIR: join(root, 'state'),
+        CARGO_HAULER_KACHE_INDEX: '',
+      });
+      const spoolPath = join(config.stateDir, passthroughSpoolFileName);
+      yield* Effect.scoped(
+        Effect.gen(function* () {
+          yield* Effect.forkScoped(runDaemon(config));
+          yield* pingDaemon(config.socketPath, 500).pipe(
+            Effect.retry(Schedule.spaced('50 millis').pipe(Schedule.upTo({ times: 400 }))),
+          );
+          // Spooled after the live daemon's own startup drain, so only a
+          // second daemon building its Broker layer could move it.
+          writeFileSync(spoolPath, '');
+          const ledgerBefore = statSync(config.databasePath);
+
+          const outcome = yield* runDaemon(config);
+
+          expect(outcome).toBe('already-running');
+          expect(existsSync(spoolPath)).toBe(true);
+          expect(existsSync(`${spoolPath}.drain`)).toBe(false);
+          expect(statSync(config.databasePath).mtimeMs).toBe(ledgerBefore.mtimeMs);
+        }),
+      );
+    }), 30_000);
 });
 
 describe('daemonIsAbsent', () => {

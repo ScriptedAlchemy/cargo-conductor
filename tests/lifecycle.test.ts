@@ -1,17 +1,40 @@
+import { existsSync } from 'node:fs';
 import { mkdtemp, rename, rm, stat, unlink, writeFile } from 'node:fs/promises';
+import { connect } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { describe, expect, it } from 'effect-rstest';
 import * as Effect from 'effect/Effect';
+import * as Exit from 'effect/Exit';
 import * as Fiber from 'effect/Fiber';
+import * as Schedule from 'effect/Schedule';
+import * as Scope from 'effect/Scope';
 
-import { makeSignalShutdownController } from '../src/daemon/lifecycle.js';
+import { resolveDaemonConfig } from '../src/daemon/config.js';
+import { pingDaemon } from '../src/daemon/control.js';
+import {
+  makeSignalShutdownController,
+  runForegroundDaemon,
+  stopDaemon,
+} from '../src/daemon/lifecycle.js';
+import { bindDaemonSocket } from '../src/daemon/main.js';
 import {
   monitorSocketOwnership,
   readSocketIdentity,
   removeSocketIfOwned,
 } from '../src/daemon/socket-ownership.js';
+import { scopedTempDir } from './harness.js';
+
+const connectOnce = (socketPath: string): Effect.Effect<void, Error> =>
+  Effect.callback<void, Error>((resume) => {
+    const client = connect(socketPath);
+    client.once('connect', () => {
+      client.destroy();
+      resume(Effect.void);
+    });
+    client.once('error', (error) => resume(Effect.fail(error)));
+  });
 
 describe('signal shutdown lifecycle', () => {
   it('keeps teardown alive and forces SIGTERM exit after the grace window', () => {
@@ -83,6 +106,36 @@ describe('signal shutdown lifecycle', () => {
     expect(interrupted).toBe(1);
     expect(exitCodes).toEqual([130]);
   });
+
+  it.live('keeps its signal handlers installed for repeats until teardown completes', () =>
+    Effect.gen(function* () {
+      const root = yield* scopedTempDir('cargo-hauler-signal-');
+      const config = resolveDaemonConfig({
+        CARGO_HAULER_STATE_DIR: join(root, 'state'),
+        CARGO_HAULER_KACHE_INDEX: '',
+      });
+      const before = new Set(process.rawListeners('SIGINT'));
+      const running = runForegroundDaemon(config);
+      yield* pingDaemon(config.socketPath, 500).pipe(
+        Effect.retry(Schedule.spaced('50 millis').pipe(Schedule.upTo({ times: 400 }))),
+      );
+
+      const added = process.rawListeners('SIGINT').filter((listener) => !before.has(listener));
+      expect(added).toHaveLength(1);
+      // `process.once` hands back a wrapper carrying `.listener` and removes
+      // itself on the first signal, so a second Ctrl-C would reach Node's
+      // default handler and skip every finalizer (lock and socket left
+      // behind). The daemon must register with `process.on` and let its
+      // `signaled` guard swallow repeats.
+      expect(Object.hasOwn(added[0] as object, 'listener')).toBe(false);
+
+      yield* stopDaemon(config);
+      const outcome = yield* Effect.promise(() => running);
+      expect(outcome.message).toBe('completed');
+      expect(process.rawListeners('SIGINT').filter((listener) => !before.has(listener))).toEqual(
+        [],
+      );
+    }), 30_000);
 });
 
 describe('socket ownership lifecycle', () => {
@@ -125,4 +178,32 @@ describe('socket ownership lifecycle', () => {
       await rm(stateDir, { recursive: true, force: true });
     }
   });
+
+  it.live('closing a superseded server leaves the replacement daemon bound and reachable', () =>
+    Effect.gen(function* () {
+      const stateDir = yield* scopedTempDir('cargo-hauler-socket-rename-');
+      const socketPath = join(stateDir, 'daemon.sock');
+      const replacementScope = yield* Scope.make();
+      yield* Effect.addFinalizer(() => Scope.close(replacementScope, Exit.void));
+
+      const replacement = yield* Effect.scoped(
+        Effect.gen(function* () {
+          const superseded = yield* bindDaemonSocket(socketPath);
+          expect(superseded.identity).not.toBeNull();
+          // A replacement daemon judged us dead: it removed the path and
+          // bound its own socket there, exactly what monitorSocketOwnership
+          // exists to detect. Our teardown must not take it down with us.
+          yield* Effect.promise(() => rm(socketPath, { force: true }));
+          return yield* bindDaemonSocket(socketPath).pipe(
+            Effect.provideService(Scope.Scope, replacementScope),
+          );
+        }),
+      );
+
+      expect(existsSync(socketPath)).toBe(true);
+      expect(yield* Effect.promise(() => readSocketIdentity(socketPath))).toEqual(
+        replacement.identity,
+      );
+      yield* connectOnce(socketPath);
+    }));
 });

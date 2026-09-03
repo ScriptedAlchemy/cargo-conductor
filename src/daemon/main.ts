@@ -1,4 +1,5 @@
 import { rmSync } from 'node:fs';
+import { rename } from 'node:fs/promises';
 
 import { NodeServices, NodeSocketServer } from '@effect/platform-node';
 import { version } from 'agent-bundle/meta';
@@ -7,6 +8,7 @@ import * as Deferred from 'effect/Deferred';
 import * as Effect from 'effect/Effect';
 import * as Layer from 'effect/Layer';
 import * as References from 'effect/References';
+import type * as Scope from 'effect/Scope';
 import type * as SocketServer from 'effect/unstable/socket/SocketServer';
 
 import { isNamedPipePath } from '../status.js';
@@ -19,13 +21,14 @@ import { KacheStatusLive } from './kache-status.js';
 import { Ledger, LedgerLive } from './ledger.js';
 import { makeConnectionHandler } from './server.js';
 import type { SingletonLockError } from './singleton.js';
-import { acquireSingletonLock } from './singleton.js';
+import { acquireSingletonLockWith } from './singleton.js';
 import {
   monitorSocketOwnership,
   readSocketIdentity,
   removeSocketIfOwned,
   SocketOwnershipLostError,
 } from './socket-ownership.js';
+import type { SocketIdentity } from './socket-ownership.js';
 import { TopologyLive } from './topology.js';
 
 export const daemonVersion = version;
@@ -48,9 +51,60 @@ const minimumLogLevelLayer = Layer.unwrap(
   ),
 );
 
+export interface BoundDaemonSocket {
+  /** `null` for a Windows named pipe, which has no filesystem identity. */
+  readonly identity: SocketIdentity | null;
+  readonly server: SocketServer.SocketServer['Service'];
+}
+
+/**
+ * Bind the daemon's control socket and publish it at `socketPath`.
+ *
+ * libuv unlinks a unix server's listen path by name, unconditionally, when
+ * the server closes. Listening on the canonical path directly would let a
+ * daemon that lost ownership delete the replacement daemon's socket on its
+ * way out — the exact case `monitorSocketOwnership` exists for. So the server
+ * listens on a pid-unique sibling name and that entry is renamed over the
+ * canonical path once listening (rename is atomic: clients see either no
+ * socket or ours). Closing then unlinks only the vacated sibling name, and
+ * the inode-guarded `removeSocketIfOwned` stays the sole remover of the
+ * canonical path.
+ */
+export const bindDaemonSocket = (
+  socketPath: string,
+): Effect.Effect<
+  BoundDaemonSocket,
+  SocketOwnershipLostError | SocketServer.SocketServerError,
+  Scope.Scope
+> =>
+  Effect.gen(function* () {
+    if (isNamedPipePath(socketPath)) {
+      // A Windows named pipe is not a filesystem entry: nothing to rename,
+      // nothing for close() to unlink.
+      const server = yield* NodeSocketServer.make({ path: socketPath });
+      return { identity: null, server };
+    }
+    const listenPath = `${socketPath}.${process.pid}`;
+    yield* Effect.sync(() => rmSync(listenPath, { force: true }));
+    const server = yield* NodeSocketServer.make({ path: listenPath });
+    // Stat before the rename: the inode is ours for certain, whereas the
+    // canonical path could already name a competing daemon's socket.
+    const identity = yield* Effect.tryPromise({
+      try: () => readSocketIdentity(listenPath),
+      catch: (cause) => new SocketOwnershipLostError({ cause, socketPath }),
+    });
+    yield* Effect.tryPromise({
+      try: () => rename(listenPath, socketPath),
+      catch: (cause) => new SocketOwnershipLostError({ cause, socketPath }),
+    });
+    yield* Effect.addFinalizer(() =>
+      Effect.ignore(Effect.tryPromise(() => removeSocketIfOwned(socketPath, identity))),
+    );
+    return { identity, server };
+  });
+
 const daemonProgram = Effect.gen(function* () {
   const config = yield* DaemonConfig;
-  yield* acquireSingletonLock;
   // We hold the singleton lock, so an existing socket file is a leftover
   // from a crashed daemon and safe to remove. A Windows named pipe is not a
   // filesystem entry (it vanishes with its server), so there is nothing to
@@ -63,22 +117,9 @@ const daemonProgram = Effect.gen(function* () {
   const reaped = yield* ledger.reapOrphans(Date.now(), 'orphaned by daemon restart');
   const broker = yield* Broker;
   const shutdownLatch = yield* Deferred.make<void>();
-  const server = yield* NodeSocketServer.make({ path: config.socketPath });
-  const socketOwnership = isNamedPipePath(config.socketPath)
-    ? Effect.never
-    : Effect.gen(function* () {
-        const identity = yield* Effect.tryPromise({
-          try: () => readSocketIdentity(config.socketPath),
-          catch: (cause) =>
-            new SocketOwnershipLostError({ cause, socketPath: config.socketPath }),
-        });
-        yield* Effect.addFinalizer(() =>
-          Effect.ignore(
-            Effect.tryPromise(() => removeSocketIfOwned(config.socketPath, identity)),
-          ),
-        );
-        return yield* monitorSocketOwnership(config.socketPath, identity);
-      });
+  const { identity, server } = yield* bindDaemonSocket(config.socketPath);
+  const socketOwnership =
+    identity === null ? Effect.never : monitorSocketOwnership(config.socketPath, identity);
   const suffix = reaped > 0 ? `, reaped ${reaped} orphaned requests` : '';
   yield* Effect.logInfo(
     `cargo-hauler daemon listening on ${config.socketPath} (pid ${process.pid}${suffix})`,
@@ -109,12 +150,21 @@ export const runDaemon = (
   DaemonOutcome,
   SingletonLockError | SocketOwnershipLostError | SocketServer.SocketServerError
 > =>
-  Effect.scoped(daemonProgram).pipe(
+  Effect.scoped(
+    Effect.gen(function* () {
+      // The lock comes before the layers: building LedgerLive opens the
+      // database writable, migrates, and backfills, and BrokerLive drains
+      // the passthrough spool. A losing instance must do none of that, nor
+      // race the live daemon's own drain. The lock's scope outlives the
+      // layers, so it is released after the ledger closes.
+      yield* acquireSingletonLockWith(config);
+      yield* daemonProgram.pipe(Effect.provide(appLayer(config)));
+    }),
+  ).pipe(
     // Defects escaping any daemon fiber must land in the log at Error, not
     // vanish at the default level.
     Effect.provideService(References.UnhandledLogLevel, 'Error'),
-    // One merged provide: chained provides can split layer lifecycles.
-    Effect.provide(Layer.mergeAll(appLayer(config), minimumLogLevelLayer)),
+    Effect.provide(minimumLogLevelLayer),
     Effect.as('completed' as const),
     Effect.catchTag('DaemonAlreadyRunning', () => Effect.succeed('already-running' as const)),
   );
