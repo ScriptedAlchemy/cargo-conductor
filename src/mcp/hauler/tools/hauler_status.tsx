@@ -4,15 +4,17 @@ import React from 'react';
 
 import { StatusDocument } from '../../../components/documents.js';
 import { mcpSurface } from '../../../components/surface.js';
+import { APP_RESOURCE_URI } from '../../../constants.js';
 import { loadStatusResult } from '../../../lib/inspect.js';
 import { statusInputSchema, statusResultSchema } from '../../../lib/protocol-schemas.js';
 import { requestDaemonConfig } from '../../../lib/request-config.js';
 import { hasStatusFilters } from '../../../lib/status-filter.js';
 
 export const config = {
-  // The compiler reads this literal statically; it must equal
-  // APP_RESOURCE_URI in src/constants.ts (pinned by tests).
-  _meta: { ui: { resourceUri: 'ui://cargo-hauler/dashboard.html' } },
+  // The compiler resolves the imported const statically (one relative hop to
+  // a string-literal `export const`), so the App route and this tool share
+  // one source for the dashboard URI instead of hand-synced literals.
+  _meta: { ui: { resourceUri: APP_RESOURCE_URI } },
   annotations: { readOnlyHint: true },
   description:
     'Show cargo-hauler queue and in-flight work. Filter by cwd, session, laneKey, tickets, statuses, or commandContains instead of piping CLI JSON through jq.',

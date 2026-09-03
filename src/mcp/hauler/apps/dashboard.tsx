@@ -1,11 +1,13 @@
 /// <reference lib="dom" />
 import { RegistryProvider, useAtomRefresh, useAtomSet, useAtomValue } from '@effect/atom-react';
+import type { AppRouteConfig } from 'agent-bundle';
 import { version as dashboardVersion } from 'agent-bundle/meta';
 import { Cause, Data, Effect, Option } from 'effect';
 import { AsyncResult, Atom } from 'effect/unstable/reactivity';
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { createRoot } from 'react-dom/client';
 
+import { APP_RESOURCE_URI } from '../../../constants.js';
 import {
   admissionHoldDetail,
   argvText,
@@ -58,15 +60,16 @@ import {
 } from '../../../dashboard/lib.js';
 
 /**
- * Framework app-route metadata. Must stay a static object literal of string
- * literals: the compiler extracts it without evaluating the module, so it
- * cannot reference `APP_RESOURCE_URI` from `src/constants.ts` — keep the two
- * in sync by hand. `template` resolves relative to the project root.
+ * Framework App-route metadata. The compiler extracts it without evaluating
+ * the module, following the one relative import to read `APP_RESOURCE_URI`'s
+ * string literal (`src/constants.ts` is the single source of the URI; the
+ * `hauler_status` tool and the rendered skill import the same const).
+ * `template` resolves beside this module, like its imports.
  */
 export const config = {
-  resourceUri: 'ui://cargo-hauler/dashboard.html',
-  template: './src/mcp/hauler/apps/dashboard.html',
-};
+  resourceUri: APP_RESOURCE_URI,
+  template: './dashboard.html',
+} satisfies AppRouteConfig;
 
 interface JsonRpcMessage {
   readonly jsonrpc?: unknown;
