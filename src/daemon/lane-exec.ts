@@ -40,6 +40,8 @@ import {
   guarded,
   makeAttachment,
   planDemux,
+  quietMsSinceOutput,
+  queuedWaitIsDelayed,
 } from './job-state.js';
 import type { Attachment, Job, JobState, SubmitCallbacks, SubmitInput } from './job-state.js';
 import type { LedgerApi } from './ledger.js';
@@ -49,7 +51,7 @@ import {
   memoryPressureLevel,
   memoryPsi,
 } from './pressure.js';
-import type { FinishedStatus, LaneStatus } from './protocol.js';
+import type { FinishedStatus, LaneStatus, QueueContext } from './protocol.js';
 import { ReplayBuffer } from './replay.js';
 import { selectNextIndex, shouldDeferAdmission } from './scheduler.js';
 import type { TicketDirectory } from './ticket-directory.js';
@@ -106,6 +108,14 @@ export interface LaneRuntime {
   readonly enqueueJob: (lane: Lane, job: Job) => Effect.Effect<number>;
   readonly settleInterruptedJob: (job: Job) => Effect.Effect<void>;
   readonly laneStatuses: () => Effect.Effect<readonly LaneStatus[]>;
+  readonly requestStatusFields: (
+    ticket: string,
+    atMs: number,
+  ) => Effect.Effect<{
+    readonly queue?: QueueContext;
+    readonly delayed?: true;
+    readonly quietMs?: number;
+  }>;
   readonly interruptWorkers: () => Effect.Effect<void>;
 }
 
@@ -170,6 +180,7 @@ export const makeLaneRuntime = (deps: LaneRuntimeDeps): Effect.Effect<LaneRuntim
           tail: new TailBuffer(config.outputTailBytes),
           estimateMs,
           startedAtMs: null,
+          lastOutputAtMs: null,
           editedRecently,
           depClosure,
         };
@@ -198,27 +209,7 @@ export const makeLaneRuntime = (deps: LaneRuntimeDeps): Effect.Effect<LaneRuntim
       Effect.sync(() => {
         const nowMs = Date.now();
         const index = selectNextIndex(
-          lane.pending.map((candidate) => {
-            let unblocks = 0;
-            if (candidate.intent.packages.length > 0) {
-              for (const other of lane.pending) {
-                if (other === candidate || other.depClosure.size === 0) {
-                  continue;
-                }
-                if (candidate.intent.packages.some((name) => other.depClosure.has(name))) {
-                  unblocks += 1 + other.attachments.size;
-                }
-              }
-            }
-            return {
-              id: candidate.id,
-              estimateMs: candidate.estimateMs,
-              waiters: candidate.attachments.size,
-              unblocks,
-              ageMs: nowMs - candidate.queuedAtMs,
-              editedRecently: candidate.editedRecently,
-            };
-          }),
+          lane.pending.map((candidate) => scheduleCandidate(candidate, lane.pending, nowMs)),
         );
         return index === -1 ? undefined : lane.pending.splice(index, 1)[0];
       });
@@ -514,6 +505,7 @@ export const makeLaneRuntime = (deps: LaneRuntimeDeps): Effect.Effect<LaneRuntim
         const runStartedAtMs = Date.now();
         const queuedAttachments = yield* Effect.sync(() => {
           job.startedAtMs = runStartedAtMs;
+          job.lastOutputAtMs = runStartedAtMs;
           return [...job.attachments.values()];
         });
         yield* Effect.sync(() => {
@@ -759,6 +751,108 @@ export const makeLaneRuntime = (deps: LaneRuntimeDeps): Effect.Effect<LaneRuntim
         })),
       );
 
+    function scheduleCandidate(
+      candidate: Job,
+      pending: readonly Job[],
+      nowMs: number,
+    ) {
+      let unblocks = 0;
+      if (candidate.intent.packages.length > 0) {
+        for (const other of pending) {
+          if (other === candidate || other.depClosure.size === 0) {
+            continue;
+          }
+          if (candidate.intent.packages.some((name) => other.depClosure.has(name))) {
+            unblocks += 1 + other.attachments.size;
+          }
+        }
+      }
+      return {
+        id: candidate.id,
+        estimateMs: candidate.estimateMs,
+        waiters: candidate.attachments.size,
+        unblocks,
+        ageMs: nowMs - candidate.queuedAtMs,
+        editedRecently: candidate.editedRecently,
+      };
+    }
+
+    const orderedPending = (lane: Lane, nowMs: number): readonly Job[] => {
+      const remaining = [...lane.pending];
+      const ordered: Job[] = [];
+      while (remaining.length > 0) {
+        const index = selectNextIndex(
+          remaining.map((candidate) => scheduleCandidate(candidate, remaining, nowMs)),
+        );
+        if (index === -1) {
+          break;
+        }
+        const next = remaining.splice(index, 1)[0];
+        if (next !== undefined) {
+          ordered.push(next);
+        }
+      }
+      return ordered;
+    };
+
+    const requestStatusFields: LaneRuntime['requestStatusFields'] = (ticket, atMs) =>
+      Effect.sync(() => {
+        const entry = directory.get(ticket);
+        if (entry === undefined) {
+          return {};
+        }
+        const leader = entry.kind === 'leader' ? entry.job : entry.leader;
+        if (leader.startedAtMs !== null) {
+          const quietMs = quietMsSinceOutput(leader.lastOutputAtMs, atMs);
+          return quietMs === undefined ? {} : { quietMs };
+        }
+
+        const ownCreatedAtMs =
+          entry.kind === 'leader' ? entry.job.queuedAtMs : entry.attachment.createdAtMs;
+        const ownEstimateMs =
+          entry.kind === 'leader' ? entry.job.estimateMs : entry.attachment.estimateMs;
+        const delayed = queuedWaitIsDelayed(Math.max(0, atMs - ownCreatedAtMs), ownEstimateMs);
+        const lane = lanes.get(leader.laneKey);
+        if (lane === undefined) {
+          return delayed ? { delayed: true } : {};
+        }
+        const pending = orderedPending(lane, atMs);
+        const targetIndex = pending.indexOf(leader);
+        if (targetIndex === -1) {
+          return delayed ? { delayed: true } : {};
+        }
+
+        const ahead = pending.slice(0, targetIndex);
+        let waitEtaMs = ahead.reduce((total, job) => total + job.estimateMs, 0);
+        const aheadTickets = ahead.map((job) => job.ticket);
+        let position = ahead.length;
+        let headFields: Partial<QueueContext> = {};
+        if (lane.running !== null) {
+          const runningEntry = directory.get(lane.running);
+          const headStartedAtMs =
+            runningEntry?.kind === 'leader' ? runningEntry.job.startedAtMs : null;
+          if (runningEntry?.kind === 'leader' && headStartedAtMs !== null) {
+            const head = runningEntry.job;
+            const headElapsedMs = Math.max(0, atMs - headStartedAtMs);
+            aheadTickets.unshift(head.ticket);
+            position += 1;
+            waitEtaMs += head.estimateMs - headElapsedMs;
+            headFields = {
+              headElapsedMs,
+              headEstimateMs: head.estimateMs,
+              headTicket: head.ticket,
+            };
+          }
+        }
+        const queue: QueueContext = {
+          aheadTickets,
+          position,
+          waitEtaMs: Math.max(0, waitEtaMs),
+          ...headFields,
+        };
+        return delayed ? { delayed: true, queue } : { queue };
+      });
+
     const interruptWorkers = (): Effect.Effect<void> =>
       Effect.gen(function* () {
         const workers = yield* Effect.sync(() => [...laneWorkers]);
@@ -776,6 +870,7 @@ export const makeLaneRuntime = (deps: LaneRuntimeDeps): Effect.Effect<LaneRuntim
       enqueueJob,
       settleInterruptedJob,
       laneStatuses,
+      requestStatusFields,
       interruptWorkers,
     } satisfies LaneRuntime;
   });

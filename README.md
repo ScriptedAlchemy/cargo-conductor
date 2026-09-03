@@ -92,7 +92,8 @@ of four jobs.
 | Admission | Per-core load, Linux CPU PSI, configured thresholds, and the global process cap control new starts. |
 | Scheduling | EWMA estimates, optional kache priors, fan-out, dependency topology, recent edits, and request age determine lane order. |
 | Persistence | Tickets, output tails, timings, outcomes, and savings are stored in SQLite. |
-| Caller output and status | Output streams to attached callers; late callers receive buffered replay. After 30 seconds without output, the client emits a progress heartbeat every 15 seconds. |
+| Caller output and status | Output streams to attached callers; late callers receive buffered replay. After 30 seconds without output, the client emits a progress heartbeat every 15 seconds. Queued heartbeats include the lane queue position, the lane-head ticket with its elapsed time and estimate, and an aggregate wait ETA, so a busy lane is distinguishable from a stall. |
+| Wait escalation | A queued request waiting longer than twice its own estimate (or ten minutes) is flagged as delayed in status rows, the dashboard, and heartbeats. Running jobs silent for more than five minutes show a quiet-duration hint; nothing is killed automatically. |
 
 ### Metric time windows
 
@@ -242,7 +243,10 @@ The `hauler` MCP server projects the same operations:
 
 The dashboard displays contention and admission state, active runs, queued
 requests, metrics, optional kache data, active lanes, and completed history.
-Status and log views can read ledger data while the daemon is stopped.
+Delayed queued requests carry a visible cue, and running rows that have
+produced no output for several minutes show a quiet-duration hint (long
+compile and link phases are legitimately silent). Status and log views can
+read ledger data while the daemon is stopped.
 
 ## Configuration
 

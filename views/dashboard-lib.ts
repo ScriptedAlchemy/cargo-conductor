@@ -1044,6 +1044,21 @@ export const queuedWaitThresholdMs = 1_000;
 export const queuedWaitMs = (waitMs: unknown): number | null =>
   typeof waitMs === 'number' && waitMs >= queuedWaitThresholdMs ? waitMs : null;
 
+export const delayedWaitCue = (delayed: unknown): string | null =>
+  delayed === true ? 'wait exceeds estimate' : null;
+
+export const quietOutputHint = (
+  quietMs: unknown,
+): { readonly label: string; readonly title: string } | null => {
+  if (typeof quietMs !== 'number' || !Number.isFinite(quietMs) || quietMs < 0) {
+    return null;
+  }
+  return {
+    label: `quiet ${Math.floor(quietMs / 60_000)}m`,
+    title: 'no output — long compile/link phases can be silent; check kache/rustc activity',
+  };
+};
+
 /** A lane is worth a row only while it holds work. */
 export const laneIsActive = (lane: {
   readonly queued?: unknown;

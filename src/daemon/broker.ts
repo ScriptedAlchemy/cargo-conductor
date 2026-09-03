@@ -330,8 +330,21 @@ export const BrokerLive: Layer.Layer<
       return text.length === 0 ? record : { ...record, outputTail: text, outputTailLive: true };
     };
 
+    const withLiveStatus = (
+      record: RequestRecord | null,
+      atMs = Date.now(),
+    ): Effect.Effect<RequestRecord | null> => {
+      if (record === null || isTerminalStatus(record.status)) {
+        return Effect.succeed(record);
+      }
+      const liveRecord = withLiveTail(record) ?? record;
+      return lanesRuntime.requestStatusFields(record.ticket, atMs).pipe(
+        Effect.map((fields) => ({ ...liveRecord, ...fields })),
+      );
+    };
+
     const getTicket = (ticket: string): Effect.Effect<RequestRecord | null> =>
-      ledger.getRequestByTicket(ticket).pipe(Effect.map(withLiveTail));
+      ledger.getRequestByTicket(ticket).pipe(Effect.flatMap((record) => withLiveStatus(record)));
 
     const recordAttempt = (
       input: AttemptInput,
@@ -369,10 +382,14 @@ export const BrokerLive: Layer.Layer<
               Effect.map((record) => ({ record, timedOut: false })),
               Effect.catchTag('TimeoutError', () =>
                 ledger.getRequestByTicket(ticket).pipe(
-                  Effect.map((record) => ({
-                    record: withLiveTail(record),
-                    timedOut: record === null || !isTerminalStatus(record.status),
-                  })),
+                  Effect.flatMap((record) =>
+                    withLiveStatus(record).pipe(
+                      Effect.map((liveRecord) => ({
+                        record: liveRecord,
+                        timedOut: liveRecord === null || !isTerminalStatus(liveRecord.status),
+                      })),
+                    ),
+                  ),
                 ),
               ),
             );
@@ -482,7 +499,12 @@ export const BrokerLive: Layer.Layer<
         });
         yield* ledger.ingestPassthroughSpool(config.stateDir);
         const laneStatuses: readonly LaneStatus[] = yield* lanesRuntime.laneStatuses();
-        const active = yield* ledger.activeStatusRequests();
+        const reportAtMs = Date.now();
+        const activeRecords = yield* ledger.activeStatusRequests();
+        const active = yield* Effect.forEach(
+          activeRecords,
+          (record) => withLiveStatus(record, reportAtMs).pipe(Effect.map((live) => live ?? record)),
+        );
         const recent = yield* ledger.recentStatusRequests(recentLimit);
         const cargoRun = yield* Metric.value(cargoRunMetric);
         const cargoRunByKind = yield* Effect.forEach(

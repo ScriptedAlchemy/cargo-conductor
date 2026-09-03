@@ -1,4 +1,4 @@
-import type { AttachMode } from '../daemon/protocol.js';
+import type { AttachMode, QueueContext } from '../daemon/protocol.js';
 
 export type ProgressEvent =
   | {
@@ -29,6 +29,11 @@ export type ProgressEvent =
       readonly elapsedMs: number;
       readonly phase: 'queued' | 'running';
       readonly ticket: string;
+      readonly command?: string;
+      readonly delayed?: boolean;
+      readonly estimateMs?: number | null;
+      readonly laneName?: string;
+      readonly queue?: QueueContext;
     }
   | {
       readonly kind: 'passthrough';
@@ -41,6 +46,16 @@ export type ProgressEvent =
     };
 
 const prefix = '[cargo-hauler]';
+
+const formatDuration = (ms: number): string => {
+  const seconds = Math.max(0, Math.floor(ms / 1000));
+  if (seconds < 90) {
+    return `${seconds}s`;
+  }
+  const minutes = Math.floor(seconds / 60);
+  const remainder = seconds % 60;
+  return `${minutes}m${remainder === 0 ? '' : `${remainder}s`}`;
+};
 
 export const formatProgressLine = (event: ProgressEvent): string => {
   switch (event.kind) {
@@ -67,8 +82,33 @@ export const formatProgressLine = (event: ProgressEvent): string => {
       return `${prefix} ticket ${event.ticket} requeued: ${event.reason}\n`;
     case 'started':
       return `${prefix} ticket ${event.ticket} started (waited ${event.waitMs}ms)\n`;
-    case 'heartbeat':
+    case 'heartbeat': {
+      if (event.command !== undefined) {
+        const delayed = event.delayed === true ? ' · wait exceeds estimate — lane busy' : '';
+        if (event.phase === 'queued' && event.queue !== undefined) {
+          const head =
+            event.queue.headTicket === undefined
+              ? ''
+              : ` (head ${event.queue.headTicket} running${
+                  event.queue.headElapsedMs === undefined
+                    ? ''
+                    : ` ${formatDuration(event.queue.headElapsedMs)}${
+                        event.queue.headEstimateMs === undefined
+                          ? ''
+                          : `/~${formatDuration(event.queue.headEstimateMs)}`
+                      }`
+                })`;
+          const lane = event.laneName === undefined ? event.ticket : event.laneName;
+          return `${prefix} ${event.ticket} queued — ${event.queue.position} ahead in ${lane}${head} · wait ~${formatDuration(event.queue.waitEtaMs)}${delayed} — ${event.command}\n`;
+        }
+        const estimate =
+          event.estimateMs === undefined || event.estimateMs === null
+            ? ''
+            : ` (est ~${formatDuration(event.estimateMs)})`;
+        return `${prefix} ${event.ticket} ${event.phase} ${formatDuration(event.elapsedMs)}${estimate}${delayed} — ${event.command}\n`;
+      }
       return `${prefix} ticket ${event.ticket} still ${event.phase} (${Math.floor(event.elapsedMs / 1000)}s)\n`;
+    }
     case 'passthrough':
       return `${prefix} ${event.reason}; running cargo directly\n`;
     case 'background': {

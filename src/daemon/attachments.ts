@@ -116,6 +116,7 @@ export const makeAttachmentRuntime = (deps: AttachmentRuntimeDeps): AttachmentRu
     Effect.gen(function* () {
       const encodedData = Buffer.from(data).toString('base64');
       const liveAttachments = yield* Effect.sync(() => {
+        job.lastOutputAtMs = Date.now();
         job.replay.push(channel, data, audience, encodedData);
         job.tail.push(data);
         const live: Attachment[] = [];

@@ -5,6 +5,10 @@ import * as Effect from 'effect/Effect';
 import * as Fiber from 'effect/Fiber';
 
 import { pingDaemon, requestOverSocket } from '../src/daemon/control.js';
+import {
+  quietMsSinceOutput,
+  queuedWaitIsDelayed,
+} from '../src/daemon/job-state.js';
 import { createLedgerApi, openLedgerDatabase } from '../src/daemon/ledger.js';
 import { runDaemon } from '../src/daemon/main.js';
 import type {
@@ -17,6 +21,7 @@ import type {
 import {
   decodeOutput,
   execRequest,
+  fetchReport,
   findExit,
   pollReport,
   shortId,
@@ -24,6 +29,18 @@ import {
 } from './harness.js';
 
 describe('hauler daemon', () => {
+  it('uses the greater of twice the estimate and ten minutes for delayed waits', () => {
+    expect(queuedWaitIsDelayed(600_000, 60_000)).toBe(false);
+    expect(queuedWaitIsDelayed(600_001, 60_000)).toBe(true);
+    expect(queuedWaitIsDelayed(1_200_000, 600_000)).toBe(false);
+    expect(queuedWaitIsDelayed(1_200_001, 600_000)).toBe(true);
+  });
+
+  it('only reports output quiet time after five minutes', () => {
+    expect(quietMsSinceOutput(1_000, 301_000)).toBeUndefined();
+    expect(quietMsSinceOutput(1_000, 301_001)).toBe(300_001);
+  });
+
   it('runs a cargo request end to end and ledgers the full lifecycle', () =>
     withDaemon(5, (fixture) =>
       Effect.gen(function* () {
@@ -128,6 +145,85 @@ describe('hauler daemon', () => {
           'running',
           'done',
         ]);
+      }),
+    ));
+
+  it('reports live lane queue context, delayed waits, and quiet running jobs', () =>
+    withDaemon(5, (fixture) =>
+      Effect.gen(function* () {
+        const holderFiber = yield* Effect.forkChild(
+          execRequest(fixture, {
+            argv: ['cargo', 'check', '-p', 'lane-head'],
+            cwd: fixture.ws1,
+            sleep: '0.8',
+          }),
+        );
+        const running = yield* pollReport(
+          fixture,
+          (report) =>
+            report.active.some(
+              (record) => record.status === 'running' && record.argv.includes('lane-head'),
+            ),
+        );
+        const holder = running.active.find((record) => record.argv.includes('lane-head'));
+        expect(holder).toBeDefined();
+
+        const firstQueuedFiber = yield* Effect.forkChild(
+          execRequest(fixture, {
+            argv: ['cargo', 'check', '-p', 'first-queued'],
+            cwd: fixture.ws1,
+          }),
+        );
+        yield* pollReport(
+          fixture,
+          (report) =>
+            report.active.some(
+              (record) => record.status === 'queued' && record.argv.includes('first-queued'),
+            ),
+        );
+        const secondQueuedFiber = yield* Effect.forkChild(
+          execRequest(fixture, {
+            argv: ['cargo', 'check', '-p', 'second-queued'],
+            cwd: fixture.ws1,
+          }),
+        );
+        const queued = yield* pollReport(
+          fixture,
+          (report) =>
+            report.active.some(
+              (record) =>
+                record.status === 'queued' &&
+                record.argv.includes('second-queued') &&
+                record.queue?.position === 2,
+            ),
+        );
+        const second = queued.active.find((record) => record.argv.includes('second-queued'));
+        expect(second?.queue).toMatchObject({
+          aheadTickets: expect.arrayContaining([holder?.ticket]),
+          headTicket: holder?.ticket,
+          position: 2,
+        });
+        expect(second?.queue?.headElapsedMs).toBeGreaterThanOrEqual(0);
+        expect(second?.queue?.headEstimateMs).toBeGreaterThan(0);
+        expect(second?.queue?.waitEtaMs).toBeGreaterThanOrEqual(0);
+
+        const realNow = Date.now;
+        const advancedFromMs = realNow();
+        Date.now = () => advancedFromMs + 600_001;
+        try {
+          const advanced = yield* fetchReport(fixture);
+          const delayed = advanced.active.find((record) => record.argv.includes('second-queued'));
+          const quiet = advanced.active.find((record) => record.argv.includes('lane-head'));
+          expect(delayed?.delayed).toBe(true);
+          expect(delayed?.queue?.waitEtaMs).toBe(0);
+          expect(quiet?.quietMs).toBeGreaterThan(300_000);
+        } finally {
+          Date.now = realNow;
+        }
+
+        yield* Fiber.join(holderFiber);
+        yield* Fiber.join(firstQueuedFiber);
+        yield* Fiber.join(secondQueuedFiber);
       }),
     ));
 
