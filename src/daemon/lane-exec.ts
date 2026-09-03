@@ -42,8 +42,11 @@ import {
   planDemux,
   quietMsSinceOutput,
   queuedWaitIsDelayed,
+  remainingEstimateMs,
+  settlementStep,
 } from './job-state.js';
 import type { Attachment, Job, JobState, SubmitCallbacks, SubmitInput } from './job-state.js';
+import { isSharedJobserverArmed } from './jobserver.js';
 import type { LedgerApi } from './ledger.js';
 import {
   cpuSomeAvg10,
@@ -79,11 +82,42 @@ export interface Lane {
   /** Capacity-one coalescing signal; the awakened worker drains pending jobs. */
   readonly wake: Queue.Queue<void>;
   running: string | null;
+  /**
+   * The job the worker took from `pending`, from the batch window through
+   * settlement. While it is parked at the load gate or on the permit it is
+   * in neither `pending` nor `running`, yet it still runs ahead of the queue.
+   */
+  head: Job | null;
 }
 
 /** Lane identity: one FIFO per (workspace root, resolved cargo target dir). */
 export const laneKeyFor = (workspaceRoot: string, targetDir: string): string =>
   JSON.stringify([workspaceRoot, targetDir]);
+
+const pinsJobs = (argument: string): boolean =>
+  argument === '-j' || argument.startsWith('--jobs') || /^-j\d+$/u.test(argument);
+
+/**
+ * Environment for a spawned cargo. The machine-wide jobserver FIFO owns
+ * parallelism whenever the daemon armed it: cargo only joins an inherited
+ * jobserver while `-j`/`build.jobs` is unset, so pinning `CARGO_BUILD_JOBS`
+ * would opt every run out of the shared budget. The per-run grant is the
+ * fallback for daemons that could not arm the FIFO, and never overrides a
+ * caller's own `-j` flag or `CARGO_BUILD_JOBS`. Uniform for all callers, so
+ * it never fragments intent identity.
+ */
+export const cargoExecEnv = (
+  jobsGrant: number,
+  input: Pick<SubmitInput, 'argv' | 'env'>,
+  jobserverArmed: boolean,
+): Readonly<Record<string, string>> | undefined => {
+  const grantsJobs =
+    !jobserverArmed &&
+    jobsGrant > 0 &&
+    input.env?.CARGO_BUILD_JOBS === undefined &&
+    !input.argv.some(pinsJobs);
+  return grantsJobs ? { ...input.env, CARGO_BUILD_JOBS: String(jobsGrant) } : input.env;
+};
 
 export interface LaneRuntimeDeps {
   readonly config: DaemonConfigShape;
@@ -235,6 +269,12 @@ export const makeLaneRuntime = (deps: LaneRuntimeDeps): Effect.Effect<LaneRuntim
      * attachments. check/build/clippy composites gain the followers' `-p`
      * flags; test/nextest composites rewrite the selection so one run serves
      * every participant (union of packages, `--test` targets, and filters).
+     *
+     * Only `queued` candidates fold: a pending job already in
+     * `kill-requested` (disconnect cleanup leaves it in the lane) would
+     * otherwise be compiled for nobody and settled `done` instead of `killed`.
+     * Folded followers keep their own `mergeStderr`; the composite's channels
+     * are forwarded as the leader produced them.
      */
     const foldBatch = (lane: Lane, leader: Job): Effect.Effect<void> =>
       Effect.gen(function* () {
@@ -252,6 +292,7 @@ export const makeLaneRuntime = (deps: LaneRuntimeDeps): Effect.Effect<LaneRuntim
             const candidate = lane.pending[index];
             if (
               candidate === undefined ||
+              Ref.getUnsafe(candidate.state) !== 'queued' ||
               !batchCompatibleFor(kind, leader.intent, candidate.intent)
             ) {
               continue;
@@ -437,6 +478,8 @@ export const makeLaneRuntime = (deps: LaneRuntimeDeps): Effect.Effect<LaneRuntim
      * The single idempotent settlement path for every claimed leader
      * lifecycle. Once the state claim wins, ledger rows, waiter notification,
      * in-flight cleanup, callbacks, and attachments complete uninterruptibly.
+     * Each step is isolated: the claim is spent, so a defect in one (a busy
+     * ledger) must not leave the lane held or the followers without an exit.
      */
     const settleJob = (
       attachmentLane: Lane | null,
@@ -453,24 +496,33 @@ export const makeLaneRuntime = (deps: LaneRuntimeDeps): Effect.Effect<LaneRuntim
           if (!won) {
             return;
           }
+          const step = (label: string, effect: Effect.Effect<void>): Effect.Effect<void> =>
+            settlementStep(`${label} (${job.ticket})`, effect);
           const startedAtMs = job.startedAtMs;
           const waitMs = Math.max(0, (startedAtMs ?? atMs) - job.queuedAtMs);
           const runMs = startedAtMs === null ? 0 : Math.max(0, atMs - startedAtMs);
-          yield* ledger.markFinished(job.id, {
-            status,
-            atMs,
-            exitCode,
-            signal,
-            outputTail: startedAtMs === null ? null : job.tail.toString(),
-            error,
-            ...diagnosticFinishFields(job.demux?.globalDiagnostics ?? null),
-          });
-          yield* Metric.update(jobOutcomeMetric, status);
-          if (startedAtMs !== null) {
-            yield* Metric.update(waitMsSummary, waitMs);
-          }
-          yield* directory.notifyWaiters(job.ticket);
-          yield* completeExit(job);
+          yield* step(
+            'ledger.markFinished',
+            ledger.markFinished(job.id, {
+              status,
+              atMs,
+              exitCode,
+              signal,
+              outputTail: startedAtMs === null ? null : job.tail.toString(),
+              error,
+              ...diagnosticFinishFields(job.demux?.globalDiagnostics ?? null),
+            }),
+          );
+          yield* step(
+            'metrics',
+            Metric.update(jobOutcomeMetric, status).pipe(
+              Effect.andThen(
+                startedAtMs === null ? Effect.void : Metric.update(waitMsSummary, waitMs),
+              ),
+            ),
+          );
+          yield* step('notifyWaiters', directory.notifyWaiters(job.ticket));
+          yield* step('completeExit', completeExit(job));
           yield* guarded(
             job.callbacks.onExit({
               ticket: job.ticket,
@@ -482,16 +534,19 @@ export const makeLaneRuntime = (deps: LaneRuntimeDeps): Effect.Effect<LaneRuntim
               error,
             }),
           );
-          yield* attachments.settleAttachments(
-            attachmentLane === null
-              ? null
-              : (attachment, reason) => requeueAttachment(attachmentLane, attachment, reason),
-            job,
-            status,
-            exitCode,
-            signal,
-            error,
-            atMs,
+          yield* step(
+            'settleAttachments',
+            attachments.settleAttachments(
+              attachmentLane === null
+                ? null
+                : (attachment, reason) => requeueAttachment(attachmentLane, attachment, reason),
+              job,
+              status,
+              exitCode,
+              signal,
+              error,
+              atMs,
+            ),
           );
         }),
       );
@@ -552,18 +607,7 @@ export const makeLaneRuntime = (deps: LaneRuntimeDeps): Effect.Effect<LaneRuntim
             }),
           { discard: true },
         );
-        // Split the machine between admitted builds unless the caller chose
-        // its own parallelism (flag or env). Uniform for all callers, so it
-        // never fragments intent identity.
-        const grantsJobs =
-          config.jobsGrant > 0 &&
-          job.input.env?.CARGO_BUILD_JOBS === undefined &&
-          !job.input.argv.some(
-            (argument) => argument === '-j' || argument.startsWith('--jobs') || /^-j\d+$/u.test(argument),
-          );
-        const execEnv = grantsJobs
-          ? { ...job.input.env, CARGO_BUILD_JOBS: String(config.jobsGrant) }
-          : job.input.env;
+        const execEnv = cargoExecEnv(config.jobsGrant, job.input, isSharedJobserverArmed());
         const result: ExecutionResult = yield* executeCargo({
           argv: job.execArgv,
           cwd: job.input.cwd,
@@ -709,6 +753,18 @@ export const makeLaneRuntime = (deps: LaneRuntimeDeps): Effect.Effect<LaneRuntim
             }
           });
 
+    /**
+     * Resolves once a kill lands on a job that has not started. A kill that
+     * arrives after `claimStart` belongs to the run — the executor races the
+     * same signal — so this arm parks forever rather than interrupting an
+     * admitted run.
+     */
+    const killedBeforeStart = (job: Job): Effect.Effect<void> =>
+      Deferred.await(job.killSignal).pipe(
+        Effect.andThen(Ref.get(job.state)),
+        Effect.flatMap((state) => (state === 'kill-requested' ? Effect.void : Effect.never)),
+      );
+
     const processJob = (lane: Lane, job: Job): Effect.Effect<void> =>
       Effect.gen(function* () {
         const state = yield* Ref.get(job.state);
@@ -721,7 +777,7 @@ export const makeLaneRuntime = (deps: LaneRuntimeDeps): Effect.Effect<LaneRuntim
         }
         const heavy = heavyLeader(job);
         const claimed = { value: false };
-        yield* waitForLoadHeadroom(job, heavy, claimed).pipe(
+        const admitAndRun = waitForLoadHeadroom(job, heavy, claimed).pipe(
           Effect.andThen(
             admission.withPermits(1)(
               Ref.update(admittedCount, (count) => count + 1).pipe(
@@ -730,21 +786,37 @@ export const makeLaneRuntime = (deps: LaneRuntimeDeps): Effect.Effect<LaneRuntim
               ),
             ),
           ),
+        );
+        // A job parked at the load gate or on the permit can wait minutes
+        // (and blocks its whole lane); a kill must settle it right away
+        // instead of waiting for a permit it will never use.
+        yield* Effect.raceFirst(
+          admitAndRun,
+          killedBeforeStart(job).pipe(Effect.andThen(finishKilledBeforeRun(lane, job))),
+        ).pipe(
           Effect.ensuring(Effect.suspend(() => (claimed.value ? releaseHeavy : Effect.void))),
         );
       }).pipe(Effect.onInterrupt(() => settleInterruptedJob(job)));
 
+    const stillQueued = (job: Job): Effect.Effect<boolean> =>
+      Ref.get(job.state).pipe(Effect.map((state) => state === 'queued'));
+
     const processLaneJob = (lane: Lane, job: Job): Effect.Effect<void> =>
       Effect.gen(function* () {
+        // A kill-requested head neither waits for nor leads a batch: it
+        // would fold followers only to requeue them one by one.
         if (
           config.batchEnabled &&
           config.batchWindowMs > 0 &&
           lane.pending.length === 0 &&
-          batchKindFor(job.intent) !== null
+          batchKindFor(job.intent) !== null &&
+          (yield* stillQueued(job))
         ) {
           yield* Effect.sleep(`${config.batchWindowMs} millis`);
         }
-        yield* foldBatch(lane, job);
+        if (yield* stillQueued(job)) {
+          yield* foldBatch(lane, job);
+        }
         yield* processJob(lane, job);
       }).pipe(
         Effect.catchCauseIf(
@@ -769,8 +841,18 @@ export const makeLaneRuntime = (deps: LaneRuntimeDeps): Effect.Effect<LaneRuntim
           if (job === undefined) {
             return;
           }
+          yield* Effect.sync(() => {
+            lane.head = job;
+          });
           yield* processLaneJob(lane, job).pipe(
             Effect.annotateLogs({ ticket: job.ticket, lane: lane.key }),
+            Effect.ensuring(
+              Effect.sync(() => {
+                if (lane.head === job) {
+                  lane.head = null;
+                }
+              }),
+            ),
           );
         }
       });
@@ -805,6 +887,7 @@ export const makeLaneRuntime = (deps: LaneRuntimeDeps): Effect.Effect<LaneRuntim
             pending: [],
             wake,
             running: null,
+            head: null,
           };
           lanes.set(key, lane);
           const worker = yield* Effect.forkIn(laneWorker(lane), daemonScope);
@@ -903,22 +986,21 @@ export const makeLaneRuntime = (deps: LaneRuntimeDeps): Effect.Effect<LaneRuntim
         const aheadTickets = ahead.map((job) => job.ticket);
         let position = ahead.length;
         let headFields: Partial<QueueContext> = {};
-        if (lane.running !== null) {
-          const runningEntry = directory.get(lane.running);
-          const headStartedAtMs =
-            runningEntry?.kind === 'leader' ? runningEntry.job.startedAtMs : null;
-          if (runningEntry?.kind === 'leader' && headStartedAtMs !== null) {
-            const head = runningEntry.job;
-            const headElapsedMs = Math.max(0, atMs - headStartedAtMs);
-            aheadTickets.unshift(head.ticket);
-            position += 1;
-            waitEtaMs += head.estimateMs - headElapsedMs;
-            headFields = {
-              headElapsedMs,
-              headEstimateMs: head.estimateMs,
-              headTicket: head.ticket,
-            };
-          }
+        // The lane head — running, or parked at the gate before its permit —
+        // runs before everything pending. An overrunning head contributes
+        // zero remaining time, never a negative that cancels queued work.
+        const head = lane.head;
+        if (head !== null && head !== leader && Ref.getUnsafe(head.state) !== 'finished') {
+          aheadTickets.unshift(head.ticket);
+          position += 1;
+          waitEtaMs += remainingEstimateMs(head, atMs);
+          headFields = {
+            ...(head.startedAtMs === null
+              ? {}
+              : { headElapsedMs: Math.max(0, atMs - head.startedAtMs) }),
+            headEstimateMs: head.estimateMs,
+            headTicket: head.ticket,
+          };
         }
         const queue: QueueContext = {
           aheadTickets,
