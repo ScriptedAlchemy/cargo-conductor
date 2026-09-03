@@ -45,7 +45,7 @@ const kacheText = (status: StatusResult): string | null => {
     return 'not detected (cost priors fall back to ledger history)';
   }
   const fresh = kache.eventsFreshMs === null ? '' : `, events ${formatMs(kache.eventsFreshMs)} old`;
-  return `${countWord(kache.entryCount, 'entry')} across ${countWord(kache.distinctCrates, 'crate')} (${formatBytes(kache.indexSizeBytes)})${fresh}`;
+  return `${countWord(kache.entryCount, 'entry', 'entries')} across ${countWord(kache.distinctCrates, 'crate')} (${formatBytes(kache.indexSizeBytes)})${fresh}`;
 };
 
 export const StatusOverview = ({ nowMs, status }: StatusOverviewProps) => {
