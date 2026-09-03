@@ -123,7 +123,8 @@ valueless `Agent.Result` container around one `Suspense` boundary:
 used; and when the transport publishes no session id (bare stdio MCP), the
 conversation from `request.lineage` becomes the session of record. That is
 what makes parallel agents' builds attributable in the ledger, the dashboard,
-and `hauler_status --session <conversation>`. Results carry
+and `hauler status --session <conversation>` (the `hauler_status` tool takes
+the same filter as its `session` field). Results carry
 `attribution: { host, session, lineage }`.
 
 ### Routes
