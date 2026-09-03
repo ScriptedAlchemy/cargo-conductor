@@ -478,7 +478,7 @@ data is the daemon's own. The repository ships no preview harness of its own.
 
 agent-bundle does not yet have an npm release; this repository pins the
 [pkg.pr.new](https://pkg.pr.new) preview of main commit
-[`886b1921f`](https://github.com/ScriptedAlchemy/agent-bundle/commit/886b1921f64f7b857528acda32d94c4d0df9bba7)
+[`5775351fb`](https://github.com/ScriptedAlchemy/agent-bundle/commit/5775351fbc1c82e2861a9d69cad78adb086d052d)
 for both `agent-bundle` and `@agent-bundle/runtime`. `inspect` reports the
 `agent` component kind as unavailable on every host (agent-bundle G5
 deferral); this plugin defines no agents. Two framework limitations observed
