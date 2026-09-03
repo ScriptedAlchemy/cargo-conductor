@@ -29,7 +29,7 @@ were accepted as incident evidence and were not reproduced.
 
 ### Live and persistent sysctls
 
-`/etc/sysctl.d/99-hauler-swap-tuning.conf` now contains:
+`/etc/sysctl.d/99-swap-tuning.conf` now contains:
 
 ```ini
 vm.page-cluster = 0
@@ -45,13 +45,13 @@ reducing aggressive anonymous-memory spill into the disk tier.
 Revert:
 
 ```bash
-sudo rm /etc/sysctl.d/99-hauler-swap-tuning.conf
+sudo rm /etc/sysctl.d/99-swap-tuning.conf
 sudo sysctl -w vm.page-cluster=0 vm.watermark_scale_factor=10 vm.swappiness=150
 ```
 
 ### Zram next-boot sizing
 
-`/etc/systemd/zram-generator.conf.d/99-hauler-swap-tuning.conf` overrides the
+`/etc/systemd/zram-generator.conf.d/99-zram-size.conf` overrides the
 main generator file with:
 
 ```ini
@@ -68,7 +68,7 @@ swapoff constraint.
 Revert:
 
 ```bash
-sudo rm /etc/systemd/zram-generator.conf.d/99-hauler-swap-tuning.conf
+sudo rm /etc/systemd/zram-generator.conf.d/99-zram-size.conf
 ```
 
 The existing main generator file then restores the 24 GiB cap on the next
@@ -94,48 +94,21 @@ sudo sed -i '\|^/var/tmp/td-toolprof-swapfile none swap sw,pri=-2 0 0$|d' /etc/f
 sudo systemctl daemon-reload
 ```
 
-## Staged recommendations requiring sign-off
+## Declined: per-service and kill-policy tuning
 
-Nothing in this section was installed, enabled, or restarted. Candidate files
-are under `/var/tmp/cargo-hauler-host-tuning-staged/`.
+Staged systemd-oomd and TraceDecay-specific memory policies were prepared
+during the audit and then removed at the operator's direction (2026-09-02):
+the preference is general OS-level swap behavior fixes, not per-service or
+kill-policy carve-outs. The audit facts that motivated them remain recorded
+above for future reference.
 
-### systemd-oomd candidate
-
-The staged systemd-native choice is:
-
-- `oomd/90-hauler-pressure.conf`: global 60% memory-pressure threshold held
-  for 30 seconds.
-- `oomd/90-hauler-user-slices.conf`: opts per-user slices into
-  `ManagedOOMMemoryPressure=kill`.
-- `install-candidate.sh oomd`: installs the Ubuntu `systemd-oomd` package
-  while runtime-masked, installs both policies, then explicitly enables it.
-
-This integrates with cgroup v2 and PSI and kills a descendant cgroup rather
-than selecting a process by regex. `earlyoom` is simpler and more predictable
-when process-name control is paramount: a candidate policy would prefer
-`^(rustc|rg|node)$` and avoid `^(cursor|sshd|tracedecay)$`. It polls
-free-memory and swap thresholds rather than using PSI, so systemd-oomd is the
-staged default. Enabling either policy changes kill behavior and needs
-operator sign-off.
-
-### TraceDecay candidate
-
-`tracedecay/90-host-memory-guard.conf` proposes:
-
-```ini
-[Service]
-MemoryAccounting=yes
-MemoryHigh=22G
-MemoryMax=26G
-MemorySwapMax=8G
-OOMScoreAdjust=0
-```
-
-This starts throttling below the old peak, creates a finite resident and swap
-envelope, and removes the explicit global-OOM victim bias. The install script
-updates the authoritative `systemctl --user set-property` memory controls and
-installs the reviewable drop-in, but deliberately does not restart the
-service. Product-owner sign-off and a maintenance window are required.
+One general Linux behavior worth knowing in this context: the kernel never
+proactively swaps pages back in. Pages pushed to swap return only when
+touched, so swap occupancy stays high long after memory pressure ends. The
+general remedies are prevention (lower swappiness, larger compressed tier —
+both applied here) and, when desired, an explicit operator-initiated drain
+(`swapoff -a && swapon -a`) during a quiet window with enough free RAM to
+absorb the resident set being pulled back.
 
 ## Interaction with cargo-hauler admission
 
