@@ -589,7 +589,9 @@ export const makeLaneRuntime = (deps: LaneRuntimeDeps): Effect.Effect<LaneRuntim
         // A compile error is still a measured build time; without it a broken
         // build would be re-estimated at the cold-start default on every retry.
         if (result.outcome !== 'killed') {
-          yield* costModel.recordOutcome(job.intent.key, finishedAtMs - runStartedAtMs);
+          yield* costModel.recordOutcome(job.intent.key, finishedAtMs - runStartedAtMs, {
+            outcome: result.outcome,
+          });
         }
         yield* settleJob(
           lane,

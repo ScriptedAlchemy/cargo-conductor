@@ -271,6 +271,47 @@ describe('runExecClient', () => {
       expect(collected.stderr()).not.toContain('fake-err');
     }));
 
+  it.live('strips ANSI from a merged stream when the shared descriptor is not a color-capable TTY', () =>
+    Effect.gen(function* () {
+      const fixture = yield* scopedDaemon(5);
+      const collected = collectIo();
+      const colored = '\u001b[31mred\u001b[0m';
+      const result = yield* runExecClient({
+        argv: ['cargo', 'run', colored],
+        autoSpawn: false,
+        config: fixture.config,
+        cwd: fixture.ws1,
+        env: fakeCargoEnv(fixture),
+        io: collected.io,
+        mergeStderr: true,
+        stdoutColor: false,
+      });
+
+      expect(result.exitCode).toBe(0);
+      // Direct `cargo run 2>&1 | tee log` sees no color (cargo's `auto` on a
+      // pipe); the merged brokered stream must not leak the captured `always`.
+      expect(collected.stdout()).toContain('fake-err:run red');
+      expect(collected.stdout()).not.toContain('\u001b');
+    }));
+
+  it.live('honours the merge in a passthrough run when the daemon is unreachable', () =>
+    Effect.gen(function* () {
+      const fixture = yield* scopedFixture(5);
+      const collected = collectIo();
+      const result = yield* runExecClient({
+        argv: ['cargo', 'run'],
+        autoSpawn: false,
+        config: fixture.config,
+        cwd: fixture.ws1,
+        env: fakeCargoEnv(fixture),
+        io: collected.io,
+        mergeStderr: true,
+      });
+
+      expect(result.mode).toBe('passthrough');
+      expect(collected.stdout()).toMatch(/^fake-out:run\nfake-err:run\nfake-jobs:\S+\n$/u);
+    }));
+
   it.live('keeps channels separate for a demultiplexed build even when the caller shares one fd', () =>
     Effect.gen(function* () {
       const fixture = yield* scopedDaemon(5);

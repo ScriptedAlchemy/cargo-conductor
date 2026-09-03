@@ -6,7 +6,13 @@ import { AwaitStream } from '../../../components/streaming.js';
 import { mcpSurface } from '../../../components/surface.js';
 import { awaitResultSchema, ticketInputSchema } from '../../../lib/protocol-schemas.js';
 import { requestDaemonConfig } from '../../../lib/request-config.js';
-import { awaitTicketResult, defaultAwaitMs, fetchTicketResult, progressMessage } from '../../../lib/tickets.js';
+import {
+  awaitTicketResult,
+  defaultAwaitMs,
+  fetchTicketResult,
+  progressMessage,
+  renderBoundedWaitMs,
+} from '../../../lib/tickets.js';
 
 export const config = {
   annotations: { readOnlyHint: true },
@@ -21,11 +27,13 @@ export const resultSchema = awaitResultSchema;
 export default async function HaulerAwait({ input, signal }: ToolRouteProps<typeof inputSchema>) {
   const context = await agent();
   const daemonConfig = requestDaemonConfig(context);
-  const maxWaitMs = input.maxWaitMs ?? defaultAwaitMs;
+  const requestedWaitMs = input.maxWaitMs ?? defaultAwaitMs;
   const startedAt = Date.now();
   // The shell frame: the ticket as it is right now, before the wait blocks.
   const snapshot = await fetchTicketResult(input, { config: daemonConfig, signal });
-  const awaited = awaitTicketResult(input, {
+  // What the render session can still afford after the snapshot fetch.
+  const maxWaitMs = renderBoundedWaitMs(requestedWaitMs, Date.now() - startedAt);
+  const awaited = awaitTicketResult({ ...input, maxWaitMs }, {
     config: daemonConfig,
     // Heartbeats become MCP progress notifications. Progress is best-effort:
     // a host that cannot deliver it must not fail the wait.

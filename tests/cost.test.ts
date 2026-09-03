@@ -308,6 +308,26 @@ describe('createCostModel', () => {
       }
     }));
 
+  it.effect('a failed run teaches its own intent but never the per-crate priors of others', () =>
+    Effect.gen(function* () {
+      const model = createCostModel({
+        kacheReader: null,
+        seedDurations: () => Effect.succeed([]),
+      });
+      const broken = intent(['cargo', 'check', '-p', 'alpha']);
+      yield* model.estimate(broken);
+      // A compile error 3 s in says nothing about how long `alpha` takes to
+      // build once it compiles; only the retry of this exact intent should
+      // stop being estimated cold (#37).
+      yield* model.recordOutcome(broken.key, 3_000, { outcome: 'failed' });
+
+      const retry = yield* model.estimate(broken);
+      expect(retry.source).toBe('ewma');
+
+      const sibling = yield* model.estimate(intent(['cargo', 'clippy', '-p', 'alpha']));
+      expect(sibling.source).toBe('default');
+    }));
+
   it.effect('reuses crate/profile/subcommand-class observations for a new intent key', () =>
     Effect.gen(function* () {
       const model = createCostModel({

@@ -10,12 +10,13 @@ import { describeRequestRecord, displayRequestRecord } from '../query.js';
 
 import type { TicketRequestContext } from './attribution.js';
 import { enrichTicketRequest, ticketAttribution } from './attribution.js';
-import type {
-  AwaitResult,
-  RequestInput,
-  RequestSubmitResult,
-  ResultFetchResult,
-  TicketInput,
+import {
+  awaitMaxWaitMs,
+  type AwaitResult,
+  type RequestInput,
+  type RequestSubmitResult,
+  type ResultFetchResult,
+  type TicketInput,
 } from './protocol-schemas.js';
 import { runTicketEffect } from './ticket-errors.js';
 
@@ -30,6 +31,19 @@ export interface AwaitOptions extends TicketOptions {
 }
 
 export const defaultAwaitMs = 30_000;
+
+/** Socket accept + response timeouts the client adds on top of the daemon wait (`client/tickets.ts`). */
+export const awaitTransportSlackMs = 4_000;
+
+/**
+ * The daemon wait one rendered `await` may still afford. The route clock has
+ * already spent `elapsedMs` (fetching the ticket snapshot), and the socket
+ * round trip adds `awaitTransportSlackMs`; the remainder of the 55 s ceiling
+ * is what is left before the framework's 60 s render session would expire
+ * with the result in hand but undelivered (#32).
+ */
+export const renderBoundedWaitMs = (requestedMs: number, elapsedMs: number): number =>
+  Math.max(0, Math.min(requestedMs, awaitMaxWaitMs - elapsedMs - awaitTransportSlackMs));
 
 /** A heartbeat line without the `[cargo-hauler]` prefix, for progress channels that label the source themselves. */
 export const progressMessage = (line: string): string =>

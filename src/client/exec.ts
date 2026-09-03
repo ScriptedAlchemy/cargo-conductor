@@ -73,6 +73,13 @@ export interface RunExecOptions {
   readonly session?: string;
   readonly silenceThresholdMs?: number;
   /**
+   * Whether the consumer of stdout renders ANSI color. Only consulted for a
+   * merged stream (`mergeStderr`), where cargo's captured `always` color
+   * would otherwise reach a pipe or file that direct cargo (`auto`) would
+   * have left uncolored. Defaults like `stderrColor`, against stdout's TTY.
+   */
+  readonly stdoutColor?: boolean;
+  /**
    * Whether the consumer of stderr renders ANSI color. When false, cargo
    * output chunks (demux-rendered diagnostics keep their color on the wire)
    * are stripped before reaching `io`, so a pipe/capture never sees escape
@@ -128,6 +135,20 @@ const withStrippedStderr = (io: ExecIo): ExecIo => {
   };
 };
 
+/** A merged stream is text from both channels, so the binary-stdout caveat no longer applies. */
+const withStrippedStdout = (io: ExecIo): ExecIo => {
+  const stripper = new AnsiStreamStripper();
+  return {
+    writeStderr: io.writeStderr,
+    writeStdout: (data) => {
+      const stripped = stripper.push(data);
+      if (stripped.byteLength > 0) {
+        io.writeStdout(stripped);
+      }
+    },
+  };
+};
+
 interface PassthroughMode {
   readonly reason: string;
   /**
@@ -152,6 +173,7 @@ const passthrough = (
       cwd: options.cwd,
       env: options.env,
       killSignal,
+      mergeStderr: options.mergeStderr === true,
       onOutput: (channel, data) => Effect.sync(() => writeChannel(options.io, channel, data)),
       tailBytes: 0,
     });
@@ -426,7 +448,7 @@ const streamBrokered = (
         ...(options.session === undefined ? {} : { session: options.session }),
         ...(options.workspaceRoot === undefined ? {} : { workspaceRoot: options.workspaceRoot }),
         ...(options.background === true ? { background: true } : {}),
-        ...((options.mergeStderr ?? sharesOutputTarget(1, 2)) ? { mergeStderr: true } : {}),
+        ...(options.mergeStderr === true ? { mergeStderr: true } : {}),
       }),
     ).pipe(Effect.mapError((error) => mapOpenError(error, config.socketPath)));
 
@@ -522,9 +544,16 @@ export const runExecClient = (
 ): Effect.Effect<RunExecResult> => {
   const stderrColor =
     rawOptions.stderrColor ?? colorEnabled(process.env, process.stderr.isTTY === true);
-  const options: RunExecOptions = stderrColor
-    ? rawOptions
-    : { ...rawOptions, io: withStrippedStderr(rawOptions.io) };
+  const mergeStderr = rawOptions.mergeStderr ?? sharesOutputTarget(1, 2);
+  const stdoutColor =
+    rawOptions.stdoutColor ?? colorEnabled(process.env, process.stdout.isTTY === true);
+  const stripStderr = stderrColor ? (io: ExecIo) => io : withStrippedStderr;
+  const stripStdout = mergeStderr && !stdoutColor ? withStrippedStdout : (io: ExecIo) => io;
+  const options: RunExecOptions = {
+    ...rawOptions,
+    io: stripStdout(stripStderr(rawOptions.io)),
+    mergeStderr,
+  };
   const config = options.config ?? resolveDaemonConfig();
   // Help/version and other non-compiling queries never take a ticket: a
   // brokered query would hold a lane slot behind a generic multi-minute

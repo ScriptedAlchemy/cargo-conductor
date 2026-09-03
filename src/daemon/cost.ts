@@ -30,13 +30,27 @@ export interface CostEstimate {
   readonly source: EstimateSource;
 }
 
+export interface RecordOutcomeOptions {
+  /**
+   * `failed` runs (a compile error seconds in) still time this exact intent —
+   * a retry must not be re-estimated cold — but say nothing about how long
+   * the crates take to build once they compile, so they never feed the
+   * per-crate priors shared with other intents. Default `done`.
+   */
+  readonly outcome?: 'done' | 'failed';
+}
+
 export interface CostModelApi {
   readonly estimate: (
     intent: NormalizedCargoIntent,
     closurePackages?: ReadonlySet<string> | readonly string[],
   ) => Effect.Effect<CostEstimate>;
   readonly kacheStatus: Effect.Effect<KacheStatusReport | null>;
-  readonly recordOutcome: (intentKey: string, runMs: number) => Effect.Effect<void>;
+  readonly recordOutcome: (
+    intentKey: string,
+    runMs: number,
+    options?: RecordOutcomeOptions,
+  ) => Effect.Effect<void>;
 }
 
 export class CostModel extends Context.Service<CostModel, CostModelApi>()(
@@ -467,7 +481,7 @@ export const createCostModel = (options: CreateCostModelOptions): CostModelWithP
             : ('default' as const);
         return { estimateMs, source };
       }),
-    recordOutcome: (intentKey, runMs) =>
+    recordOutcome: (intentKey, runMs, recordOptions) =>
       Effect.gen(function* () {
         const validRunMs = finitePositiveMs(runMs);
         if (validRunMs === null) {
@@ -483,7 +497,11 @@ export const createCostModel = (options: CreateCostModelOptions): CostModelWithP
           );
         });
         const context = intentContexts.get(intentKey);
-        if (context === undefined || context.crateKeys.length === 0) {
+        if (
+          recordOptions?.outcome === 'failed' ||
+          context === undefined ||
+          context.crateKeys.length === 0
+        ) {
           return;
         }
         // Invert the same parallelism model used by estimate(): if N crates
