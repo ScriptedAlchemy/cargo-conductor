@@ -52,15 +52,17 @@ const withEnv = async (
 };
 
 describe('hauler script', () => {
-  it('warns once when the removed legacy state-dir variable is present', () => {
+  it('warns about the removed legacy state-dir variable, except on the exec hot path', () => {
     const lines: string[] = [];
-    warnRemovedLegacyStateDir(
-      { CARGO_CONDUCTOR_STATE_DIR: '/tmp/dead-path' },
-      (line) => lines.push(typeof line === 'string' ? line : Buffer.from(line).toString('utf8')),
-    );
+    const collect = (line: string | Uint8Array) =>
+      lines.push(typeof line === 'string' ? line : Buffer.from(line).toString('utf8'));
+    const env = { CARGO_CONDUCTOR_STATE_DIR: '/tmp/dead-path' };
+    warnRemovedLegacyStateDir(['status'], env, collect);
     expect(lines).toEqual([
       'warning: CARGO_CONDUCTOR_STATE_DIR is no longer supported; use CARGO_HAULER_STATE_DIR instead.\n',
     ]);
+    warnRemovedLegacyStateDir(['exec', '--host', 'shim', '--', 'cargo', 'check'], env, collect);
+    expect(lines).toHaveLength(1);
   });
 
   it('prints usage and exits 2 without arguments', async () => {

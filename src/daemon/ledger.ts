@@ -7,6 +7,7 @@ import * as Effect from 'effect/Effect';
 import * as Layer from 'effect/Layer';
 
 import { isRecord } from '../lib/guards.js';
+import '../lib/quiet-sqlite-warning.js';
 
 import { DaemonConfig } from './config.js';
 import { defaultCargoProfile } from './intent-normalizer.js';

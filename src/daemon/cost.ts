@@ -1,5 +1,7 @@
 import { DatabaseSync } from 'node:sqlite';
 
+import '../lib/quiet-sqlite-warning.js';
+
 import * as Context from 'effect/Context';
 import * as Effect from 'effect/Effect';
 import * as Layer from 'effect/Layer';

@@ -15,5 +15,6 @@ export default defineConfig({
       ),
     },
   },
+  setupFiles: ['./tests/setup/isolate-state.ts'],
   testEnvironment: 'node',
 });

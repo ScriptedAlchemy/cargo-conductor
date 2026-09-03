@@ -59,11 +59,17 @@ const defaultWriteStderr = (data: string | Uint8Array): void => {
   process.stderr.write(data);
 };
 
+/**
+ * `exec` is the shim/hook hot path: its stderr lands in an agent's tool output
+ * on every cargo call, so the reminder about the removed variable is only
+ * printed for commands a person runs by hand.
+ */
 export const warnRemovedLegacyStateDir = (
+  argv: readonly string[],
   env: Readonly<Record<string, string | undefined>> = process.env,
   writeStderr: (data: string | Uint8Array) => void = defaultWriteStderr,
 ): void => {
-  if (env.CARGO_CONDUCTOR_STATE_DIR !== undefined) {
+  if (argv[0] !== 'exec' && env.CARGO_CONDUCTOR_STATE_DIR !== undefined) {
     writeStderr(
       'warning: CARGO_CONDUCTOR_STATE_DIR is no longer supported; use CARGO_HAULER_STATE_DIR instead.\n',
     );
@@ -261,6 +267,6 @@ export const runScript = async (
  * artifact (the hook rewrite target) and as the package `hauler` bin.
  */
 export const main = async (argv: readonly string[]): Promise<number> => {
-  warnRemovedLegacyStateDir();
+  warnRemovedLegacyStateDir(argv);
   return runScript(argv);
 };
