@@ -135,7 +135,7 @@ export const resolveDaemonConfig = (
   const defaultJobsGrant = Math.max(4, Math.floor(availableParallelism() / maxConcurrent));
   return {
     stateDir,
-    socketPath: daemonSocketPath(stateDir, platform),
+    socketPath: daemonSocketPath(stateDir, platform, env),
     databasePath: join(stateDir, 'ledger.db'),
     lockTargetPath: join(stateDir, 'daemon.pid'),
     logPath: join(stateDir, 'daemon.log'),

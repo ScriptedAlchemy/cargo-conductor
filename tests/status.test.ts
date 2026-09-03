@@ -114,6 +114,27 @@ describe('daemon control endpoint per platform', () => {
     expect(isNamedPipePath(daemonSocketPath('/tmp/state', 'linux'))).toBe(false);
   });
 
+  it('moves the socket to a short runtime path when the state dir would overflow sun_path', () => {
+    // macOS caps a unix socket path at 104 bytes (Linux 108); a deep state
+    // dir such as a realpath'd temp root silently fails to bind otherwise.
+    const deep = `/private/var/folders/3m/${'x'.repeat(30)}/T/cc-portable-state-abc123/nested/state`;
+    const socket = daemonSocketPath(deep, 'darwin', { TMPDIR: '/private/var/folders/3m/short/T' });
+    expect(Buffer.byteLength(socket)).toBeLessThanOrEqual(103);
+    expect(socket.startsWith('/private/var/folders/3m/short/T/')).toBe(true);
+    expect(socket.endsWith('.sock')).toBe(true);
+    // Deterministic: every process that resolves the same state dir agrees.
+    expect(daemonSocketPath(deep, 'darwin', { TMPDIR: '/private/var/folders/3m/short/T' })).toBe(socket);
+    // A different state dir gets a different socket.
+    expect(daemonSocketPath(`${deep}2`, 'darwin', { TMPDIR: '/private/var/folders/3m/short/T' })).not.toBe(socket);
+  });
+
+  it('prefers XDG_RUNTIME_DIR over the shared temp dir for the fallback socket on linux', () => {
+    const deep = `/${'d'.repeat(100)}/state`;
+    const socket = daemonSocketPath(deep, 'linux', { TMPDIR: '/tmp', XDG_RUNTIME_DIR: '/run/user/1000' });
+    expect(socket.startsWith('/run/user/1000/')).toBe(true);
+    expect(Buffer.byteLength(socket)).toBeLessThanOrEqual(107);
+  });
+
   it('listens on a \\\\.\\pipe\\ named pipe on win32, never a filesystem .sock path', () => {
     const config = resolveDaemonConfig(winEnv, 'win32');
     // Node net.Server.listen treats a path as Windows IPC only under the
