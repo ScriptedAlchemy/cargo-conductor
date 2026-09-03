@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.4.2
+
+### Patch Changes
+
+- 747f311: Remove `scripts/preview-dashboard.mjs`; preview the dashboard App through `agent-bundle dev` (the Workbench MCP page previews `ui://cargo-hauler/dashboard.html` over its bound session), and point the `hauler-dashboard` skill and README at it (#49)
+- c5bfc4b: Add `hauler kill <ticket>` and the `hauler_kill` tool: a queued ticket is dropped, a running one has its cargo process group terminated (SIGTERM, then SIGKILL after `CARGO_HAULER_KILL_GRACE_MS`) and its lane freed, with riders settled by the daemon. The skill and session context now say to use it instead of killing cargo PIDs (#46). The `maxWaitMs` ceiling on `await` is reported in plain words rather than a raw validator payload (#47).
+- 5f89f16: Merged-output runs (`cargo run 2>&1`, a shared terminal) strip cargo's captured color when the shared descriptor is not a color-capable TTY, matching direct cargo's `auto`, and the merge is honoured in passthrough runs too. `hauler await` / `hauler_await` subtract the time already spent fetching the ticket snapshot from the daemon wait, so the worst case stays under the render session. A failed run times its own intent for retries but no longer feeds the per-crate priors shared with other intents.
+
 ## 0.4.1
 
 ### Patch Changes
