@@ -149,13 +149,22 @@ const runExecCommand = async (argv: readonly string[], options: ScriptOptions): 
   );
 };
 
+const installShimUsage = 'Usage: hauler install-shim [--dir DIR] [--real-cargo PATH] [--force]\n';
+
 const runInstallShim = (rest: readonly string[], write: (value: string) => void): number => {
   const destIndex = rest.indexOf('--dir');
   const destDir = destIndex === -1 ? defaultShimDir() : rest[destIndex + 1];
   const realCargoIndex = rest.indexOf('--real-cargo');
   const realCargo = realCargoIndex === -1 ? 'cargo' : rest[realCargoIndex + 1];
-  if (destDir === undefined || realCargo === undefined) {
-    write('Usage: hauler install-shim [--dir DIR] [--real-cargo PATH] [--force]\n');
+  const consumed = new Set<number>();
+  for (const flagIndex of [destIndex, realCargoIndex]) {
+    if (flagIndex !== -1) {
+      consumed.add(flagIndex).add(flagIndex + 1);
+    }
+  }
+  const unknown = rest.filter((argument, index) => argument !== '--force' && !consumed.has(index));
+  if (destDir === undefined || realCargo === undefined || unknown.length > 0) {
+    write(installShimUsage);
     return 2;
   }
   try {

@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -166,6 +166,18 @@ describe('hauler script', () => {
           subcommand: 'status',
         });
       });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses install-shim with an unknown flag instead of installing anyway', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'cc-script-shim-'));
+    try {
+      const result = await run(['install-shim', '--dir', root, '--help']);
+      expect(result.code).toBe(2);
+      expect(result.text).toContain('Usage: hauler install-shim');
+      expect(existsSync(join(root, 'cargo'))).toBe(false);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

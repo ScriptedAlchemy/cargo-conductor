@@ -1,4 +1,13 @@
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -93,6 +102,15 @@ describe('PATH cargo shim', () => {
       );
       // Absolute non-existent path is the operator's call: embedded verbatim.
       expect(resolveRealCargo('/nonexistent/cargo', shimDir, env)).toBe('/nonexistent/cargo');
+      // rustup layout: ~/.cargo/bin/cargo is a symlink to the rustup proxy,
+      // which dispatches on argv[0]. The link must be embedded, not its target.
+      const rustupDir = join(root, 'rustup-bin');
+      mkdirSync(rustupDir, { recursive: true });
+      writeFileSync(join(rustupDir, 'rustup'), '#!/bin/sh\necho rustup\n');
+      symlinkSync('rustup', join(rustupDir, 'cargo'));
+      expect(resolveRealCargo('cargo', shimDir, { PATH: `${shimDir}:${rustupDir}` })).toBe(
+        join(rustupDir, 'cargo'),
+      );
 
       // installCargoShim wires the resolution in: a bare 'cargo' with only
       // the shim's own dir ahead still embeds the real absolute path.

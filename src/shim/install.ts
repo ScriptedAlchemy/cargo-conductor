@@ -90,7 +90,10 @@ export const resolveRealCargo = (
     if (!existsSync(candidate) || insideDest(candidate)) {
       continue;
     }
-    return canonical(candidate);
+    // Keep the symlink, not its target: rustup's `~/.cargo/bin/cargo` is a
+    // link to the `rustup` proxy, which picks the tool from argv[0]. Resolving
+    // it would make the shim run rustup itself instead of cargo.
+    return resolve(candidate);
   }
   throw new Error(
     `could not resolve a real ${realCargo} outside ${destDir}; pass --real-cargo /path/to/cargo`,
