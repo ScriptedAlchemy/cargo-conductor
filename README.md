@@ -333,18 +333,22 @@ heartbeats. Non-compiling cargo subcommands (`fmt`, `update`, `fetch`, `add`,
 `remove`, `generate-lockfile`, `vendor`, `new`, `init`, `info`, `uninstall`)
 run locally instead of queueing for a permit.
 
-The per-run `CARGO_BUILD_JOBS` grant defaults to the available cores divided
-across the configured permit count, with a floor of four jobs. Separately, the
-daemon arms one GNU make jobserver FIFO with `cores - 1` tokens when it
+The daemon arms one GNU make jobserver FIFO with `cores - 1` tokens when it
 acquires the singleton lock and passes it to every Cargo it spawns through
 `MAKEFLAGS`, so concurrent lanes share one global rustc parallelism budget.
+While the FIFO is armed no `CARGO_BUILD_JOBS` is injected, because Cargo only
+joins an inherited jobserver when `-j`/`build.jobs` is unset. The per-run
+`CARGO_BUILD_JOBS` grant — the available cores divided across the configured
+permit count, with a floor of four jobs — is the fallback for a daemon that
+could not arm the FIFO (no `mkfifo`, unwritable state directory). A caller's
+own `-j` flag or `CARGO_BUILD_JOBS` always wins over both.
 
 | Capability | Behavior |
 | --- | --- |
 | Work sharing | Identical requests attach, covered checks attach, and compatible queued compile or test requests fold. |
 | Lane isolation | A workspace-root and target-directory pair is serialized independently from other lanes. |
 | Admission | Per-core load, Linux CPU PSI, Linux memory PSI and `MemAvailable`, macOS VM pressure, configured thresholds, and the global permit cap control new starts. |
-| Parallelism | A per-run `CARGO_BUILD_JOBS` grant plus one daemon-owned jobserver FIFO shared by every spawned Cargo. |
+| Parallelism | One daemon-owned jobserver FIFO shared by every spawned Cargo; a per-run `CARGO_BUILD_JOBS` grant only when the FIFO could not be armed. |
 | Scheduling | EWMA estimates, optional kache priors, fan-out, dependency topology, recent edits, and request age determine lane order. |
 | Persistence | Tickets, output tails, timings, outcomes, and savings are stored in SQLite. |
 | Caller output and status | Output streams to attached callers; late callers receive buffered replay. After 30 seconds without output, the client emits a progress heartbeat every 15 seconds with lane queue position, the lane-head ticket, and an aggregate wait ETA. |
@@ -418,7 +422,7 @@ is reported as unavailable and never rejects a request.
 | `CARGO_HAULER_STATE_DIR` | Per-user cache directory | Unix socket or Windows named pipe source, SQLite ledger, daemon log, pid lock, `hook-state.json`, and `hook-events.jsonl`. No legacy alias. |
 | `CARGO_HAULER_CARGO_BIN` | `$CARGO_HOME/bin/cargo` | Cargo binary for daemon-started work; bare `cargo` is the last fallback. Never resolved through `PATH`. |
 | `CARGO_HAULER_MAX_CONCURRENT` | `5` | Global admission permits for Cargo processes across all lanes. |
-| `CARGO_HAULER_JOBS_GRANT` | `max(4, cores / max concurrent)` | `CARGO_BUILD_JOBS` added to each Cargo process; `0` disables injection. |
+| `CARGO_HAULER_JOBS_GRANT` | `max(4, cores / max concurrent)` | `CARGO_BUILD_JOBS` added to each Cargo process only while the shared jobserver FIFO is not armed; an armed daemon injects `MAKEFLAGS` instead and leaves `CARGO_BUILD_JOBS` unset. `0` disables injection. |
 | `CARGO_HAULER_LOAD_THRESHOLD` | Disabled | Per-core one-minute load threshold for deferring new admissions. |
 | `CARGO_HAULER_LOAD_MIN` | `2` | Active Cargo processes below which load, CPU PSI, and soft memory pressure do not defer admission. |
 | `CARGO_HAULER_CPU_PRESSURE_THRESHOLD` | `75` | Linux CPU PSI `some avg10` percentage for deferring new admissions; `0` disables. |
@@ -487,7 +491,7 @@ data is the daemon's own. The repository ships no preview harness of its own.
 
 agent-bundle does not yet have an npm release; this repository pins the
 [pkg.pr.new](https://pkg.pr.new) preview of main commit
-[`886b1921f`](https://github.com/ScriptedAlchemy/agent-bundle/commit/886b1921f64f7b857528acda32d94c4d0df9bba7)
+[`5775351fb`](https://github.com/ScriptedAlchemy/agent-bundle/commit/5775351fbc1c82e2861a9d69cad78adb086d052d)
 for both `agent-bundle` and `@agent-bundle/runtime`. `inspect` reports the
 `agent` component kind as unavailable on every host (agent-bundle G5
 deferral); this plugin defines no agents. Two framework limitations observed
