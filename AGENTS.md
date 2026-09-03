@@ -2,16 +2,22 @@
 
 ## Build and check
 
-- `pnpm run build` compiles the plugin bundle (`artifact/plugin`), the
-  workbench target (`artifact/portable`), and the package binaries
-  (`dist/bin/hauler.js`, `dist/bin/cargo-hauler.js`).
+- `pnpm run build` compiles one host pack per target (`artifact/claude`,
+  `artifact/codex`, `artifact/cursor`, `artifact/portable`) and the package
+  binaries (`dist/bin/hauler.js`, `dist/bin/cargo-hauler.js`,
+  `dist/bin/cargo-hauler-install.js`).
 - `pnpm run check` is the gate: validate, build, typecheck, Effect
   diagnostics, `rstest`, and the route-unit suite. Run it before claiming a
   change is done.
-- The plugin surface is agent-bundle framework mode: `src/mcp/hauler/tools`
-  and `src/mcp/hauler/apps` (MCP), `src/events` (hooks), `src/cli` (routed
-  CLI), `src/scripts/hauler.ts` (process entry). The README's layout table is
-  the map; do not reintroduce a hand-written server or argv parser.
+- The plugin surface is an agent-bundle application: `src/layout.tsx` (the
+  shell), `src/providers/hauler-daemon.ts` (daemon connection), `src/components`
+  (typed components over `view-models.ts`), `src/mcp/hauler/tools` and
+  `src/mcp/hauler/apps` (MCP), `src/events` (hook routes), `src/cli` (routed
+  CLI), `src/scripts/hauler.ts` (process entry), `src/skills`. The README's
+  tour is the map; do not reintroduce a hand-written server, argv parser, or
+  string-concatenated documents — add a component and a view-model.
+- Documents must stay honest: a daemon the probe could not reach renders as
+  `stopped`/`unresponsive` with its typed reason, never as an empty success.
 - Names are `hauler` / `cargo-hauler` / `CARGO_HAULER_*`. `CARGO_CONDUCTOR_*`
   survives only as a read-only compat alias for tuning values; never add a new
   one, and never honor it for state, socket, or database location.

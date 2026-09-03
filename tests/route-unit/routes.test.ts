@@ -1,48 +1,20 @@
-import { mkdtempSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-
 import { describe, expect, it } from 'effect-rstest';
 import { expectDocument, renderRoute, renderRouteEvents, testManifest } from 'agent-bundle/test';
 import * as Effect from 'effect/Effect';
 
-import type { DaemonConfigShape } from '../../src/daemon/config.js';
 import { requestOverSocket } from '../../src/daemon/control.js';
 import type { RequestRecord } from '../../src/daemon/protocol.js';
 import { scopedDaemon } from '../harness.js';
 
+import { documentMetadata, fakeCargoEnv, withDaemon, withIsolatedStateDir } from './support.js';
+
 /**
  * Route-unit proof: the hauler routes render the Agent Documents they claim,
  * through the framework compiler's own route compilation (no artifact build).
- * Daemon-backed cases run a real broker in-process and hand its config to the
- * routes through the `daemonConfig` provider seam.
+ * Daemon-backed cases run a real broker in-process and hand its connection to
+ * the routes through the `haulerDaemon` provider seam.
  */
 const manifest = testManifest();
-
-const withProvider = (config: DaemonConfigShape) => ({
-  context: { providers: { daemonConfig: config } },
-});
-
-const withIsolatedStateDir = async <A>(body: () => Promise<A>): Promise<A> => {
-  const root = mkdtempSync(join(tmpdir(), 'hauler-route-unit-'));
-  const previous = process.env.CARGO_HAULER_STATE_DIR;
-  process.env.CARGO_HAULER_STATE_DIR = join(root, 'state');
-  try {
-    return await body();
-  } finally {
-    if (previous === undefined) {
-      delete process.env.CARGO_HAULER_STATE_DIR;
-    } else {
-      process.env.CARGO_HAULER_STATE_DIR = previous;
-    }
-    rmSync(root, { recursive: true, force: true });
-  }
-};
-
-const fakeCargoEnv = (binDir: string): Record<string, string> => ({
-  CARGO_HAULER_CARGO_BIN: join(binDir, 'cargo'),
-  PATH: `${binDir}:${process.env.PATH ?? ''}`,
-});
 
 describe('route manifest', () => {
   it('compiles every hauler surface with no build and no errors', () => {
@@ -56,6 +28,7 @@ describe('route manifest', () => {
       'tool:hauler/hauler_await',
       'tool:hauler/hauler_result',
       'tool:hauler/hauler_request',
+      'event:session/start',
       'event:tool/before',
       'event:tool/after',
       'event:stop',
@@ -70,25 +43,43 @@ describe('route manifest', () => {
       expect(routes).toContain(id);
     }
   });
+
+  it('declares the hauler shell layout and the daemon provider', () => {
+    expect(manifest.layouts.map((layout) => layout.scope)).toContain('root');
+    expect(manifest.providers?.map((provider) => provider.key)).toEqual(['haulerDaemon']);
+  });
 });
 
 describe('tool documents without a daemon', () => {
-  it('renders status as a stopped daemon with nothing in flight', async () => {
+  it('renders status as a stopped daemon with nothing in flight, under the shell', async () => {
     await withIsolatedStateDir(async () => {
       const rendered = await renderRoute('tool:hauler/hauler_status', { input: {} });
       expectDocument(rendered)
         .toHaveStatus('success')
+        .toContainText('cargo-hauler · daemon stopped · no socket')
         .toContainText('daemon is not running')
         .toContainText('Nothing queued or running.')
-        .toContainMarkdown('**Daemon:** stopped');
+        .toContainContext('Dashboard: ui://cargo-hauler/dashboard.html');
       expect(rendered.result).toMatchObject({ active: [], daemon: 'stopped', operation: 'status' });
+      expect(documentMetadata(rendered.document)).toMatchObject({
+        hauler: {
+          daemon: { state: 'stopped' },
+          lineage: null,
+          route: 'tool:hauler/hauler_status',
+          server: 'mcp:hauler',
+          surface: 'tool',
+        },
+      });
     });
   });
 
   it('renders log and last as empty ledgers', async () => {
     await withIsolatedStateDir(async () => {
       const log = await renderRoute('tool:hauler/hauler_log', { input: { limit: 5 } });
-      expectDocument(log).toHaveStatus('success').toContainText('no hauler requests recorded');
+      expectDocument(log)
+        .toHaveStatus('success')
+        .toContainText('no hauler requests recorded')
+        .toContainText('The ledger has no requests yet.');
       expect(log.result).toMatchObject({ operation: 'log', requests: [] });
 
       const last = await renderRoute('tool:hauler/hauler_last', { input: {} });
@@ -101,6 +92,9 @@ describe('tool documents without a daemon', () => {
     await withIsolatedStateDir(async () => {
       await expect(
         renderRoute('tool:hauler/hauler_result', { input: { ticket: 'cc-1' } }),
+      ).rejects.toThrow('daemon unreachable');
+      await expect(
+        renderRoute('tool:hauler/hauler_await', { input: { maxWaitMs: 100, ticket: 'cc-1' } }),
       ).rejects.toThrow('daemon unreachable');
     });
   });
@@ -134,8 +128,9 @@ describe('tool documents against a live daemon', () => {
         const ticket = acked.ticket;
 
         yield* Effect.promise(async () => {
+          const daemon = await withDaemon(fixture.config);
           const submitted = await renderRoute('tool:hauler/hauler_request', {
-            ...withProvider(fixture.config),
+            ...daemon,
             input: { argv: ['cargo', 'check', '-p', 'ws1'], cwd: fixture.ws1, host: 'test', session: 's-1' },
           });
           // Identical request while the first runs: the broker attaches it,
@@ -145,19 +140,28 @@ describe('tool documents against a live daemon', () => {
           expectDocument(submitted)
             .toHaveStatus('success')
             .toContainText(`${attached} submitted`)
+            .toContainMarkdown('**Attributed to:** test / s-1')
             .toContainContext(`hauler_await ${attached}`);
+          expect(submitted.result).toMatchObject({
+            attribution: { host: 'test', lineage: null, session: 's-1' },
+          });
 
           const status = await renderRoute('tool:hauler/hauler_status', {
-            ...withProvider(fixture.config),
+            ...daemon,
             input: { session: 's-1' },
           });
           const statusValue = status.result as { readonly active: readonly RequestRecord[]; readonly daemon: string };
           expect(statusValue.daemon).toBe('running');
           expect([...statusValue.active.map((record) => record.ticket)]).toContain(ticket);
-          expectDocument(status).toContainMarkdown('In flight').toContainContext('Do not start a duplicate');
+          expectDocument(status)
+            .toContainText('cargo-hauler · daemon running (pid')
+            .toContainMarkdown('In flight')
+            .toContainMarkdown('### Lanes')
+            .toContainContext('Do not start a duplicate');
+          expect(documentMetadata(status.document)).toMatchObject({ hauler: { daemon: { state: 'running' } } });
 
           const awaited = await renderRouteEvents('tool:hauler/hauler_await', {
-            ...withProvider(fixture.config),
+            ...daemon,
             input: { maxWaitMs: 20_000, ticket },
           });
           const awaitedValue = awaited.result as {
@@ -174,7 +178,7 @@ describe('tool documents against a live daemon', () => {
             .toContainContext(`${ticket} succeeded`);
 
           const fetched = await renderRoute('tool:hauler/hauler_result', {
-            ...withProvider(fixture.config),
+            ...daemon,
             input: { ticket },
           });
           expect(fetched.result).toMatchObject({ operation: 'result', ticket });

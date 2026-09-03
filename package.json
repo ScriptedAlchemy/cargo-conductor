@@ -29,20 +29,25 @@
   },
   "bin": {
     "cargo-hauler": "./dist/bin/cargo-hauler.js",
+    "cargo-hauler-install": "./dist/bin/cargo-hauler-install.js",
     "hauler": "./dist/bin/hauler.js"
   },
   "files": [
     "dist",
+    "artifact",
     "README.md",
     "CHANGELOG.md",
     "LICENSE"
   ],
   "scripts": {
-    "build": "agent-bundle build --output artifact",
+    "build": "agent-bundle build",
     "check": "pnpm validate && pnpm build && pnpm typecheck && pnpm diagnostics && pnpm test && pnpm test:routes",
     "changeset": "changeset",
     "dev": "agent-bundle dev",
     "diagnostics": "effect-tsgo diagnostics --project tsconfig.json",
+    "doctor": "agent-bundle doctor",
+    "inspect": "agent-bundle inspect",
+    "prepack": "agent-bundle prepack",
     "test": "rstest",
     "test:routes": "rstest --config rstest.route-unit.config.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",

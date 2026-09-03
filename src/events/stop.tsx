@@ -9,7 +9,7 @@ import { decisionValue, hookContextFrom, stopHoldEventFrom } from '../lib/event-
 // the shared MCP runtime. Budget mirrors the former 900 s stop hook.
 export const config = {
   // The portable playground target defines no hooks; events ship with the plugin hosts.
-  targets: ['plugin'],
+  targets: ['claude', 'codex', 'cursor'],
   runtime: 'standalone',
   timeoutMs: 900_000,
 } satisfies AgentEventRouteConfig;

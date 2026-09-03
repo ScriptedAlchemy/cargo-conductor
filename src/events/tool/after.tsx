@@ -7,7 +7,7 @@ import { afterShellEventFrom, decisionValue, hookContextFrom } from '../../lib/e
 
 export const config = {
   // The portable playground target defines no hooks; events ship with the plugin hosts.
-  targets: ['plugin'],
+  targets: ['claude', 'codex', 'cursor'],
   fallback: 'standalone',
   runtime: 'shared',
   timeoutMs: 10_000,
