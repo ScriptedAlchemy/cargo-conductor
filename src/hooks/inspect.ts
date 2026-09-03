@@ -15,9 +15,12 @@ const prefixCommands = new Set([
   'ionice',
   'nice',
   'nohup',
+  'rustup',
+  'stdbuf',
   'strace',
   'sudo',
   'time',
+  'timeout',
   'xargs',
 ]);
 const prefixValueFlags: Readonly<Record<string, ReadonlySet<string>>> = {
@@ -25,6 +28,8 @@ const prefixValueFlags: Readonly<Record<string, ReadonlySet<string>>> = {
   exec: new Set(['-a']),
   ionice: new Set(['-c', '-n', '-p', '-t']),
   nice: new Set(['--adjustment', '-n']),
+  stdbuf: new Set(['--error', '--input', '--output', '-e', '-i', '-o']),
+  timeout: new Set(['--kill-after', '--signal', '-k', '-s']),
   sudo: new Set([
     '--close-from',
     '--command-timeout',
@@ -44,6 +49,12 @@ const prefixValueFlags: Readonly<Record<string, ReadonlySet<string>>> = {
   time: new Set(['-f', '-o']),
   xargs: new Set(['-E', '-I', '-J', '-L', '-n', '-P', '-s']),
 };
+/** Positional operands a prefix consumes before the wrapped command (`timeout 600 cargo …`). */
+const prefixPositionals: Readonly<Record<string, number>> = {
+  timeout: 1,
+};
+const isAssignment = (token: string | undefined): token is string =>
+  token !== undefined && /^[A-Za-z_][A-Za-z0-9_]*=/u.test(token);
 
 export interface RewriteOptions {
   readonly haulerArgv: readonly string[];
@@ -89,23 +100,39 @@ const findCargoIndex = (argv: readonly string[]): number => {
       return -1;
     }
     index += 1;
-    if (base === 'env') {
-      while (index < argv.length && argv[index] !== undefined && /^[A-Za-z_][A-Za-z0-9_]*=/u.test(argv[index])) {
-        index += 1;
+    if (base === 'rustup') {
+      // Only `rustup run <toolchain> cargo …` wraps a cargo command; every
+      // other rustup subcommand is rustup's own business.
+      if (argv[index] !== 'run') {
+        return -1;
       }
+      index += 2;
+      continue;
     }
     const valueFlags = prefixValueFlags[base];
-    while (index < argv.length && argv[index]?.startsWith('-') === true) {
-      const flag = argv[index];
+    // `env` accepts VAR=value operands before, between, and after its flags.
+    while (index < argv.length) {
+      const token = argv[index];
+      if (token === undefined) {
+        break;
+      }
+      if (base === 'env' && isAssignment(token)) {
+        index += 1;
+        continue;
+      }
+      if (!token.startsWith('-')) {
+        break;
+      }
       index += 1;
-      if (flag === undefined || flag.includes('=')) {
+      if (token.includes('=')) {
         continue;
       }
       const next = argv[index];
-      if (valueFlags?.has(flag) === true && next !== undefined && !next.startsWith('-')) {
+      if (valueFlags?.has(token) === true && next !== undefined && !next.startsWith('-')) {
         index += 1;
       }
     }
+    index += prefixPositionals[base] ?? 0;
   }
   return -1;
 };

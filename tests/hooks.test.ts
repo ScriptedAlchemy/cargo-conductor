@@ -68,6 +68,30 @@ describe('beforeTool shell hook', () => {
     );
   });
 
+  it('rewrites the escape hatches agents reach for: env -u, timeout, rustup run, toolchain paths', async () => {
+    const wrap = 'hauler exec --session sess-1 --host claude --cwd /tmp/ws --';
+    const toolchain = '/home/me/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo';
+
+    // `env` operands after flags: unsets, then an assignment, then cargo.
+    const unset = await runBefore(`env -u CARGO_HAULER_STATE_DIR -u FOO RUSTC=/x/rustc ${toolchain} check -p a`);
+    expect(unset.updatedInput?.command).toBe(
+      `env -u CARGO_HAULER_STATE_DIR -u FOO RUSTC=/x/rustc ${wrap} ${toolchain} check -p a`,
+    );
+
+    const timed = await runBefore('timeout -k 10 600 cargo test -p a 2>&1 | tail -20');
+    expect(timed.updatedInput?.command).toBe(`timeout -k 10 600 ${wrap} cargo test -p a 2>&1 | tail -20`);
+
+    const viaRustup = await runBefore('rustup run nightly cargo check');
+    expect(viaRustup.updatedInput?.command).toBe(`rustup run nightly ${wrap} cargo check`);
+
+    // Other rustup subcommands are not cargo invocations.
+    const rustupOnly = await runBefore('rustup toolchain list');
+    expect(rustupOnly.updatedInput).toBeUndefined();
+
+    const buffered = await runBefore('stdbuf -oL cargo build');
+    expect(buffered.updatedInput?.command).toBe(`stdbuf -oL ${wrap} cargo build`);
+  });
+
   it('attributes Cursor envelopes as host cursor', async () => {
     const result = await handleBeforeShell(
       beforeEvent('cargo check'),
