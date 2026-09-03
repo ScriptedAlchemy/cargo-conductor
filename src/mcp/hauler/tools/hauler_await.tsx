@@ -7,6 +7,7 @@ import { formatMs } from '../../../lib/format.js';
 import { awaitResultSchema, ticketInputSchema } from '../../../lib/protocol-schemas.js';
 import { requestDaemonConfig } from '../../../lib/request-config.js';
 import { awaitTicketResult, defaultAwaitMs } from '../../../lib/tickets.js';
+import { documentValue } from '../../../lib/json.js';
 
 export const config = {
   annotations: { readOnlyHint: true },
@@ -40,7 +41,7 @@ export default async function HaulerAwait({ input, signal }: ToolRouteProps<type
   });
   const nowMs = Date.now();
   return (
-    <Agent.Result value={awaited}>
+    <Agent.Result value={documentValue(awaited)}>
       <Agent.Text>{awaited.summary}</Agent.Text>
       {awaited.request === null ? null : <TicketCard nowMs={nowMs} record={awaited.request} />}
       {awaited.timedOut ? (

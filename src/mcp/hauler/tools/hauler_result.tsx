@@ -6,6 +6,7 @@ import { TicketCard, TicketGuidance } from '../../../components/ticket-card.js';
 import { resultFetchResultSchema, ticketInputSchema } from '../../../lib/protocol-schemas.js';
 import { requestDaemonConfig } from '../../../lib/request-config.js';
 import { fetchTicketResult } from '../../../lib/tickets.js';
+import { documentValue } from '../../../lib/json.js';
 
 export const config = {
   annotations: { readOnlyHint: true },
@@ -21,7 +22,7 @@ export default async function HaulerResult({ input, signal }: ToolRouteProps<typ
   const context = await agent();
   const result = await fetchTicketResult(input, { config: requestDaemonConfig(context), signal });
   return (
-    <Agent.Result value={result}>
+    <Agent.Result value={documentValue(result)}>
       <Agent.Text>{result.summary}</Agent.Text>
       {result.request === null ? (
         <Agent.Context>

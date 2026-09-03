@@ -5,6 +5,7 @@ import React from 'react';
 import { requestInputSchema, requestResultSchema } from '../../../lib/protocol-schemas.js';
 import { requestDaemonConfig } from '../../../lib/request-config.js';
 import { submitTicketRequest } from '../../../lib/tickets.js';
+import { documentValue } from '../../../lib/json.js';
 
 export const config = {
   annotations: { readOnlyHint: false },
@@ -23,7 +24,7 @@ export default async function HaulerRequest({ input, signal }: ToolRouteProps<ty
     signal,
   });
   return (
-    <Agent.Result value={submitted}>
+    <Agent.Result value={documentValue(submitted)}>
       <Agent.Text>{submitted.summary}</Agent.Text>
       {submitted.ticket === null ? (
         <Agent.Error code="submit-failed">

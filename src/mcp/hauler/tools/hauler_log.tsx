@@ -6,6 +6,7 @@ import { RequestTable } from '../../../components/request-table.js';
 import { loadLogResult } from '../../../lib/inspect.js';
 import { limitInputSchema, logResultSchema } from '../../../lib/protocol-schemas.js';
 import { requestDaemonConfig } from '../../../lib/request-config.js';
+import { documentValue } from '../../../lib/json.js';
 
 export const config = {
   annotations: { readOnlyHint: true },
@@ -20,7 +21,7 @@ export default async function HaulerLog({ input, signal }: ToolRouteProps<typeof
   const context = await agent();
   const log = await loadLogResult(input, { config: requestDaemonConfig(context), signal });
   return (
-    <Agent.Result value={log}>
+    <Agent.Result value={documentValue(log)}>
       <Agent.Text>{log.summary}</Agent.Text>
       <RequestTable nowMs={Date.now()} records={log.requests} />
     </Agent.Result>

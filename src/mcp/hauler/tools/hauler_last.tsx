@@ -6,6 +6,7 @@ import { TicketCard, TicketGuidance } from '../../../components/ticket-card.js';
 import { loadLastResult } from '../../../lib/inspect.js';
 import { lastResultSchema, limitInputSchema } from '../../../lib/protocol-schemas.js';
 import { requestDaemonConfig } from '../../../lib/request-config.js';
+import { documentValue } from '../../../lib/json.js';
 
 export const config = {
   annotations: { readOnlyHint: true },
@@ -20,7 +21,7 @@ export default async function HaulerLast({ signal }: ToolRouteProps<typeof input
   const context = await agent();
   const last = await loadLastResult({ config: requestDaemonConfig(context), signal });
   return (
-    <Agent.Result value={last}>
+    <Agent.Result value={documentValue(last)}>
       <Agent.Text>{last.summary}</Agent.Text>
       {last.request === null ? null : (
         <>

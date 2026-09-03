@@ -9,6 +9,7 @@ import { loadStatusResult } from '../../../lib/inspect.js';
 import { statusInputSchema, statusResultSchema } from '../../../lib/protocol-schemas.js';
 import { requestDaemonConfig } from '../../../lib/request-config.js';
 import { hasStatusFilters } from '../../../lib/status-filter.js';
+import { documentValue } from '../../../lib/json.js';
 
 export const config = {
   _meta: { ui: { resourceUri: APP_RESOURCE_URI } },
@@ -27,7 +28,7 @@ export default async function HaulerStatus({ input, signal }: ToolRouteProps<typ
   const nowMs = Date.now();
   const filtered = hasStatusFilters(input);
   return (
-    <Agent.Result value={status}>
+    <Agent.Result value={documentValue(status)}>
       <Agent.Text>{status.summary.split('\n', 1)[0] ?? status.summary}</Agent.Text>
       <StatusOverview nowMs={nowMs} status={status} />
       <RequestTable
