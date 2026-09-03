@@ -3,15 +3,19 @@ import { existsSync } from 'node:fs';
 import * as Effect from 'effect/Effect';
 
 import type { DaemonConfigShape } from '../daemon/config.js';
-import { requestExpecting } from '../daemon/control.js';
+import { requestExpecting, type DaemonUnreachableError } from '../daemon/control.js';
 import type { StatusResultMessage } from '../daemon/protocol.js';
 import { shortId } from './id.js';
+
+import { isRecord } from './guards.js';
 
 /**
  * What one bounded status probe proved about the daemon. Every shape is
  * honest about *why* it is not `running`: a missing socket and a refused
  * connection are a stopped daemon, an accept or read that did not finish in
- * time is a live but saturated one, and a surface that deliberately skipped
+ * time is a live but saturated one, an open that failed for any other reason
+ * (permissions, descriptor exhaustion) is `unreachable` with the errno so the
+ * operator sees the actionable cause, and a surface that deliberately skipped
  * the probe says so instead of guessing.
  */
 export type DaemonHealth =
@@ -30,9 +34,10 @@ export type DaemonHealth =
     }
   | { readonly state: 'stopped'; readonly reason: 'socket-missing' | 'connection-refused' }
   | { readonly state: 'unresponsive'; readonly reason: 'accept-timeout' | 'connection-closed'; readonly timeoutMs: number }
+  | { readonly state: 'unreachable'; readonly reason: 'open-failed'; readonly detail: string }
   | { readonly state: 'unprobed'; readonly reason: 'event-surface' };
 
-/** Bounded so a saturated daemon costs a document at most this long. */
+/** Bounded so a saturated daemon costs a document at most this long — for the accept and for the answer. */
 export const healthProbeTimeoutMs = 750;
 
 const socketPresent = (config: DaemonConfigShape, platform: NodeJS.Platform): boolean =>
@@ -56,10 +61,48 @@ const runningHealth = (message: StatusResultMessage, latencyMs: number): DaemonH
   };
 };
 
+/** The errno (`ECONNREFUSED`, `EACCES`, `EMFILE`, …) behind a failed socket open, when Node supplied one. */
+const openFailureCode = (error: DaemonUnreachableError): string | undefined => {
+  const socketError: unknown = error.cause;
+  if (!isRecord(socketError) || !isRecord(socketError.reason)) {
+    return undefined;
+  }
+  const cause: unknown = socketError.reason.cause;
+  return isRecord(cause) && typeof cause.code === 'string' ? cause.code : undefined;
+};
+
+const openFailureMessage = (error: DaemonUnreachableError): string => {
+  const socketError: unknown = error.cause;
+  const cause: unknown = isRecord(socketError) && isRecord(socketError.reason) ? socketError.reason.cause : undefined;
+  return cause instanceof Error ? cause.message : String(cause ?? 'socket open failed');
+};
+
+/**
+ * A refused connection (or a socket path that vanished between the existence
+ * check and the open) is a stopped daemon. Anything else Node reports for a
+ * present socket — `EACCES`, `EMFILE`, `EPERM` — is not evidence that the
+ * daemon is down, and is surfaced with its code instead of being folded into
+ * "stopped".
+ */
+const unreachableHealth = (error: DaemonUnreachableError): DaemonHealth => {
+  const code = openFailureCode(error);
+  switch (code) {
+    case 'ECONNREFUSED':
+      return { reason: 'connection-refused', state: 'stopped' };
+    case 'ENOENT':
+      return { reason: 'socket-missing', state: 'stopped' };
+    case undefined:
+      return { detail: openFailureMessage(error), reason: 'open-failed', state: 'unreachable' };
+    default:
+      return { detail: `${code}: ${openFailureMessage(error)}`, reason: 'open-failed', state: 'unreachable' };
+  }
+};
+
 /**
  * One small `status` read (recent limit 1) instead of a bare ping: the same
  * round trip that proves liveness also yields the lane summary the shell
- * shows, and it is the request the hooks already send on every probe.
+ * shows, and it is the request the hooks already send on every probe. The
+ * budget bounds both the connection accept and the answer.
  */
 export const probeDaemonHealth = (
   config: DaemonConfigShape,
@@ -74,6 +117,7 @@ export const probeDaemonHealth = (
   const probe: Effect.Effect<DaemonHealth> = requestExpecting(
     {
       message: { id: shortId(), limit: 1, type: 'status' },
+      openTimeoutMs: timeoutMs,
       socketPath: config.socketPath,
       timeoutMs,
     },
@@ -89,8 +133,7 @@ export const probeDaemonHealth = (
         Effect.succeed<DaemonHealth>({ reason: 'connection-closed', state: 'unresponsive', timeoutMs }),
       ControlTimeout: () =>
         Effect.succeed<DaemonHealth>({ reason: 'accept-timeout', state: 'unresponsive', timeoutMs }),
-      DaemonUnreachable: () =>
-        Effect.succeed<DaemonHealth>({ reason: 'connection-refused', state: 'stopped' }),
+      DaemonUnreachable: (error) => Effect.succeed<DaemonHealth>(unreachableHealth(error)),
     }),
   );
   return Effect.runPromise(probe, options.signal === undefined ? undefined : { signal: options.signal });

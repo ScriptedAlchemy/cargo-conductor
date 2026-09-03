@@ -68,7 +68,8 @@ and a `health` value from one bounded `status` probe:
 | --- | --- |
 | `running` | `pid`, `startedAtMs`, `latencyMs`, `running` (permit holders), `riding` (attached), `queued`, `busyLanes`, `maxConcurrent` |
 | `stopped` | `socket-missing` (starts on demand) or `connection-refused` (stale socket) |
-| `unresponsive` | `accept-timeout` or `connection-closed` within the probe budget; ledger reads still work |
+| `unresponsive` | `accept-timeout` or `connection-closed` within the probe budget (750 ms for the accept and for the answer); ledger reads still work |
+| `unreachable` | `open-failed` with the errno (`EACCES`, `EMFILE`, …): the socket is present but could not be opened, which is not evidence the daemon is down |
 | `unprobed` | `event-surface`: hooks run on every shell command and skip the probe by design |
 
 The provider fails closed on nothing it can observe and fabricates nothing.

@@ -53,6 +53,12 @@ export const daemonBadgeModel = (health: DaemonHealth, nowMs: number): DaemonBad
         headline: 'daemon unresponsive',
         state: health.state,
       };
+    case 'unreachable':
+      return {
+        detail: `socket present but could not be opened (${health.detail}); the daemon may be running — check permissions on the state directory`,
+        headline: 'daemon unreachable',
+        state: health.state,
+      };
     case 'unprobed':
       return { detail: null, headline: 'daemon not probed on this surface', state: health.state };
     default: {

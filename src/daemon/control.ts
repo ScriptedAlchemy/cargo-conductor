@@ -33,6 +33,8 @@ export interface RequestOverSocketOptions {
   /** Resolve once a received message satisfies this predicate. */
   readonly isTerminal: (message: ServerMessage) => boolean;
   readonly timeoutMs?: number;
+  /** How long to wait for the daemon to accept the connection (default `openTimeoutMs`). */
+  readonly openTimeoutMs?: number;
 }
 
 const defaultTimeoutMs = 10_000;
@@ -46,6 +48,7 @@ export const mapSocketFailure = (
   error: Socket.SocketError,
   socketPath: string,
   received: readonly ServerMessage[] = [],
+  openTimeout: number = openTimeoutMs,
 ): DaemonUnreachableError | ControlTimeoutError | ConnectionClosedError => {
   switch (error.reason._tag) {
     case 'SocketOpenError':
@@ -53,7 +56,7 @@ export const mapSocketFailure = (
       // arrives is a live daemon too busy to answer (observed under heavy
       // machine load), and must not read as "not running".
       return error.reason.kind === 'Timeout'
-        ? new ControlTimeoutError({ socketPath, timeoutMs: openTimeoutMs, received: snapshot(received) })
+        ? new ControlTimeoutError({ socketPath, timeoutMs: openTimeout, received: snapshot(received) })
         : new DaemonUnreachableError({ socketPath, cause: error });
     case 'SocketWriteError':
     case 'SocketReadError':
@@ -75,6 +78,7 @@ const runRequest = (
 > =>
   Effect.gen(function* () {
     const timeoutMs = options.timeoutMs ?? defaultTimeoutMs;
+    const openTimeout = options.openTimeoutMs ?? openTimeoutMs;
     const received: ServerMessage[] = [];
     const lines = new LineBuffer();
     const opened = yield* Deferred.make<void>();
@@ -102,7 +106,7 @@ const runRequest = (
       readonly ServerMessage[],
       DaemonUnreachableError | ControlTimeoutError | ConnectionClosedError
     > => {
-      const mapped = mapSocketFailure(error, options.socketPath, received);
+      const mapped = mapSocketFailure(error, options.socketPath, received, openTimeout);
       switch (mapped._tag) {
         case 'DaemonUnreachable':
         case 'ControlTimeout':
@@ -120,7 +124,7 @@ const runRequest = (
     // `socket.run`, which routes them via mapSocketFailure below.
     const socket = yield* NodeSocket.makeNet({
       path: options.socketPath,
-      openTimeout: openTimeoutMs,
+      openTimeout,
     });
 
     const write = yield* socket.writer;
@@ -156,7 +160,7 @@ const runRequest = (
 
     yield* Deferred.await(opened).pipe(Effect.raceFirst(Fiber.join(pumpFiber)));
     yield* write(encodeClientMessage(options.message)).pipe(
-      Effect.mapError((error) => mapSocketFailure(error, options.socketPath, received)),
+      Effect.mapError((error) => mapSocketFailure(error, options.socketPath, received, openTimeout)),
     );
 
     return yield* Deferred.await(terminal).pipe(
