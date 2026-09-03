@@ -1,7 +1,7 @@
 import * as Effect from 'effect/Effect';
 import * as Metric from 'effect/Metric';
 
-import { batchExitShared } from './batch.js';
+import { batchFailureOwned, compositePackages } from './batch.js';
 import { attachModeMetric, jobOutcomeMetric } from './broker-metrics.js';
 import { hasLibKind, parseCargoJsonLine } from './cargo-json.js';
 import { attachModeFor } from './coverage.js';
@@ -626,6 +626,14 @@ export const makeAttachmentRuntime = (deps: AttachmentRuntimeDeps): AttachmentRu
         return;
       }
       const leaderRunMs = leaderRunMsAt(job, atMs);
+      // Every package the composite ran, for attributing a folded test
+      // failure: the leader's own plus each folded participant's.
+      const composite = compositePackages(
+        job.intent,
+        detached
+          .filter((attachment) => attachment.mode === 'batch')
+          .map((attachment) => attachment.intent),
+      );
       const settleOne = (attachment: Attachment): Effect.Effect<void> => {
         // A failed leader can still prove a coverage demand: the demanded
         // units may have compiled cleanly before an unrelated unit failed.
@@ -634,14 +642,16 @@ export const makeAttachmentRuntime = (deps: AttachmentRuntimeDeps): AttachmentRu
           attachment.mode !== 'identity' &&
           job.demux !== null &&
           demandSatisfied(attachment.intent, job.demux);
-        // Folded test composites run with --no-fail-fast and share their
-        // exit: a failed composite IS the participant's failure. Compile
-        // batches requeue instead (the failure may be a foreign package).
+        // A folded test participant inherits the composite's failure only
+        // when it named every package the composite ran; otherwise the
+        // failing tests may belong to another participant's package, and
+        // it requeues to run alone (#53). Compile batches always requeue.
         const mirrors =
           status === 'done' ||
           (status === 'failed' &&
             (attachment.mode === 'identity' ||
-              (attachment.mode === 'batch' && batchExitShared(job.intent))));
+              (attachment.mode === 'batch' &&
+                batchFailureOwned(job.intent, composite, attachment.intent))));
         if (provenDespiteFailure) {
           return finishAttachmentWithNote(
             attachment,
