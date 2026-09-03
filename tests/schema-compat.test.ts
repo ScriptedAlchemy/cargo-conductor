@@ -170,6 +170,37 @@ describe('status/result contract completeness (issue #16)', () => {
     expect(withoutFlag.request?.outputTailLive).toBeUndefined();
   });
 
+  it('accepts optional queue, delayed-wait, and quiet-output status fields', () => {
+    const queued = requestRecordSchema.parse({
+      ...baseRecord,
+      delayed: true,
+      queue: {
+        aheadTickets: ['cc-1', 'cc-2'],
+        headElapsedMs: 45_000,
+        headEstimateMs: 90_000,
+        headTicket: 'cc-1',
+        position: 2,
+        waitEtaMs: 105_000,
+      },
+      status: 'queued',
+    });
+    expect(queued.delayed).toBe(true);
+    expect(queued.queue?.position).toBe(2);
+    expect(queued.queue?.headTicket).toBe('cc-1');
+
+    const running = requestRecordSchema.parse({
+      ...baseRecord,
+      quietMs: 301_000,
+      status: 'running',
+    });
+    expect(running.quietMs).toBe(301_000);
+
+    const legacy = requestRecordSchema.parse(baseRecord);
+    expect(legacy.queue).toBeUndefined();
+    expect(legacy.delayed).toBeUndefined();
+    expect(legacy.quietMs).toBeUndefined();
+  });
+
   it('accepts diagnosed records in status report active/recent lists', () => {
     const parsed = statusReportSchema.parse({
       active: [{ ...diagnosedRecord, status: 'running' }],

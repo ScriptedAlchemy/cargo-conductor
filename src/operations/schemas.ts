@@ -26,6 +26,15 @@ const attachModeSchema = z.enum(['identity', 'coverage', 'batch']);
 const savedComputeSourceSchema = z.enum(['exact', 'estimate']);
 const daemonStatusSchema = z.enum(['running', 'stopped']);
 
+const queueContextSchema = z.object({
+  aheadTickets: z.array(z.string()),
+  headElapsedMs: z.number().nonnegative().optional(),
+  headEstimateMs: z.number().nonnegative().optional(),
+  headTicket: z.string().optional(),
+  position: z.number().int().nonnegative(),
+  waitEtaMs: z.number().nonnegative(),
+});
+
 // Daemon-sourced payloads deliberately STRIP unknown keys instead of
 // rejecting them (issue #4): plugin snapshots outlive daemon upgrades, and a
 // strict schema here turns every additive daemon field into a breaking
@@ -67,6 +76,9 @@ export const requestRecordSchema = z.object({
   holdStop: z.boolean(),
   estimateMs: z.number().nullable(),
   execArgv: z.array(z.string()).nullable(),
+  queue: queueContextSchema.optional(),
+  delayed: z.boolean().optional(),
+  quietMs: z.number().nonnegative().optional(),
 }) satisfies z.ZodType<RequestRecord>;
 
 const laneStatusSchema = z.object({

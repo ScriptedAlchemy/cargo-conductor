@@ -166,6 +166,8 @@ export interface Job {
   readonly estimateMs: number;
   /** Real start of the cargo process, shared by attached ledger rows. */
   startedAtMs: number | null;
+  /** Start time or most recent brokered output, for output-silence visibility. */
+  lastOutputAtMs: number | null;
   /** Fail-fast signal captured at submission (topology stat, cached). */
   readonly editedRecently: boolean;
   /** Workspace-internal transitive deps of this job's packages (topology, cached). */
@@ -346,6 +348,23 @@ export const attachmentReceives = (attachment: Attachment, audience: ReplayAudie
 
 export const remainingEstimateMs = (job: Job, atMs: number): number =>
   job.startedAtMs === null ? job.estimateMs : Math.max(0, job.estimateMs - (atMs - job.startedAtMs));
+
+export const delayedWaitFloorMs = 10 * 60_000;
+export const quietOutputThresholdMs = 5 * 60_000;
+
+export const queuedWaitIsDelayed = (waitMs: number, estimateMs: number): boolean =>
+  waitMs > Math.max(2 * estimateMs, delayedWaitFloorMs);
+
+export const quietMsSinceOutput = (
+  lastOutputAtMs: number | null,
+  atMs: number,
+): number | undefined => {
+  if (lastOutputAtMs === null) {
+    return undefined;
+  }
+  const quietMs = Math.max(0, atMs - lastOutputAtMs);
+  return quietMs > quietOutputThresholdMs ? quietMs : undefined;
+};
 
 export const requeueReasonFor = (mode: AttachMode, status: FinishedStatus): string =>
   mode === 'identity'

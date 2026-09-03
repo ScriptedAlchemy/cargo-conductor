@@ -32,6 +32,19 @@ export type FinishedStatus = 'done' | 'failed' | 'killed';
 export type AttachMode = 'identity' | 'coverage' | 'batch';
 export type SavedComputeSource = 'exact' | 'estimate';
 
+/** Live, lane-local context for a queued request. Never persisted to the ledger. */
+export interface QueueContext {
+  /** Number of running or queued leaders expected to run before this request. */
+  readonly position: number;
+  readonly aheadTickets: readonly string[];
+  /** The currently running lane head, when the lane is occupied. */
+  readonly headTicket?: string;
+  readonly headElapsedMs?: number;
+  readonly headEstimateMs?: number;
+  /** Sum of work ahead, less elapsed time on the running head, clamped at zero. */
+  readonly waitEtaMs: number;
+}
+
 /** One ledgered cargo request, as stored in SQLite and reported over the socket. */
 export interface RequestRecord {
   readonly id: number;
@@ -91,6 +104,12 @@ export interface RequestRecord {
   readonly background: boolean;
   readonly holdStop: boolean;
   readonly estimateMs: number | null;
+  /** Live queue context, present only while this request is queued. */
+  readonly queue?: QueueContext;
+  /** True once queued wait exceeds max(2 × own estimate, 10 minutes). */
+  readonly delayed?: boolean;
+  /** Milliseconds since the running leader last emitted output, once over five minutes. */
+  readonly quietMs?: number;
 }
 
 export interface TransitionRecord {

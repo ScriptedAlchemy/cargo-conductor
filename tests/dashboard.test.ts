@@ -13,6 +13,7 @@ import {
   attachSavings,
   compactArgvText,
   defaultMetricsWindowId,
+  delayedWaitCue,
   diagnosticBadges,
   formatCompactNumber,
   formatMs,
@@ -28,6 +29,7 @@ import {
   pollStatus,
   queuedWaitMs,
   queuedWaitThresholdMs,
+  quietOutputHint,
   ranAsFor,
   relativeTime,
   remainingEstimateMs,
@@ -62,8 +64,26 @@ describe('MCP App dashboard', () => {
       expect(html).toContain('Contention');
       expect(html).toContain('hauler_status');
       expect(html).toContain('hauler_result');
+      expect(html).toContain('wait exceeds estimate');
+      expect(html).toContain('no output — long compile/link phases can be silent');
       expect(html).not.toContain('src="http');
     }
+  });
+});
+
+describe('long-wait and quiet-output cues', () => {
+  it('keeps delayed queue layout stable by rendering an optional compact cue', () => {
+    expect(delayedWaitCue(true)).toBe('wait exceeds estimate');
+    expect(delayedWaitCue(false)).toBeNull();
+    expect(delayedWaitCue(undefined)).toBeNull();
+  });
+
+  it('formats quiet time with the documented diagnostic tooltip', () => {
+    expect(quietOutputHint(5 * 60_000 + 1)).toEqual({
+      label: 'quiet 5m',
+      title: 'no output — long compile/link phases can be silent; check kache/rustc activity',
+    });
+    expect(quietOutputHint(undefined)).toBeNull();
   });
 });
 

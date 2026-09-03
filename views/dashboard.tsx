@@ -11,6 +11,7 @@ import {
   compactArgvText,
   defaultMetricsWindowId,
   dashboardVersion,
+  delayedWaitCue,
   DEMUX_FLAG,
   diagnosticBadges,
   formatBytes,
@@ -30,6 +31,7 @@ import {
   pickMetricsWindow,
   pollStatus,
   queuedWaitMs,
+  quietOutputHint,
   ranAsFor,
   relativeTime,
   remainingEstimateMs,
@@ -167,6 +169,8 @@ interface RequestRow {
   readonly createdAtMs?: unknown;
   readonly startedAtMs?: unknown;
   readonly estimateMs?: unknown;
+  readonly delayed?: unknown;
+  readonly quietMs?: unknown;
   readonly workspaceRoot?: unknown;
   readonly intentJson?: unknown;
   readonly errorCount?: unknown;
@@ -421,6 +425,7 @@ const elapsedCell = (
   sinceMs: unknown,
   estimateMs: unknown,
   waitMs: unknown,
+  quietMs: unknown,
   nowMs: number,
 ): ReactNode => {
   if (typeof sinceMs !== 'number') {
@@ -429,6 +434,7 @@ const elapsedCell = (
   const elapsed = Math.max(0, nowMs - sinceMs);
   const remaining = remainingEstimateMs(elapsed, estimateMs);
   const waited = queuedWaitMs(waitMs);
+  const quiet = quietOutputHint(quietMs);
   return (
     <>
       <span className="dur">{formatMs(elapsed)}</span>
@@ -436,6 +442,11 @@ const elapsedCell = (
       {waited === null ? null : (
         <span className="est" title="time spent queued before this run started">
           {' '}· waited {formatMs(waited)}
+        </span>
+      )}
+      {quiet === null ? null : (
+        <span className="est" title={quiet.title}>
+          {' '}· {quiet.label}
         </span>
       )}
     </>
@@ -464,10 +475,16 @@ const DiagBadges = ({ row }: { readonly row: RequestRow }): ReactNode => {
 };
 
 /** Queued rows: time waited, plus the prior-run estimate labeled as such (it is not a countdown). */
-const waitingCell = (sinceMs: unknown, estimateMs: unknown, nowMs: number): ReactNode => {
+const waitingCell = (
+  sinceMs: unknown,
+  estimateMs: unknown,
+  delayed: unknown,
+  nowMs: number,
+): ReactNode => {
   if (typeof sinceMs !== 'number') {
     return '—';
   }
+  const cue = delayedWaitCue(delayed);
   return (
     <>
       <span className="dur">{formatMs(Math.max(0, nowMs - sinceMs))}</span>
@@ -476,6 +493,14 @@ const waitingCell = (sinceMs: unknown, estimateMs: unknown, nowMs: number): Reac
           {' '}· est ~{formatMs(estimateMs)}
         </span>
       ) : null}
+      {cue === null ? null : (
+        <>
+          {' '}
+          <span className="pill killed" title="queued longer than its estimate threshold; the lane is busy">
+            {cue}
+          </span>
+        </>
+      )}
     </>
   );
 };
@@ -1359,7 +1384,13 @@ const DashboardContent = ({ structured }: { readonly structured: StructuredConte
               rows={running.map((row) => ({
                 cells: [
                   ...requestCells(row),
-                  elapsedCell(row.startedAtMs ?? row.createdAtMs, row.estimateMs, row.waitMs, nowMs),
+                  elapsedCell(
+                    row.startedAtMs ?? row.createdAtMs,
+                    row.estimateMs,
+                    row.waitMs,
+                    row.quietMs,
+                    nowMs,
+                  ),
                 ],
                 onSelect: selectRow(row),
               }))}
@@ -1377,7 +1408,7 @@ const DashboardContent = ({ structured }: { readonly structured: StructuredConte
               rows={queueRows.map((row) => ({
                 cells: [
                   ...requestCells(row),
-                  waitingCell(row.createdAtMs, row.estimateMs, nowMs),
+                  waitingCell(row.createdAtMs, row.estimateMs, row.delayed, nowMs),
                   typeof row.attachedTo === 'string' ? <AttachChip row={row} /> : '—',
                 ],
                 onSelect: selectRow(row),

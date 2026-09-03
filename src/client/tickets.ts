@@ -1,3 +1,5 @@
+import { basename } from 'node:path';
+
 import * as Effect from 'effect/Effect';
 
 import { resolveDaemonConfig } from '../daemon/config.js';
@@ -18,6 +20,7 @@ import type {
 import { shortId } from '../lib/id.js';
 
 import { ensureDaemonRunning } from './ensure-daemon.js';
+import { formatProgressLine } from './progress.js';
 
 /**
  * Infrastructure failures stay typed in this library: a daemon that is down
@@ -60,6 +63,40 @@ const describeAwaitedRecord = (ticket: string, record: RequestRecord | null): st
   }
 };
 
+const formatAwaitedRecord = (ticket: string, record: RequestRecord): string => {
+  const command = record.argv.slice(1).join(' ');
+  switch (record.status) {
+    case 'queued':
+      return formatProgressLine({
+        command,
+        delayed: record.delayed,
+        elapsedMs: Date.now() - (record.queuedAtMs ?? record.createdAtMs),
+        estimateMs: record.estimateMs,
+        kind: 'heartbeat',
+        laneName: basename(record.workspaceRoot),
+        phase: 'queued',
+        queue: record.queue,
+        ticket,
+      });
+    case 'running':
+      return formatProgressLine({
+        command,
+        elapsedMs: Date.now() - (record.startedAtMs ?? Date.now()),
+        estimateMs: record.estimateMs,
+        kind: 'heartbeat',
+        phase: 'running',
+        ticket,
+      });
+    default:
+      return `[cargo-hauler] ${describeAwaitedRecord(ticket, record)}\n`;
+  }
+};
+
+type TicketStatusFetcher = (
+  ticket: string,
+  config: DaemonConfigShape,
+) => Effect.Effect<RequestRecord | null, unknown>;
+
 /**
  * `awaitTicket` with a heartbeat: while the daemon-side wait blocks, the
  * ticket's live record is polled and rendered through `onProgress` so a
@@ -73,17 +110,43 @@ export const awaitTicketWithProgress = (
   onProgress: (line: string) => void,
   config: DaemonConfigShape = resolveDaemonConfig(),
   intervalMs = 5_000,
+  fetchStatus: TicketStatusFetcher = fetchTicket,
 ): Effect.Effect<
   { readonly request: RequestRecord | null; readonly timedOut: boolean },
   TicketSocketError
 > => {
-  const startedAtMs = Date.now();
   const beat: Effect.Effect<never> = Effect.gen(function* () {
+    let observed = false;
     for (;;) {
-      const record = yield* fetchTicket(ticket, config).pipe(Effect.orElseSucceed(() => null));
-      onProgress(
-        `[cargo-hauler] ${describeAwaitedRecord(ticket, record)} (waited ${formatSeconds(Date.now() - startedAtMs)})\n`,
+      const poll = yield* fetchStatus(ticket, config).pipe(
+        Effect.match({
+          onFailure: () => ({ _tag: 'Failed' as const }),
+          onSuccess: (record) => ({ _tag: 'Observed' as const, record }),
+        }),
       );
+      switch (poll._tag) {
+        case 'Failed':
+          if (!observed) {
+            onProgress(`[cargo-hauler] ${ticket} is not known to the daemon (yet)\n`);
+          }
+          break;
+        case 'Observed':
+          if (poll.record === null) {
+            onProgress(
+              observed
+                ? `[cargo-hauler] ${ticket} status check failed, retrying\n`
+                : `[cargo-hauler] ${ticket} is not known to the daemon (yet)\n`,
+            );
+          } else {
+            observed = true;
+            onProgress(formatAwaitedRecord(ticket, poll.record));
+          }
+          break;
+        default: {
+          const exhaustive: never = poll;
+          return exhaustive;
+        }
+      }
       yield* Effect.sleep(intervalMs);
     }
   });

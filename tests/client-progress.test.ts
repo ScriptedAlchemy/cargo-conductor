@@ -30,4 +30,62 @@ describe('formatProgressLine', () => {
       '[cargo-hauler] ticket cc-2 attached to cc-1 (batched into a merged multi-package run)\n',
     );
   });
+
+  it('formats queued await heartbeats with lane position, running head, and wait ETA', () => {
+    expect(
+      formatProgressLine({
+        command: 'build --release -p tracedecay-cli',
+        elapsedMs: 22 * 60_000,
+        estimateMs: 12 * 60_000 + 37_000,
+        kind: 'heartbeat',
+        laneName: 'tracedecay-backlog-sweep-gpt56',
+        phase: 'queued',
+        queue: {
+          aheadTickets: ['cc-1382', 'cc-1383', 'cc-1381'],
+          headElapsedMs: 9 * 60_000,
+          headEstimateMs: 12 * 60_000 + 37_000,
+          headTicket: 'cc-1382',
+          position: 3,
+          waitEtaMs: 16 * 60_000 + 14_000,
+        },
+        ticket: 'cc-1384',
+      }),
+    ).toBe(
+      '[cargo-hauler] cc-1384 queued — 3 ahead in tracedecay-backlog-sweep-gpt56 (head cc-1382 running 9m/~12m37s) · wait ~16m14s — build --release -p tracedecay-cli\n',
+    );
+  });
+
+  it('formats queued await heartbeat variants without inventing head context', () => {
+    expect(
+      formatProgressLine({
+        command: 'check -p cargo-hauler',
+        delayed: true,
+        elapsedMs: 10 * 60_000 + 1,
+        estimateMs: 60_000,
+        kind: 'heartbeat',
+        laneName: 'cargo-hauler',
+        phase: 'queued',
+        queue: {
+          aheadTickets: [],
+          position: 0,
+          waitEtaMs: 0,
+        },
+        ticket: 'cc-9',
+      }),
+    ).toBe(
+      '[cargo-hauler] cc-9 queued — 0 ahead in cargo-hauler · wait ~0s · wait exceeds estimate — lane busy — check -p cargo-hauler\n',
+    );
+
+    expect(
+      formatProgressLine({
+        command: 'check -p cargo-hauler',
+        elapsedMs: 95_000,
+        estimateMs: null,
+        kind: 'heartbeat',
+        laneName: 'cargo-hauler',
+        phase: 'queued',
+        ticket: 'cc-10',
+      }),
+    ).toBe('[cargo-hauler] cc-10 queued 1m35s — check -p cargo-hauler\n');
+  });
 });
