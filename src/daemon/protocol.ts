@@ -30,6 +30,9 @@ export type FinishedStatus = 'done' | 'failed' | 'killed';
  * folded test/nextest batches mirror the composite's shared exit.
  */
 export type AttachMode = 'identity' | 'coverage' | 'batch';
+
+/** Provenance of a runtime estimate: measured (`ewma`), kache priors, or a cold-start default. */
+export type EstimateSource = 'ewma' | 'kache' | 'default';
 export type SavedComputeSource = 'exact' | 'estimate';
 
 /** Live, lane-local context for a queued request. Never persisted to the ledger. */
@@ -147,6 +150,8 @@ export const execRequestSchema = z.object({
   host: z.string().optional(),
   background: z.boolean().optional(),
   holdStop: z.boolean().optional(),
+  /** Run the child with stderr on the stdout pipe so the caller's `2>&1` keeps write order. */
+  mergeStderr: z.boolean().optional(),
 });
 
 export const attemptRequestSchema = z.object({
@@ -421,6 +426,8 @@ export interface AckMessage {
   readonly attachMode?: AttachMode;
   /** Estimated remaining runtime for this queued request or its attached leader. */
   readonly etaMs?: number;
+  /** Where `etaMs` came from; a `default` prior is a placeholder, not a measurement. */
+  readonly etaSource?: EstimateSource;
 }
 
 /**

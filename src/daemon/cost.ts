@@ -20,14 +20,14 @@ import type {
   KachePriorSnapshot,
 } from './kache-status.js';
 import { Ledger } from './ledger.js';
-import type { KacheStatusReport } from './protocol.js';
+import type { EstimateSource, KacheStatusReport } from './protocol.js';
 
 export { readKacheEventPriors } from './kache-status.js';
 export type { KacheEventPriors, KacheIndexPriors } from './kache-status.js';
 
 export interface CostEstimate {
   readonly estimateMs: number;
-  readonly source: 'ewma' | 'kache' | 'default';
+  readonly source: EstimateSource;
 }
 
 export interface CostModelApi {

@@ -29,6 +29,13 @@ if [ "$1" = knob ]; then
   echo "knob:\${BUILD_SCRIPT_KNOB:-unset} state:\${CARGO_HAULER_STATE_DIR:-unset}"
   exit 0
 fi
+if [ "$1" = interleave ]; then
+  for i in 0 1 2 3 4; do
+    echo "out$i"
+    echo "err$i" >&2
+  done
+  exit 0
+fi
 echo "out:$1"
 echo "err:$1" >&2
 if [ "$1" = trap-term ]; then
@@ -137,6 +144,30 @@ describe('executeCargo', () => {
       expect(result.outputTail).toContain('err:hello');
       expect(concatUtf8(stdout)).toBe('out:hello\n');
       expect(concatUtf8(stderr)).toBe('err:hello\n');
+    }));
+
+  it.live('keeps the child’s own write order when stderr is merged into stdout', () =>
+    Effect.gen(function* () {
+      const { dir, script } = yield* scopedWorkspace;
+      const stdout: Uint8Array[] = [];
+      const stderr: Uint8Array[] = [];
+
+      const result = yield* runExecute({
+        argv: [script, 'interleave'],
+        cwd: dir,
+        killSignal: unusedKill(),
+        mergeStderr: true,
+        tailBytes: 4096,
+        onOutput: (channel, data) =>
+          Effect.sync(() => {
+            (channel === 'stdout' ? stdout : stderr).push(data);
+          }),
+      });
+
+      expect(result.outcome).toBe('done');
+      // One pipe shared by both fds: the kernel keeps the program's order (#38).
+      expect(concatUtf8(stdout)).toBe('out0\nerr0\nout1\nerr1\nout2\nerr2\nout3\nerr3\nout4\nerr4\n');
+      expect(stderr).toEqual([]);
     }));
 
   it.live('delivers env and reports failed for a non-zero exit', () =>

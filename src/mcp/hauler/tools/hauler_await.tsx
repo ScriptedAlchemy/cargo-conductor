@@ -11,7 +11,7 @@ import { awaitTicketResult, defaultAwaitMs, fetchTicketResult, progressMessage }
 export const config = {
   annotations: { readOnlyHint: true },
   description:
-    'Long-poll a cargo-hauler ticket until it finishes or the wait expires (maxWaitMs up to two hours). The document streams: the live ticket card first, then the settled result; progress notifications carry queue position, elapsed time, and the cost estimate while waiting.',
+    'Long-poll a cargo-hauler ticket until it finishes or the wait expires (maxWaitMs default 30000, ceiling 55000; call again to keep waiting). The document streams: the live ticket card first, then the settled result; progress notifications carry queue position, elapsed time, and the cost estimate while waiting.',
   title: 'Await hauler ticket',
 } satisfies ToolConfig;
 

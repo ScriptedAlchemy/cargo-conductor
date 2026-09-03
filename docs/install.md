@@ -59,7 +59,8 @@ pnpm exec agent-bundle install cursor --from artifact/cursor --mode local
   stop-hold implementation bounds each wait to ~30 s and re-denies, so a
   single hook process never becomes a marathon.
 - Claude's shell tool has historically killed cargo around 10 minutes. The
-  client auto-backgrounds when the cost-model ETA exceeds 9 minutes.
+  client auto-backgrounds when a measured cost-model ETA (not the cold-start
+  default) exceeds 9 minutes, and exits 75 so the caller knows nothing ran yet.
 
 ### Cursor
 

@@ -44,6 +44,8 @@ export type ProgressEvent =
       readonly kind: 'background';
       readonly estimateMs: number | null;
       readonly ticket: string;
+      /** Set when a synchronous request was converted because its estimate exceeds the host cap. */
+      readonly auto?: { readonly capMs: number; readonly host: string };
     };
 
 const prefix = '[cargo-hauler]';
@@ -118,7 +120,11 @@ export const formatProgressLine = (event: ProgressEvent): string => {
         event.estimateMs === null
           ? ''
           : ` (ETA ${Math.max(1, Math.round(event.estimateMs / 1000))}s)`;
-      return `${prefix} ticket ${event.ticket} submitted in background${eta}\nRetrieve with: hauler result ${event.ticket}\nAwait with: hauler await ${event.ticket}\n`;
+      const retrieve = `Retrieve with: hauler result ${event.ticket}\nAwait with: hauler await ${event.ticket}\n`;
+      if (event.auto === undefined) {
+        return `${prefix} ticket ${event.ticket} submitted in background${eta}\n${retrieve}`;
+      }
+      return `${prefix} ticket ${event.ticket} estimate${eta} exceeds the ${event.auto.host} shell cap (${formatDuration(event.auto.capMs)}); submitted in background, not run yet (exit 75)\n${retrieve}`;
     }
     default: {
       const exhaustive: never = event;

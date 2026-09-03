@@ -38,9 +38,15 @@ import { AnsiStreamStripper, colorEnabled } from '../lib/ansi.js';
 import { shortId } from '../lib/id.js';
 
 import { ensureDaemonRunning, type EnsureDaemonError } from './ensure-daemon.js';
-import { shouldAutoBackground } from './host-cap.js';
+import {
+  autoBackgroundExitCode,
+  hostShellCapMs,
+  shellCapHost,
+  shouldAutoBackground,
+} from './host-cap.js';
 import { localQueryReason } from './local-invocation.js';
 import { formatProgressLine } from './progress.js';
+import { sharesOutputTarget } from './shared-output.js';
 
 export interface ExecIo {
   readonly writeStderr: (data: string | Uint8Array) => void;
@@ -58,6 +64,12 @@ export interface RunExecOptions {
   readonly heartbeatMs?: number;
   readonly host?: string;
   readonly io: ExecIo;
+  /**
+   * Ask the daemon to run cargo with stderr merged into stdout. Defaults to
+   * whether this process's fd 1 and fd 2 are the same open file (`2>&1`), in
+   * which case direct cargo would have preserved write order across them.
+   */
+  readonly mergeStderr?: boolean;
   readonly session?: string;
   readonly silenceThresholdMs?: number;
   /**
@@ -175,6 +187,16 @@ const passthrough = (
 
 const unreachableMode: PassthroughMode = { reason: 'daemon unreachable', spool: true };
 
+/** Bookkeeping for a synchronous request the client converted to a background ticket. */
+interface DetachHandshake {
+  /** Set once a detach was written, so the caller waits for the daemon's answer before hanging up. */
+  readonly requested: Ref.Ref<boolean>;
+  readonly acknowledged: Deferred.Deferred<void>;
+}
+
+/** How long to wait for `detach-result` before giving up and disconnecting anyway. */
+const detachAckTimeout = '2 seconds';
+
 const handleServerMessage = (
   options: RunExecOptions,
   message: ServerMessage,
@@ -183,6 +205,7 @@ const handleServerMessage = (
   lastOutputAtMs: Ref.Ref<number>,
   finished: Deferred.Deferred<RunExecResult>,
   detach: (ticket: string) => Effect.Effect<void>,
+  handshake: DetachHandshake,
 ): Effect.Effect<void> =>
   Effect.gen(function* () {
     switch (message.type) {
@@ -204,23 +227,30 @@ const handleServerMessage = (
                 ...(message.etaMs === undefined ? {} : { etaMs: message.etaMs }),
               }),
         );
+        const capHost = shellCapHost(options.host, process.env);
         const autoBackground =
           options.background !== true &&
           message.etaMs !== undefined &&
-          shouldAutoBackground(message.etaMs, options.host);
+          shouldAutoBackground(message.etaMs, capHost, message.etaSource ?? 'default');
         if (options.background === true || autoBackground) {
           options.io.writeStderr(
             formatProgressLine({
               estimateMs: message.etaMs ?? null,
               kind: 'background',
               ticket: message.ticket,
+              ...(autoBackground && capHost !== undefined
+                ? { auto: { capMs: hostShellCapMs(capHost), host: capHost } }
+                : {}),
             }),
           );
           if (autoBackground) {
+            // Disconnecting before the daemon reads the detach would make it
+            // kill a still-queued ticket as abandoned client work.
+            yield* Ref.set(handshake.requested, true);
             yield* detach(message.ticket);
           }
           yield* Deferred.succeed(finished, {
-            exitCode: 0,
+            exitCode: autoBackground ? autoBackgroundExitCode : 0,
             mode: 'brokered' as const,
             ticket: message.ticket,
           });
@@ -258,11 +288,13 @@ const handleServerMessage = (
           mode: 'brokered' as const,
         });
         return;
+      case 'detach-result':
+        yield* Deferred.succeed(handshake.acknowledged, undefined);
+        return;
       case 'kill-result':
       case 'pong':
       case 'status-result':
       case 'shutting-down':
-      case 'detach-result':
       case 'await-result':
       case 'result-result':
       case 'session-pending-result':
@@ -294,6 +326,10 @@ const streamBrokered = (
     const submittedAtMs = Date.now();
     const lastOutputAtMs = yield* Ref.make(submittedAtMs);
     const id = shortId();
+    const handshake: DetachHandshake = {
+      acknowledged: yield* Deferred.make<void>(),
+      requested: yield* Ref.make(false),
+    };
 
     // v4 sockets connect lazily: open failures surface through the pump's
     // `socket.run`, which routes them via mapOpenError below.
@@ -345,6 +381,7 @@ const streamBrokered = (
                   write(
                     encodeClientMessage({ type: 'detach', id: `${id}-detach`, ticket: target }),
                   ).pipe(Effect.ignore),
+                handshake,
               );
             }
           }),
@@ -389,6 +426,7 @@ const streamBrokered = (
         ...(options.session === undefined ? {} : { session: options.session }),
         ...(options.workspaceRoot === undefined ? {} : { workspaceRoot: options.workspaceRoot }),
         ...(options.background === true ? { background: true } : {}),
+        ...((options.mergeStderr ?? sharesOutputTarget(1, 2)) ? { mergeStderr: true } : {}),
       }),
     ).pipe(Effect.mapError((error) => mapOpenError(error, config.socketPath)));
 
@@ -420,7 +458,15 @@ const streamBrokered = (
       ),
     );
 
-    return yield* Deferred.await(finished).pipe(Effect.raceFirst(Fiber.join(pumpFiber)));
+    const result = yield* Deferred.await(finished).pipe(Effect.raceFirst(Fiber.join(pumpFiber)));
+    if (yield* Ref.get(handshake.requested)) {
+      yield* Deferred.await(handshake.acknowledged).pipe(
+        Effect.raceFirst(Fiber.join(pumpFiber).pipe(Effect.asVoid)),
+        Effect.timeout(detachAckTimeout),
+        Effect.ignore,
+      );
+    }
+    return result;
   });
 
 /** How long exec keeps retrying a daemon that is up but slow to accept. */

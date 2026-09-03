@@ -28,6 +28,12 @@ export interface ExecuteCargoOptions {
    * the rendered view). Used for `--message-format=json` demultiplexing.
    */
   readonly onStdoutLine?: (line: string) => Effect.Effect<void>;
+  /**
+   * Point the child's stderr at its stdout pipe so both channels share one
+   * file description and the kernel keeps the program's write order; every
+   * byte then arrives on `stdout`. Mutually exclusive with `onStdoutLine`.
+   */
+  readonly mergeStderr?: boolean;
 }
 
 export interface ExecutionResult {
@@ -183,9 +189,16 @@ const buildCommand = (options: ExecuteCargoOptions): ChildProcess.StandardComman
       : options.env?.NO_COLOR !== undefined && options.env.NO_COLOR !== ''
         ? { CARGO_TERM_COLOR: 'never' }
         : { CARGO_TERM_COLOR: 'always' };
+  // A merged run goes through `sh -c 'exec … 2>&1'`: the spawner has no
+  // dup2 option, and `exec` keeps cargo's pid (so group kills still land)
+  // while the shell only performs the redirection.
+  const [program, args] =
+    options.mergeStderr === true && options.onStdoutLine === undefined
+      ? ['/bin/sh', ['-c', 'exec "$0" "$@" 2>&1', resolved, ...options.argv.slice(1)]]
+      : [resolved, options.argv.slice(1)];
   // `env` is a delta on top of the caller environment; extendEnv keeps the
   // inherited PATH/HOME etc. (v4 replaces the environment by default).
-  return ChildProcess.make(resolved, options.argv.slice(1), {
+  return ChildProcess.make(program, args, {
     cwd: options.cwd,
     env: { ...color, ...jobserver, ...options.env, CARGO_HAULER_INSIDE: '1' },
     extendEnv: true,

@@ -30,7 +30,7 @@ import {
   waitMsSummary,
 } from './broker-metrics.js';
 import type { DaemonConfigShape } from './config.js';
-import type { CostModelApi } from './cost.js';
+import type { CostEstimate, CostModelApi } from './cost.js';
 import { executeCargo, TailBuffer } from './executor.js';
 import type { ExecutionResult } from './executor.js';
 import type { NormalizedCargoIntent } from './intent-normalizer.js';
@@ -110,7 +110,7 @@ export interface LaneRuntime {
     intent: NormalizedCargoIntent,
     callbacks: SubmitCallbacks,
     queuedAtMs: number,
-    estimateMs: number,
+    estimate: CostEstimate,
   ) => Effect.Effect<Job>;
   readonly enqueueJob: (lane: Lane, job: Job) => Effect.Effect<number>;
   readonly settleInterruptedJob: (job: Job) => Effect.Effect<void>;
@@ -161,7 +161,7 @@ export const makeLaneRuntime = (deps: LaneRuntimeDeps): Effect.Effect<LaneRuntim
       intent: NormalizedCargoIntent,
       callbacks: SubmitCallbacks,
       queuedAtMs: number,
-      estimateMs: number,
+      estimate: CostEstimate,
     ): Effect.Effect<Job> =>
       Effect.gen(function* () {
         const killSignal = yield* Deferred.make<void>();
@@ -193,7 +193,8 @@ export const makeLaneRuntime = (deps: LaneRuntimeDeps): Effect.Effect<LaneRuntim
           execArgv: plan.execArgv,
           demux: plan.demux,
           tail: new TailBuffer(config.outputTailBytes),
-          estimateMs,
+          estimateMs: estimate.estimateMs,
+          estimateSource: estimate.source,
           startedAtMs: null,
           lastOutputAtMs: null,
           admissionHold: null,
@@ -276,6 +277,7 @@ export const makeLaneRuntime = (deps: LaneRuntimeDeps): Effect.Effect<LaneRuntim
               callbacks: candidate.callbacks,
               createdAtMs: candidate.queuedAtMs,
               estimateMs: candidate.estimateMs,
+              estimateSource: candidate.estimateSource,
               tail: new TailBuffer(config.outputTailBytes),
               attachedAtMs: atMs,
             });
@@ -385,6 +387,7 @@ export const makeLaneRuntime = (deps: LaneRuntimeDeps): Effect.Effect<LaneRuntim
           callbacks: attachment.callbacks,
           createdAtMs: attachment.createdAtMs,
           estimateMs: attachment.estimateMs,
+          estimateSource: attachment.estimateSource,
           tail: attachment.tail,
           attachedAtMs: atMs,
         });
@@ -406,7 +409,7 @@ export const makeLaneRuntime = (deps: LaneRuntimeDeps): Effect.Effect<LaneRuntim
           attachment.intent,
           attachment.callbacks,
           atMs,
-          attachment.estimateMs,
+          { estimateMs: attachment.estimateMs, source: attachment.estimateSource },
         );
         yield* Effect.sync(() => directory.setLeader(job));
         yield* enqueueJob(lane, job);
@@ -570,6 +573,9 @@ export const makeLaneRuntime = (deps: LaneRuntimeDeps): Effect.Effect<LaneRuntim
           // demux mode the executor's own tail would capture raw JSON.
           tailBytes: 0,
           onOutput: (channel, data) => attachments.emitChunk(job, channel, data),
+          // The JSON demux owns stdout, so a merged pipe is only honoured for
+          // runs that stream raw output (`cargo run`, `cargo test`, ...).
+          mergeStderr: job.demux === null && job.input.mergeStderr === true,
           ...(job.demux === null
             ? {}
             : { onStdoutLine: (line: string) => attachments.handleStdoutLine(job, line) }),
@@ -580,7 +586,9 @@ export const makeLaneRuntime = (deps: LaneRuntimeDeps): Effect.Effect<LaneRuntim
           Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
         );
         const finishedAtMs = Date.now();
-        if (result.outcome === 'done') {
+        // A compile error is still a measured build time; without it a broken
+        // build would be re-estimated at the cold-start default on every retry.
+        if (result.outcome !== 'killed') {
           yield* costModel.recordOutcome(job.intent.key, finishedAtMs - runStartedAtMs);
         }
         yield* settleJob(

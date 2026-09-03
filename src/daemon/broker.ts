@@ -36,6 +36,7 @@ import { Ledger } from './ledger.js';
 import { memoryAvailableBytes, memoryPressureLevel, memoryPsi } from './pressure.js';
 import type {
   AttachMode,
+  EstimateSource,
   HistogramMetricSnapshot,
   LaneStatus,
   RequestRecord,
@@ -73,6 +74,7 @@ export interface SubmitResult {
   readonly attachMode?: AttachMode;
   /** Estimated remaining runtime for queued requests or their attached leader. */
   readonly etaMs?: number;
+  readonly etaSource?: EstimateSource;
 }
 
 export interface KillOptions {
@@ -265,6 +267,7 @@ export const BrokerLive: Layer.Layer<
               callbacks,
               createdAtMs,
               estimateMs: estimate.estimateMs,
+              estimateSource: estimate.source,
               tail: new TailBuffer(config.outputTailBytes),
               attachedAtMs: createdAtMs,
             });
@@ -284,6 +287,7 @@ export const BrokerLive: Layer.Layer<
                 attachedTo: registered.leader.ticket,
                 attachMode: registered.mode,
                 etaMs: remainingEstimateMs(registered.leader, Date.now()),
+                etaSource: registered.leader.estimateSource,
               };
             }
             const job = yield* lanesRuntime.makeJob(
@@ -294,7 +298,7 @@ export const BrokerLive: Layer.Layer<
               normalized,
               callbacks,
               createdAtMs,
-              estimate.estimateMs,
+              estimate,
             );
             yield* Effect.sync(() => directory.setLeader(job));
             yield* ledger.markQueued(created.id, createdAtMs);
@@ -304,7 +308,13 @@ export const BrokerLive: Layer.Layer<
               yield* Deferred.succeed(job.killSignal, undefined);
             }
             const position = yield* lanesRuntime.enqueueJob(lane, job);
-            return { ticket: created.ticket, laneKey, position, etaMs: job.estimateMs };
+            return {
+              ticket: created.ticket,
+              laneKey,
+              position,
+              etaMs: job.estimateMs,
+              etaSource: job.estimateSource,
+            };
           }),
         );
       });

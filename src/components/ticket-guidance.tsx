@@ -2,6 +2,8 @@ import { Agent } from '@agent-bundle/runtime';
 import React from 'react';
 
 import type { RequestRecord, RequestStatus } from '../daemon/protocol.js';
+import { formatMs } from '../lib/format.js';
+import { awaitMaxWaitMs } from '../lib/protocol-schemas.js';
 
 import type { SurfaceNames } from './surface.js';
 
@@ -20,7 +22,7 @@ type GuidanceComponent = (props: TicketGuidanceProps) => React.JSX.Element;
 
 const PendingGuidance: GuidanceComponent = ({ names, record }) => (
   <Agent.Context>
-    {`${record.ticket} is still ${record.status}. Do not re-run the same cargo command; call ${names.await} with ticket ${record.ticket} (up to two hours) or check ${names.result} later.`}
+    {`${record.ticket} is still ${record.status}. Do not re-run the same cargo command; call ${names.await} with ticket ${record.ticket} (each call waits up to ${formatMs(awaitMaxWaitMs)}; call again to keep waiting) or check ${names.result} later.`}
   </Agent.Context>
 );
 
