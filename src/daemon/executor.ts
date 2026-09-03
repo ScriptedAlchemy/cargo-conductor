@@ -243,6 +243,9 @@ const failedResult = (
   error,
 });
 
+/** How long to keep reading after the child exited before abandoning a pipe held open by a descendant. */
+const pumpDrainGraceMs = 1_000;
+
 const pumpFailure = (
   channel: 'stdout' | 'stderr',
   fiber: Fiber.Fiber<void, unknown>,
@@ -260,11 +263,12 @@ const pumpFailure = (
     }),
   );
 
+/** A pump we interrupted ourselves (drain grace elapsed) is not a failure. */
 const pumpError = (
   channel: 'stdout' | 'stderr',
   exit: Exit.Exit<void, unknown>,
 ): string | null =>
-  Exit.isFailure(exit)
+  Exit.isFailure(exit) && !Cause.hasInterruptsOnly(exit.cause)
     ? `${channel} pump failed: ${Cause.pretty(exit.cause)}`
     : null;
 
@@ -389,7 +393,20 @@ export const executeCargo = (
               }
             }
 
-            const [stdoutExit, stderrExit] = yield* Fiber.awaitAll([stdoutFiber, stderrFiber]);
+            // Pipe EOF needs every writer gone. Once the child itself has
+            // exited, a descendant that survived (an orphaned helper, a
+            // daemonized process) must not keep the ticket from settling:
+            // drain briefly, then stop reading and let it go.
+            const drained = yield* Fiber.awaitAll([stdoutFiber, stderrFiber]).pipe(
+              Effect.timeoutOption(pumpDrainGraceMs),
+            );
+            const [stdoutExit, stderrExit] =
+              drained._tag === 'Some'
+                ? drained.value
+                : yield* Effect.andThen(
+                    Fiber.interruptAll([stdoutFiber, stderrFiber]),
+                    Fiber.awaitAll([stdoutFiber, stderrFiber]),
+                  );
             const errors = [
               primaryError,
               pumpError('stdout', stdoutExit),
