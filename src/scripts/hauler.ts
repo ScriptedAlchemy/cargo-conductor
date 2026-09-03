@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import * as Cause from 'effect/Cause';
 import * as Effect from 'effect/Effect';
 
-import { buildRelevantEnv } from '../client/env.js';
+import { buildTransportedEnv } from '../client/env.js';
 import { runExecClient, type RunExecOptions, type RunExecResult } from '../client/exec.js';
 import { ExecUsageError, parseExecArgv } from '../client/parse.js';
 import { parseDaemonSubcommand, runDaemonControl } from '../daemon/lifecycle.js';
@@ -139,7 +139,7 @@ const runExecCommand = async (argv: readonly string[], options: ScriptOptions): 
     exec({
       argv: parsed.cargoArgv,
       cwd: parsed.cwd ?? process.cwd(),
-      env: buildRelevantEnv(process.env),
+      env: buildTransportedEnv(process.env),
       host: parsed.host ?? envHost ?? 'cli',
       io,
       ...(parsed.background ? { background: true } : {}),

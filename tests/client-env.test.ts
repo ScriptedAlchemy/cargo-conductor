@@ -1,29 +1,29 @@
 import { describe, expect, it } from 'effect-rstest';
 
-import { buildRelevantEnv } from '../src/client/env.js';
+import { buildTransportedEnv } from '../src/client/env.js';
 
-describe('buildRelevantEnv', () => {
-  it('keeps build-affecting variables and drops session noise', () => {
+describe('buildTransportedEnv', () => {
+  it('forwards the caller environment, including build-script knobs cargo cannot name up front', () => {
     const env = {
       CARGO_TARGET_DIR: '/tmp/t',
       CC: 'clang',
+      FOO: 'bar',
       HOME: '/home/alice',
       PATH: '/usr/bin',
       PROMPT_COMMAND: 'noise',
       RUSTFLAGS: '-C debuginfo=1',
       RUSTUP_TOOLCHAIN: 'nightly',
+      TRACEDECAY_SKIP_DASHBOARD_BUILD: '1',
     };
-    expect(buildRelevantEnv(env)).toEqual({
-      CARGO_TARGET_DIR: '/tmp/t',
-      CC: 'clang',
-      RUSTFLAGS: '-C debuginfo=1',
-      RUSTUP_TOOLCHAIN: 'nightly',
-    });
+    // A `build.rs` reading FOO or TRACEDECAY_SKIP_DASHBOARD_BUILD must see the
+    // caller's value through the broker, exactly as a direct cargo run would.
+    expect(buildTransportedEnv(env)).toEqual(env);
   });
 
   it('never leaks hauler-internal variables', () => {
     expect(
-      buildRelevantEnv({
+      buildTransportedEnv({
+        CARGO_CONDUCTOR_KILL_GRACE_MS: '1',
         CARGO_HAULER_CARGO_BIN: '/fake/cargo',
         CARGO_HAULER_STATE_DIR: '/tmp/state',
         RUSTDOCFLAGS: '--cfg docsrs',
@@ -32,18 +32,17 @@ describe('buildRelevantEnv', () => {
   });
 
   it('skips undefined values', () => {
-    expect(buildRelevantEnv({ RUSTFLAGS: undefined })).toEqual({});
+    expect(buildTransportedEnv({ RUSTFLAGS: undefined })).toEqual({});
   });
 
   it('transports the caller color-decision variables to the daemon spawn', () => {
     // A caller NO_COLOR must reach the executor, or it injects
     // CARGO_TERM_COLOR=always and ANSI leaks through unstripped stdout.
     expect(
-      buildRelevantEnv({
+      buildTransportedEnv({
         CLICOLOR: '0',
         CLICOLOR_FORCE: '1',
         FORCE_COLOR: '1',
-        HOME: '/home/alice',
         NO_COLOR: '1',
         TERM: 'dumb',
       }),

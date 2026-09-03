@@ -14,31 +14,36 @@ const legacyConductorPrefix = 'CARGO_CONDUCTOR_';
 const targetToolPattern =
   /^(?:AR|CC|CFLAGS|CXX|CXXFLAGS|LDFLAGS)_[A-Za-z0-9_-]+$/u;
 
+/**
+ * Daemon and hook settings. They configure the broker itself and never ride
+ * along with a request: a caller's `CARGO_HAULER_STATE_DIR` must not retarget
+ * the daemon-spawned cargo, and none of them affect what cargo builds.
+ */
+export const isHaulerInternalEnvironmentVariable = (name: string): boolean =>
+  name.startsWith(haulerPrefix) || name.startsWith(legacyConductorPrefix);
+
+/**
+ * The variables that participate in request identity (coalescing). Two
+ * requests that differ only outside this set share a leader, so the set is
+ * deliberately the cargo/rustc/linker knobs that change build output for
+ * every crate, not the open-ended space of variables a `build.rs` or
+ * `env!()` may read.
+ */
 export const isRelevantCargoEnvironmentVariable = (name: string): boolean =>
-  !name.startsWith(haulerPrefix) &&
-  !name.startsWith(legacyConductorPrefix) &&
+  !isHaulerInternalEnvironmentVariable(name) &&
   (exactEnvironmentNames.has(name) ||
     name.startsWith('CARGO_') ||
     name.startsWith('RUST') ||
     targetToolPattern.test(name));
 
 /**
- * The caller's color-decision variables (the set `colorEnabled` honors).
- * They ride along to the daemon so the spawned cargo sees the caller's
- * request — the executor turns a caller NO_COLOR into CARGO_TERM_COLOR=never
- * instead of forcing `always`, and nested tools read NO_COLOR/FORCE_COLOR
- * themselves. They are deliberately not identity-relevant: two sessions
- * differing only in TERM or NO_COLOR must still coalesce, so the intent
- * digest (which filters by {@link isRelevantCargoEnvironmentVariable})
- * ignores them.
+ * The variables the client ships to the daemon for the spawned cargo. The
+ * caller's whole environment travels, minus the hauler-internal settings, so
+ * a brokered `FOO=bar cargo build` behaves like the direct invocation: build
+ * scripts, `env!()`, `cargo run` and `cargo test` processes see the same
+ * variables the caller exported. Identity is decided separately by
+ * {@link isRelevantCargoEnvironmentVariable}; session noise such as TERM,
+ * NO_COLOR, or a prompt variable is forwarded but never splits an intent.
  */
-const colorEnvironmentNames = new Set([
-  'CLICOLOR',
-  'CLICOLOR_FORCE',
-  'FORCE_COLOR',
-  'NO_COLOR',
-  'TERM',
-]);
-
 export const isTransportedEnvironmentVariable = (name: string): boolean =>
-  isRelevantCargoEnvironmentVariable(name) || colorEnvironmentNames.has(name);
+  !isHaulerInternalEnvironmentVariable(name);

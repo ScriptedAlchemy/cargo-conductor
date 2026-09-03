@@ -1,25 +1,25 @@
 import { isTransportedEnvironmentVariable } from '../lib/cargo-env.js';
 
 /**
- * The caller-environment subset worth shipping to the daemon: enough for the
- * normalizer's identity digest (RUSTFLAGS and friends), for the spawned
- * cargo to behave like the caller's shell, and for the caller's color
- * request (NO_COLOR and the rest of the `colorEnabled` set) to reach the
- * spawn — without hauling session noise (PATH, PROMPT, …) that would
- * fragment request identity across sessions. The identity digest filters
- * this transport down further, so the color variables never split intents.
+ * The caller environment shipped to the daemon: everything the caller's
+ * shell exported except the hauler-internal `CARGO_HAULER_*` settings. The
+ * daemon lays it over its own environment when it spawns cargo, so a
+ * brokered request sees the same RUSTFLAGS, build-script knobs, PATH, and
+ * color request as a direct `cargo` invocation would. Request identity is
+ * digested from the build-relevant subset only, so forwarding session noise
+ * (TERM, prompt variables, …) never fragments coalescing.
  */
-export const buildRelevantEnv = (
+export const buildTransportedEnv = (
   env: Readonly<Record<string, string | undefined>>,
 ): Record<string, string> => {
-  const relevant: Record<string, string> = {};
+  const transported: Record<string, string> = {};
   for (const [key, value] of Object.entries(env)) {
     if (value === undefined) {
       continue;
     }
     if (isTransportedEnvironmentVariable(key)) {
-      relevant[key] = value;
+      transported[key] = value;
     }
   }
-  return relevant;
+  return transported;
 };
