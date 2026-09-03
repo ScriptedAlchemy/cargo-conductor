@@ -89,7 +89,22 @@ describe('probeDaemonHealth', () => {
       const startedAt = Date.now();
       const health = yield* Effect.promise(() => probeDaemonHealth(config, { platform: 'linux', timeoutMs: 300 }));
       expect(Date.now() - startedAt).toBeLessThan(1_500);
-      expect(health).toMatchObject({ state: 'unresponsive', timeoutMs: 300 });
+      // The listener accepted, so this is an answer timeout, not an accept timeout.
+      expect(health).toEqual({ reason: 'answer-timeout', state: 'unresponsive', timeoutMs: 300 });
+    }).pipe(Effect.scoped, Effect.runPromise), 10_000);
+
+  it.skipIf(process.getuid?.() === 0)('reports a state directory it may not search as unreachable, not missing', () =>
+    Effect.gen(function* () {
+      const root = yield* scopedTempDir('hauler-health-');
+      const config = listenerConfig(root);
+      const server = silentServer();
+      yield* Effect.promise(() => listenOn(config.socketPath, server));
+      yield* Effect.addFinalizer(() => Effect.promise(() => closeServer(server)));
+      chmodSync(config.stateDir, 0o600);
+      yield* Effect.addFinalizer(() => Effect.sync(() => chmodSync(config.stateDir, 0o700)));
+      const health = yield* Effect.promise(() => probeDaemonHealth(config, { platform: 'linux', timeoutMs: 300 }));
+      expect(health).toMatchObject({ reason: 'open-failed', state: 'unreachable' });
+      expect(health.state === 'unreachable' ? health.detail : '').toContain('EACCES');
     }).pipe(Effect.scoped, Effect.runPromise), 10_000);
 
   it.skipIf(process.getuid?.() === 0)('reports a socket it may not open as unreachable with the errno, not stopped', () =>

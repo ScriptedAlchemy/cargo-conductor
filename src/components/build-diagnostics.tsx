@@ -10,14 +10,15 @@ export interface BuildDiagnosticsProps {
 }
 
 /**
- * Cargo diagnostics as structure: one row per `error[E…]`/`warning:` block
- * with its code, message, and first `-->` location, so an agent can jump to
- * the file instead of scrolling raw output. Blocks the parser does not
- * recognise are shown verbatim rather than dropped.
+ * Cargo diagnostics as structure: an index table with one row per
+ * `error[E…]`/`warning:` block (code, message, first `-->` location) so an
+ * agent can jump to the file, followed by every captured block verbatim —
+ * spans, expected/found types, notes, and suggested fixes — because the index
+ * is a way in, not a substitute for what rustc said.
  */
 export const BuildDiagnostics = ({ record }: BuildDiagnosticsProps) => {
   const model = buildDiagnosticsModel(record);
-  if (model.rows.length === 0 && model.unparsed.length === 0) {
+  if (model.verbatim.trim() === '') {
     return null;
   }
   return (
@@ -29,7 +30,7 @@ export const BuildDiagnostics = ({ record }: BuildDiagnosticsProps) => {
           rows={model.rows.map((row) => [row.level, row.code ?? '—', row.message, row.location ?? '—'])}
         />
       )}
-      {model.unparsed.length === 0 ? null : <CodeBlock lang="text">{model.unparsed.join('')}</CodeBlock>}
+      <CodeBlock lang="text">{model.verbatim}</CodeBlock>
     </>
   );
 };

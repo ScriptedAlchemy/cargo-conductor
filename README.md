@@ -68,7 +68,7 @@ and a `health` value from one bounded `status` probe:
 | --- | --- |
 | `running` | `pid`, `startedAtMs`, `latencyMs`, `running` (permit holders), `riding` (attached), `queued`, `busyLanes`, `maxConcurrent` |
 | `stopped` | `socket-missing` (starts on demand) or `connection-refused` (stale socket) |
-| `unresponsive` | `accept-timeout` or `connection-closed` within the probe budget (750 ms for the accept and for the answer); ledger reads still work |
+| `unresponsive` | `accept-timeout` (never accepted), `answer-timeout` (accepted, no `status-result`), or `connection-closed` within the probe budget (750 ms for the accept and for the answer); ledger reads still work |
 | `unreachable` | `open-failed` with the errno (`EACCES`, `EMFILE`, …): the socket is present but could not be opened, which is not evidence the daemon is down |
 | `unprobed` | `event-surface`: hooks run on every shell command and skip the probe by design |
 
@@ -90,7 +90,7 @@ assertion share one derivation.
 | `<AdmissionState>` | permits in use, load, memory clamp, sharing savings; calls out a paused admission gate |
 | `<KacheStats>` | kache coverage and freshness, slowest crates by profile, or an honest "not detected" |
 | `<LogTail>` | the captured output tail, labelled live while the run is in progress |
-| `<BuildDiagnostics>` | cargo `error[E…]`/`warning:` blocks as level / code / message / location rows; unparsed blocks verbatim |
+| `<BuildDiagnostics>` | an index of cargo `error[E…]`/`warning:` blocks (level / code / message / location) followed by every captured block verbatim |
 | `<DashboardLink>` | where the MCP App lives and how to open it elsewhere |
 | `<TicketGuidance>` | what to do next, one component per ticket status |
 | `<DaemonBadge>`, `<LineageFooter>` | the shell header and footer |

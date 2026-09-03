@@ -24,6 +24,24 @@ export interface DaemonBadgeModel {
   readonly detail: string | null;
 }
 
+const unresponsiveDetail = (
+  reason: 'accept-timeout' | 'answer-timeout' | 'connection-closed',
+  timeoutMs: number,
+): string => {
+  switch (reason) {
+    case 'accept-timeout':
+      return `did not accept a connection within ${formatMs(timeoutMs)} (machine saturated); ledger reads still work`;
+    case 'answer-timeout':
+      return `accepted the connection but sent no status within ${formatMs(timeoutMs)} (busy fanning out output); ledger reads still work`;
+    case 'connection-closed':
+      return 'closed the connection before answering; ledger reads still work';
+    default: {
+      const exhaustive: never = reason;
+      return exhaustive;
+    }
+  }
+};
+
 export const daemonBadgeModel = (health: DaemonHealth, nowMs: number): DaemonBadgeModel => {
   switch (health.state) {
     case 'running': {
@@ -47,9 +65,7 @@ export const daemonBadgeModel = (health: DaemonHealth, nowMs: number): DaemonBad
       };
     case 'unresponsive':
       return {
-        detail: health.reason === 'accept-timeout'
-          ? `did not accept a connection within ${formatMs(health.timeoutMs)} (machine saturated); ledger reads still work`
-          : 'closed the connection before answering; ledger reads still work',
+        detail: unresponsiveDetail(health.reason, health.timeoutMs),
         headline: 'daemon unresponsive',
         state: health.state,
       };
@@ -316,11 +332,16 @@ export interface DiagnosticRowModel {
 }
 
 export interface BuildDiagnosticsModel {
+  /** One index row per recognised `error[E…]`/`warning:` block (summary lines excluded). */
   readonly rows: readonly DiagnosticRowModel[];
   readonly errorCount: number | null;
   readonly warningCount: number | null;
-  /** Diagnostic blocks that did not parse as `error[...]`/`warning:` headers; shown verbatim. */
-  readonly unparsed: readonly string[];
+  /**
+   * Every captured diagnostic block, verbatim and in order — spans, expected/
+   * found types, notes, and suggested fixes included. The rows above are an
+   * index into this text, never a replacement for it.
+   */
+  readonly verbatim: string;
 }
 
 const headerPattern = /^(error|warning)(?:\[(E\d{4})\])?:\s*(.+?)\s*$/u;
@@ -353,15 +374,9 @@ export const buildDiagnosticsModel = (
   record: Pick<RequestRecord, 'diagnostics' | 'errorCount' | 'warningCount'>,
 ): BuildDiagnosticsModel => {
   const blocks = record.diagnostics ?? [];
-  const rows: DiagnosticRowModel[] = [];
-  const unparsed: string[] = [];
-  for (const block of blocks) {
+  const rows = blocks.flatMap((block) => {
     const row = parseDiagnosticBlock(block);
-    if (row === null) {
-      unparsed.push(block);
-    } else if (!isSummaryDiagnostic(row)) {
-      rows.push(row);
-    }
-  }
-  return { errorCount: record.errorCount, rows, unparsed, warningCount: record.warningCount };
+    return row === null || isSummaryDiagnostic(row) ? [] : [row];
+  });
+  return { errorCount: record.errorCount, rows, verbatim: blocks.join(''), warningCount: record.warningCount };
 };

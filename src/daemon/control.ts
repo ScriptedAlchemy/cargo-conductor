@@ -20,6 +20,8 @@ export class ControlTimeoutError extends Data.TaggedError('ControlTimeout')<{
   readonly socketPath: string;
   readonly timeoutMs: number;
   readonly received: readonly ServerMessage[];
+  /** Which wait expired: the daemon accepting the connection, or answering once connected. */
+  readonly phase: 'open' | 'response';
 }> {}
 
 export class ConnectionClosedError extends Data.TaggedError('ConnectionClosed')<{
@@ -56,7 +58,7 @@ export const mapSocketFailure = (
       // arrives is a live daemon too busy to answer (observed under heavy
       // machine load), and must not read as "not running".
       return error.reason.kind === 'Timeout'
-        ? new ControlTimeoutError({ socketPath, timeoutMs: openTimeout, received: snapshot(received) })
+        ? new ControlTimeoutError({ phase: 'open', received: snapshot(received), socketPath, timeoutMs: openTimeout })
         : new DaemonUnreachableError({ socketPath, cause: error });
     case 'SocketWriteError':
     case 'SocketReadError':
@@ -170,9 +172,10 @@ const runRequest = (
         orElse: () =>
           Effect.fail(
             new ControlTimeoutError({
+              phase: 'response',
+              received: snapshot(received),
               socketPath: options.socketPath,
               timeoutMs,
-              received: snapshot(received),
             }),
           ),
       }),

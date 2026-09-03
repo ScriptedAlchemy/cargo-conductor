@@ -1,4 +1,4 @@
-import { existsSync } from 'node:fs';
+import { statSync } from 'node:fs';
 
 import * as Effect from 'effect/Effect';
 
@@ -33,17 +33,36 @@ export type DaemonHealth =
       readonly maxConcurrent: number;
     }
   | { readonly state: 'stopped'; readonly reason: 'socket-missing' | 'connection-refused' }
-  | { readonly state: 'unresponsive'; readonly reason: 'accept-timeout' | 'connection-closed'; readonly timeoutMs: number }
+  | {
+      readonly state: 'unresponsive';
+      /** `accept-timeout`: never accepted; `answer-timeout`: accepted but never sent `status-result`. */
+      readonly reason: 'accept-timeout' | 'answer-timeout' | 'connection-closed';
+      readonly timeoutMs: number;
+    }
   | { readonly state: 'unreachable'; readonly reason: 'open-failed'; readonly detail: string }
   | { readonly state: 'unprobed'; readonly reason: 'event-surface' };
 
 /** Bounded so a saturated daemon costs a document at most this long — for the accept and for the answer. */
 export const healthProbeTimeoutMs = 750;
 
-const socketPresent = (config: DaemonConfigShape, platform: NodeJS.Platform): boolean =>
-  // Windows named pipes are not filesystem entries; only Unix sockets can be
-  // ruled out without opening them.
-  platform === 'win32' || existsSync(config.socketPath);
+/**
+ * Whether the Unix socket can be ruled out without opening it. Only a definite
+ * `ENOENT` says "missing": a stat that fails for any other reason (a state
+ * directory without search permission, say) is not evidence of absence, so the
+ * probe goes on to attempt the open and reports that failure with its errno.
+ * Windows named pipes are not filesystem entries and are never ruled out here.
+ */
+const socketDefinitelyMissing = (config: DaemonConfigShape, platform: NodeJS.Platform): boolean => {
+  if (platform === 'win32') {
+    return false;
+  }
+  try {
+    statSync(config.socketPath);
+    return false;
+  } catch (error) {
+    return isRecord(error) && error.code === 'ENOENT';
+  }
+};
 
 const runningHealth = (message: StatusResultMessage, latencyMs: number): DaemonHealth => {
   const report = message.report;
@@ -109,7 +128,7 @@ export const probeDaemonHealth = (
   options: { readonly platform?: NodeJS.Platform; readonly signal?: AbortSignal; readonly timeoutMs?: number } = {},
 ): Promise<DaemonHealth> => {
   const platform = options.platform ?? process.platform;
-  if (!socketPresent(config, platform)) {
+  if (socketDefinitelyMissing(config, platform)) {
     return Promise.resolve({ reason: 'socket-missing', state: 'stopped' });
   }
   const timeoutMs = options.timeoutMs ?? healthProbeTimeoutMs;
@@ -131,8 +150,12 @@ export const probeDaemonHealth = (
     Effect.catchTags({
       ConnectionClosed: () =>
         Effect.succeed<DaemonHealth>({ reason: 'connection-closed', state: 'unresponsive', timeoutMs }),
-      ControlTimeout: () =>
-        Effect.succeed<DaemonHealth>({ reason: 'accept-timeout', state: 'unresponsive', timeoutMs }),
+      ControlTimeout: (error) =>
+        Effect.succeed<DaemonHealth>({
+          reason: error.phase === 'open' ? 'accept-timeout' : 'answer-timeout',
+          state: 'unresponsive',
+          timeoutMs,
+        }),
       DaemonUnreachable: (error) => Effect.succeed<DaemonHealth>(unreachableHealth(error)),
     }),
   );
