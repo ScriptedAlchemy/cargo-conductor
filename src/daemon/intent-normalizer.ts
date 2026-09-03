@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { realpathSync } from 'node:fs';
-import { isAbsolute, resolve } from 'node:path';
+import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 
 import { optionParts } from '../lib/argv.js';
 import { isRelevantCargoEnvironmentVariable } from '../lib/cargo-env.js';
@@ -84,12 +84,31 @@ const affectsCompilation = isRelevantCargoEnvironmentVariable;
 
 const sha256 = (value: string): string => createHash('sha256').update(value).digest('hex');
 
+/**
+ * One canonical spelling per path, whether or not it exists yet. A target
+ * dir is usually created only when cargo first runs, so canonicalizing the
+ * leaf alone would spell the same path two ways across submissions (on
+ * macOS `/var/folders/...` before creation, `/private/var/folders/...`
+ * after) and break lane keys and `sameCompileSurface`. When the full path
+ * cannot be realpathed, canonicalize the nearest existing ancestor and
+ * re-append the missing segments.
+ */
 const canonicalPath = (path: string): string => {
   const absolutePath = resolve(path);
-  try {
-    return realpathSync(absolutePath);
-  } catch {
-    return absolutePath;
+  let current = absolutePath;
+  const pending: string[] = [];
+  for (;;) {
+    try {
+      const canonicalAncestor = realpathSync(current);
+      return pending.length === 0 ? canonicalAncestor : join(canonicalAncestor, ...pending);
+    } catch {
+      const parent = dirname(current);
+      if (parent === current) {
+        return absolutePath;
+      }
+      pending.unshift(basename(current));
+      current = parent;
+    }
   }
 };
 

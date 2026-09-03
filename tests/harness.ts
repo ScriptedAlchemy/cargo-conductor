@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -46,8 +46,17 @@ export interface Fixture {
   readonly ws2: string;
 }
 
+/**
+ * Temp roots must be realpath-canonical: the daemon canonicalizes every path
+ * it stores, so expectations built from fixture paths would otherwise fail
+ * on platforms where the temp dir traverses a symlink (macOS `/var/folders`
+ * is a symlink into `/private/var`).
+ */
+const canonicalTempDir = (prefix: string): string =>
+  realpathSync(mkdtempSync(join(tmpdir(), prefix)));
+
 const makeFixture = (maxConcurrent: number): Fixture => {
-  const root = mkdtempSync(join(tmpdir(), 'cargo-hauler-it-'));
+  const root = canonicalTempDir('cargo-hauler-it-');
   const stateDir = join(root, 'state');
   const binDir = join(root, 'bin');
   mkdirSync(stateDir, { recursive: true });
@@ -91,7 +100,7 @@ export const scopedTempDir = (
   prefix: string,
 ): Effect.Effect<string, never, Scope.Scope> =>
   Effect.acquireRelease(
-    Effect.sync(() => mkdtempSync(join(tmpdir(), prefix))),
+    Effect.sync(() => canonicalTempDir(prefix)),
     (directory) => Effect.sync(() => rmSync(directory, { recursive: true, force: true })),
   );
 
