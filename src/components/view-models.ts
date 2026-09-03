@@ -150,7 +150,10 @@ const memoryLine = (system: SystemLoadReport): string | null => {
 };
 
 export const admissionModel = (status: Pick<StatusResult, 'active' | 'maxConcurrent' | 'system'>): AdmissionModel => {
-  const running = status.active.filter((record) => record.status === 'running').length;
+  const running = status.active.filter((record) => record.status === 'running');
+  // Riders share a leader's cargo process and hold no permit of their own.
+  const leaders = running.filter((record) => record.attachedTo === null).length;
+  const riders = running.length - leaders;
   const queued = status.active.filter((record) => record.status === 'queued').length;
   const heavy = heavyCapNote(status.system?.heavy);
   return {
@@ -159,7 +162,7 @@ export const admissionModel = (status: Pick<StatusResult, 'active' | 'maxConcurr
     paused: status.system?.memClamp === 'hard',
     permits: status.maxConcurrent === null
       ? null
-      : `${running} running of ${status.maxConcurrent} permits${heavy === null ? '' : ` (${heavy})`}, ${queued} queued`,
+      : `${leaders} running of ${status.maxConcurrent} permits${heavy === null ? '' : ` (${heavy})`}${riders === 0 ? '' : `, ${riders} riding shared builds`}, ${queued} queued`,
   };
 };
 
