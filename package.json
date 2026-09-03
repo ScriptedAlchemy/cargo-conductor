@@ -23,7 +23,8 @@
     "node": ">=22.19.0"
   },
   "bin": {
-    "cargo-hauler": "./dist/bin/cargo-hauler.js"
+    "cargo-hauler": "./dist/bin/cargo-hauler.js",
+    "hauler": "./dist/bin/hauler.js"
   },
   "files": [
     "dist",
@@ -32,10 +33,11 @@
   ],
   "scripts": {
     "build": "agent-bundle build --output artifact",
-    "check": "npm run validate && npm run build && npm run typecheck && npm run diagnostics && npm run test",
+    "check": "pnpm validate && pnpm build && pnpm typecheck && pnpm diagnostics && pnpm test && pnpm test:routes",
     "dev": "agent-bundle dev",
     "diagnostics": "effect-tsgo diagnostics --project tsconfig.json",
     "test": "rstest",
+    "test:routes": "rstest --config rstest.route-unit.config.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "validate": "agent-bundle validate",
     "prepare": "effect-tsgo patch --typescript --no-oxlint"

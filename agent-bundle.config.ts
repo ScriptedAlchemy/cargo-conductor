@@ -1,49 +1,41 @@
 import { defineConfig } from 'agent-bundle/config';
 
-import packageJson from './package.json' with { type: 'json' };
-
 /**
  * cargo-hauler is a generic per-workspace cargo orchestrator.
  * tracedecay is the first customer; identity is (workspace root, target dir).
  *
- * - `src/mcp/hauler.ts` is the conventional stdio entry (no `entry` field).
- * - `src/cli.ts` is the package bin by convention; declaring it as a script
- *   also ships `hauler` inside every host artifact.
- * - `src/skills/cargo-hauler/SKILL.md` is discovered by convention.
- * - Adapters inject `AGENT_BUNDLE_PLUGIN_ROOT`; daemon state lives under the
- *   per-user cache dir (`CARGO_HAULER_STATE_DIR` overrides).
+ * Everything else is discovered by convention (framework mode):
+ * - `src/mcp/hauler/tools/*.tsx` → the `hauler` MCP server's tools;
+ *   `src/mcp/hauler/apps/dashboard.tsx` → its MCP App.
+ * - `src/events/**` → tool/before, tool/after, and stop event handlers.
+ * - `src/cli/**` → the generated `cargo-hauler` routed CLI (package bin).
+ * - `src/scripts/hauler.ts` → `scripts/hauler.mjs` in every host artifact
+ *   (the hook rewrite target; see `scripts`) and the package `hauler` bin.
+ * - `src/providers/daemon-config.ts` → per-request daemon config.
+ * - `src/skills/*` → skills.
+ * - Version comes from package.json (`agent-bundle/meta` in code).
+ *
+ * Adapters inject `AGENT_BUNDLE_PLUGIN_ROOT`; daemon state lives under the
+ * per-user cache dir (`CARGO_HAULER_STATE_DIR` overrides).
  */
 export default defineConfig({
+  bin: {
+    hauler: './src/scripts/hauler.ts',
+  },
   // Claude Code and Codex install via `<cli> plugin marketplace add`; this
   // emits the marketplace manifests those commands read.
   marketplace: true,
-  hooks: {
-    afterTool: { handler: './src/hooks/after-shell.ts', timeout: 10, tools: ['shell'] },
-    beforeTool: { handler: './src/hooks/before-shell.ts', timeout: 10, tools: ['shell'] },
-    stop: { handler: './src/hooks/stop-hold.ts', timeout: 900 },
-  },
-  mcp: {
-    servers: {
-      hauler: {
-        apps: {
-          dashboard: {
-            entry: './views/dashboard.tsx',
-            resourceUri: 'ui://cargo-hauler/dashboard.html',
-            template: './views/dashboard.html',
-          },
-        },
-      },
-    },
-  },
   plugin: {
     description:
       'Coalesce, schedule, and stream cargo so concurrent agent sessions share compiles instead of fighting locks.',
     name: 'cargo-hauler',
-    version: packageJson.version,
   },
   runtime: { node: '22.19.0' },
+  // Declared explicitly rather than discovered: a `bin` claim removes the
+  // module from conventional route discovery, and the artifact script is
+  // what the hooks rewrite cargo to (`scripts/hauler.mjs exec …`).
   scripts: {
-    hauler: './src/cli.ts',
+    hauler: './src/scripts/hauler.ts',
   },
   // `plugin` emits Claude, Codex, and Cursor into one bundle (and AGENTS.md).
   // Listing `claude`/`cursor`/`plugin` together trips AB6017: those names are

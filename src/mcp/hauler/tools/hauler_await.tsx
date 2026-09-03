@@ -1,13 +1,12 @@
-import { Agent, agent } from '@agent-bundle/runtime';
+import { agent } from '@agent-bundle/runtime';
 import type { ToolConfig, ToolRouteProps } from 'agent-bundle';
 import React from 'react';
 
-import { TicketCard, TicketGuidance } from '../../../components/ticket-card.js';
-import { formatMs } from '../../../lib/format.js';
+import { AwaitDocument } from '../../../components/documents.js';
+import { mcpSurface } from '../../../components/surface.js';
 import { awaitResultSchema, ticketInputSchema } from '../../../lib/protocol-schemas.js';
 import { requestDaemonConfig } from '../../../lib/request-config.js';
-import { awaitTicketResult, defaultAwaitMs } from '../../../lib/tickets.js';
-import { documentValue } from '../../../lib/json.js';
+import { awaitTicketResult, defaultAwaitMs, progressMessage } from '../../../lib/tickets.js';
 
 export const config = {
   annotations: { readOnlyHint: true },
@@ -25,34 +24,18 @@ export default async function HaulerAwait({ input, signal }: ToolRouteProps<type
   const startedAt = Date.now();
   const awaited = await awaitTicketResult(input, {
     config: requestDaemonConfig(context),
-    // Heartbeats become MCP progress notifications; the line already carries
-    // phase, elapsed, estimate, and queue position. Progress is best-effort,
-    // so a host that cannot deliver it must not fail the wait.
+    // Heartbeats become MCP progress notifications. Progress is best-effort:
+    // a host that cannot deliver it must not fail the wait.
     onProgress: ({ line }) => {
       void context.progress
         .report({
           completed: Math.min(maxWaitMs, Date.now() - startedAt),
-          message: line.replace(/^\[cargo-hauler\]\s*/u, '').trimEnd(),
+          message: progressMessage(line),
           total: maxWaitMs,
         })
         .catch(() => undefined);
     },
     signal,
   });
-  const nowMs = Date.now();
-  return (
-    <Agent.Result value={documentValue(awaited)}>
-      <Agent.Text>{awaited.summary}</Agent.Text>
-      {awaited.request === null ? null : <TicketCard nowMs={nowMs} record={awaited.request} />}
-      {awaited.timedOut ? (
-        <Agent.Context>
-          {`The ${formatMs(maxWaitMs)} wait expired before ${input.ticket} finished. Call hauler_await again with a larger maxWaitMs (up to 7200000) rather than polling hauler_result in a tight loop.`}
-        </Agent.Context>
-      ) : awaited.request === null ? (
-        <Agent.Context>{`${input.ticket} is not known to the daemon; check hauler_log for recent ticket ids.`}</Agent.Context>
-      ) : (
-        <TicketGuidance record={awaited.request} />
-      )}
-    </Agent.Result>
-  );
+  return <AwaitDocument maxWaitMs={maxWaitMs} names={mcpSurface} nowMs={Date.now()} result={awaited} />;
 }

@@ -31,6 +31,10 @@ export interface AwaitOptions extends TicketOptions {
 
 export const defaultAwaitMs = 30_000;
 
+/** A heartbeat line without the `[cargo-hauler]` prefix, for progress channels that label the source themselves. */
+export const progressMessage = (line: string): string =>
+  line.replace(/^\[cargo-hauler\]\s*/u, '').trimEnd();
+
 /**
  * Records cross from storage (ANSI kept) to a structured result here. Both
  * transports serialize the result to JSON — the CLI prints it, the MCP

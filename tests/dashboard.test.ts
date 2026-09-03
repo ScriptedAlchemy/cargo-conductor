@@ -48,7 +48,7 @@ import {
   waitMetricsView,
   metricsWindowLabel,
   memoryStatView,
-} from '../views/dashboard-lib.js';
+} from '../src/dashboard/lib.js';
 
 const repoRoot = fileURLToPath(new URL('..', import.meta.url));
 

@@ -6,6 +6,7 @@ import { formatMs, relativeTime, shortenPath } from '../lib/format.js';
 
 import { commandText, diagnosticCounts, ticketHeadline } from './headlines.js';
 import { CodeBlock, DataList, Heading } from './primitives.js';
+import type { SurfaceNames } from './surface.js';
 
 export interface TicketCardProps {
   readonly nowMs: number;
@@ -96,14 +97,20 @@ const ranAs = (record: RequestRecord): string | null => {
 };
 
 /** What the agent should do next, as context rather than prose it must parse. */
-export const TicketGuidance = ({ record }: { readonly record: RequestRecord }) => {
+export const TicketGuidance = ({
+  names,
+  record,
+}: {
+  readonly names: SurfaceNames;
+  readonly record: RequestRecord;
+}) => {
   switch (record.status) {
     case 'requested':
     case 'queued':
     case 'running':
       return (
         <Agent.Context>
-          {`${record.ticket} is still ${record.status}. Do not re-run the same cargo command; call hauler_await with ticket ${record.ticket} (up to two hours) or check hauler_result later.`}
+          {`${record.ticket} is still ${record.status}. Do not re-run the same cargo command; call ${names.await} with ticket ${record.ticket} (up to two hours) or check ${names.result} later.`}
         </Agent.Context>
       );
     case 'done':

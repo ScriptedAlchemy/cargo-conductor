@@ -1,4 +1,6 @@
+/// <reference lib="dom" />
 import { RegistryProvider, useAtomRefresh, useAtomSet, useAtomValue } from '@effect/atom-react';
+import { version as dashboardVersion } from 'agent-bundle/meta';
 import { Cause, Data, Effect, Option } from 'effect';
 import { AsyncResult, Atom } from 'effect/unstable/reactivity';
 import { useEffect, useRef, useState, type ReactNode } from 'react';
@@ -10,7 +12,6 @@ import {
   attachSavings,
   compactArgvText,
   defaultMetricsWindowId,
-  dashboardVersion,
   delayedWaitCue,
   DEMUX_FLAG,
   diagnosticBadges,
@@ -46,12 +47,24 @@ import {
   ticketDetailFrom,
   type RunHistogramShape,
   type DashboardMetricsWindow,
+  type DashboardSection,
   type DashboardMetricsWindowBySubcommand,
   type MetricsWindowId,
   type StatusPoll,
   type TicketDetail,
   waitMetricsView,
-} from './dashboard-lib.js';
+} from '../../../dashboard/lib.js';
+
+/**
+ * Framework app-route metadata. Must stay a static object literal of string
+ * literals: the compiler extracts it without evaluating the module, so it
+ * cannot reference `APP_RESOURCE_URI` from `src/constants.ts` — keep the two
+ * in sync by hand. `template` resolves relative to the project root.
+ */
+export const config = {
+  resourceUri: 'ui://cargo-hauler/dashboard.html',
+  template: './src/mcp/hauler/apps/dashboard.html',
+};
 
 interface JsonRpcMessage {
   readonly jsonrpc?: unknown;
@@ -1348,7 +1361,7 @@ const DashboardContent = ({ structured }: { readonly structured: StructuredConte
   const selectRow = (row: RequestRow): (() => void) | undefined =>
     typeof row.ticket === 'string' ? () => openTicket(row) : undefined;
 
-  const renderSection = (section: ReturnType<typeof sectionOrder>[number]): ReactNode => {
+  const renderSection = (section: DashboardSection): ReactNode => {
     switch (section) {
       case 'contention':
         return (

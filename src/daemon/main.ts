@@ -1,6 +1,7 @@
 import { rmSync } from 'node:fs';
 
 import { NodeServices, NodeSocketServer } from '@effect/platform-node';
+import { version } from 'agent-bundle/meta';
 import * as Config from 'effect/Config';
 import * as Deferred from 'effect/Deferred';
 import * as Effect from 'effect/Effect';
@@ -8,7 +9,6 @@ import * as Layer from 'effect/Layer';
 import * as References from 'effect/References';
 import type * as SocketServer from 'effect/unstable/socket/SocketServer';
 
-import { packageVersion } from '../lib/version.js';
 import { isNamedPipePath } from '../status.js';
 
 import { Broker, BrokerLive } from './broker.js';
@@ -28,7 +28,7 @@ import {
 } from './socket-ownership.js';
 import { TopologyLive } from './topology.js';
 
-export const daemonVersion = packageVersion;
+export const daemonVersion = version;
 
 const appLayer = (config: DaemonConfigShape) =>
   BrokerLive.pipe(

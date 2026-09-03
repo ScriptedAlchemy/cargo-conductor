@@ -1,18 +1,18 @@
 import { Effect, Schedule, Stream, type Duration } from 'effect';
 
-import { cargoJsonDemuxFlag, namedPackagesInArgv } from '../src/lib/argv.js';
-import { formatBytes, formatMs, pathBasename, relativeTime, shortenPath } from '../src/lib/format.js';
-import { packageVersion } from '../src/lib/version.js';
+import { cargoJsonDemuxFlag, namedPackagesInArgv } from '../lib/argv.js';
+import { formatBytes, formatMs, pathBasename, relativeTime, shortenPath } from '../lib/format.js';
 
 export { formatBytes, formatMs, pathBasename, relativeTime, shortenPath };
 
 /**
- * Pure logic for the dashboard widget, kept DOM-free so unit tests can import
- * it directly (the widget entry touches `document` at module scope).
+ * Pure logic for the dashboard widget, kept DOM-free and compiler-free so unit
+ * tests can import it directly: the widget entry touches `document` at module
+ * scope and reads `agent-bundle/meta`, which only resolves inside a compiled
+ * surface.
  */
 
 export const DEMUX_FLAG = cargoJsonDemuxFlag;
-export const dashboardVersion = packageVersion;
 
 /**
  * Statuses a request can end in. Denied is terminal too — a hook-blocked

@@ -14,6 +14,7 @@ import type {
   DaemonUnreachableError,
 } from '../daemon/control.js';
 import type { PongMessage } from '../daemon/protocol.js';
+import { resolveHaulerArgv } from '../hooks/paths.js';
 
 export class SpawnDaemonError extends Data.TaggedError('SpawnDaemonError')<{
   readonly cause: unknown;
@@ -97,9 +98,19 @@ export const waitForDaemon = (
     ),
   );
 
+/**
+ * The entry that understands `daemon run`: the artifact's `hauler.mjs` when
+ * a host injected the plugin root (an MCP server or hook entry re-spawning
+ * itself would not), otherwise the running executable.
+ */
+const defaultDaemonEntry = (): string => {
+  const [, script] = resolveHaulerArgv();
+  return script ?? process.argv[1] ?? '';
+};
+
 export const spawnDetachedDaemon = (
   config: DaemonConfigShape,
-  entryPath: string = process.argv[1] ?? '',
+  entryPath: string = defaultDaemonEntry(),
   dependencies: SpawnDetachedDaemonDependencies = defaultSpawnDependencies,
 ): Effect.Effect<void, SpawnDaemonError> =>
   Effect.acquireUseRelease(

@@ -195,23 +195,27 @@ describe('agent-bundle hooks simulate', () => {
         const rewritten = await simulateHook({
           artifact: artifactRoot,
           hook: before!.name,
-          input: loadJson('canonical-before-cargo.json'),
+          // Event routes receive the host-native envelope, never the canonical one.
+          input: loadJson('claude-before-cargo.json'),
           root: repoRoot,
           target: 'plugin',
         });
-        expect(rewritten).toEqual(
-          expect.objectContaining({
-            outcome: 'continue',
-            updatedInput: expect.objectContaining({
-              command: expect.stringContaining('exec --session sess-canonical --host claude'),
-            }),
-          }),
-        );
+        // The generated wrapper projects the route decision onto Claude's
+        // native PreToolUse output.
+        expect(rewritten).toEqual({
+          hookSpecificOutput: {
+            hookEventName: 'PreToolUse',
+            permissionDecision: 'allow',
+            updatedInput: {
+              command: expect.stringContaining('exec --session sess-claude --host claude'),
+            },
+          },
+        });
 
         const recorded = await simulateHook({
           artifact: artifactRoot,
           hook: after!.name,
-          input: loadJson('canonical-after-cargo.json'),
+          input: loadJson('claude-after-cargo.json'),
           root: repoRoot,
           target: 'plugin',
         });
@@ -227,7 +231,14 @@ describe('agent-bundle hooks simulate', () => {
         const stopped = await simulateHook({
           artifact: artifactRoot,
           hook: stop!.name,
-          input: loadJson('canonical-stop.json'),
+          input: {
+            cwd: '/tmp/ws',
+            hook_event_name: 'Stop',
+            last_assistant_message: 'stopping',
+            session_id: 'sess-claude',
+            stop_hook_active: false,
+            transcript_path: '/tmp/transcript.json',
+          },
           root: repoRoot,
           target: 'plugin',
         });
@@ -248,7 +259,9 @@ describe('agent-bundle hooks simulate', () => {
         rmSync(join(repoRoot, '.tmp-hook-simulate'), { force: true, recursive: true });
       }
     },
-    30_000,
+    // Each simulateHook call re-prepares the project (~7 s); the wrappers
+    // themselves answer in well under a second.
+    90_000,
   );
 
   it.skipIf(findWrapper('before-tool', false) === undefined)(
