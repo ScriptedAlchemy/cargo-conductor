@@ -66,11 +66,14 @@ const daemonText = (status: StatusResult, nowMs: number): string => {
 export const StatusOverview = ({ nowMs, status }: StatusOverviewProps) => {
   const running = status.active.filter((record) => record.status === 'running');
   const queued = status.active.filter((record) => record.status === 'queued');
+  // Riders share a leader's cargo process and hold no permit of their own.
+  const leaders = running.filter((record) => record.attachedTo === null);
+  const riders = running.length - leaders.length;
   const heavy = heavyCapNote(status.system?.heavy);
   const admission =
     status.maxConcurrent === null
       ? null
-      : `${running.length} running of ${status.maxConcurrent} permits${heavy === null ? '' : ` (${heavy})`}, ${queued.length} queued`;
+      : `${leaders.length} running of ${status.maxConcurrent} permits${heavy === null ? '' : ` (${heavy})`}${riders === 0 ? '' : `, ${riders} riding shared builds`}, ${queued.length} queued`;
   const busyLanes = status.lanes.filter((lane) => lane.queued > 0 || lane.runningTicket !== null);
   return (
     <>
