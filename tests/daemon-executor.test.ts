@@ -36,14 +36,14 @@ if [ "$1" = interleave ]; then
   done
   exit 0
 fi
+# Install the traps before the first output: the tests trigger the kill on
+# that output, and a TERM that lands before the trap exists would end the
+# script with SIGTERM instead of exercising the trap (flaky on CI).
+if [ "$1" = trap-term ]; then trap 'exit 7' TERM; fi
+if [ "$1" = ignore-term ]; then trap '' TERM; fi
 echo "out:$1"
 echo "err:$1" >&2
-if [ "$1" = trap-term ]; then
-  trap 'exit 7' TERM
-  while true; do sleep 0.1; done
-fi
-if [ "$1" = ignore-term ]; then
-  trap '' TERM
+if [ "$1" = trap-term ] || [ "$1" = ignore-term ]; then
   while true; do sleep 0.1; done
 fi
 if [ -n "$FAKE_SLEEP" ]; then sleep "$FAKE_SLEEP"; fi
