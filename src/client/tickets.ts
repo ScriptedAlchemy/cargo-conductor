@@ -1,10 +1,11 @@
 import { basename } from 'node:path';
 
+import * as Data from 'effect/Data';
 import * as Effect from 'effect/Effect';
 
 import { resolveDaemonConfig } from '../daemon/config.js';
 import type { DaemonConfigShape } from '../daemon/config.js';
-import { requestExpecting } from '../daemon/control.js';
+import { requestExpecting, requestOverSocket } from '../daemon/control.js';
 import type {
   ConnectionClosedError,
   ControlTimeoutError,
@@ -13,33 +14,82 @@ import type {
 import type {
   AckMessage,
   AwaitResultMessage,
+  ClientMessage,
   ErrorMessage,
   KillResultMessage,
   RequestRecord,
   ResultResultMessage,
+  ServerMessage,
 } from '../daemon/protocol.js';
 import { shortId } from '../lib/id.js';
 
 import { ensureDaemonRunning } from './ensure-daemon.js';
 import { formatProgressLine } from './progress.js';
 
+/** The daemon answered this request with an `error` line (malformed request, internal failure). */
+export class DaemonRejectedError extends Data.TaggedError('DaemonRejected')<{
+  readonly socketPath: string;
+  readonly code: ErrorMessage['code'];
+  readonly message: string;
+}> {}
+
 /**
  * Infrastructure failures stay typed in this library: a daemon that is down
  * is not the same as a ticket that does not exist. Callers convert to
  * fail-open values only at deliberately fail-open boundaries (hooks).
  */
-export type TicketSocketError = ConnectionClosedError | ControlTimeoutError | DaemonUnreachableError;
+export type TicketSocketError =
+  | ConnectionClosedError
+  | ControlTimeoutError
+  | DaemonUnreachableError
+  | DaemonRejectedError;
+
+/**
+ * One request, one answer: resolves on the reply carrying this request's id,
+ * and fails typed when that reply is the daemon's `error` — otherwise an
+ * `await` with a rejected `maxWaitMs` would sit out its whole timeout waiting
+ * for an `await-result` the daemon never sends.
+ */
+const requestReply = <T extends ServerMessage>(
+  config: DaemonConfigShape,
+  message: ClientMessage,
+  timeoutMs: number,
+  guard: (message: ServerMessage) => message is T,
+): Effect.Effect<T | undefined, TicketSocketError> =>
+  requestOverSocket({
+    isTerminal: (reply) =>
+      reply.id === message.id && (guard(reply) || reply.type === 'error'),
+    message,
+    socketPath: config.socketPath,
+    timeoutMs,
+  }).pipe(
+    Effect.flatMap((replies) => {
+      const rejected = replies.find(
+        (reply): reply is ErrorMessage => reply.type === 'error' && reply.id === message.id,
+      );
+      if (rejected !== undefined) {
+        return Effect.fail(
+          new DaemonRejectedError({
+            code: rejected.code,
+            message: rejected.message,
+            socketPath: config.socketPath,
+          }),
+        );
+      }
+      return Effect.succeed(
+        replies.find((reply): reply is T => guard(reply) && reply.id === message.id),
+      );
+    }),
+  );
 
 export const fetchTicket = (
   ticket: string,
   config: DaemonConfigShape = resolveDaemonConfig(),
 ): Effect.Effect<RequestRecord | null, TicketSocketError> =>
-  requestExpecting(
-    {
-      message: { id: shortId(), ticket, type: 'result' },
-      socketPath: config.socketPath,
-      timeoutMs: 2_000,
-    },
+  requestReply(
+    config,
+    { id: shortId(), ticket, type: 'result' },
+    2_000,
     (message): message is ResultResultMessage => message.type === 'result-result',
   ).pipe(Effect.map((result) => result?.request ?? null));
 
@@ -52,12 +102,10 @@ export const killTicket = (
   ticket: string,
   config: DaemonConfigShape = resolveDaemonConfig(),
 ): Effect.Effect<boolean, TicketSocketError> =>
-  requestExpecting(
-    {
-      message: { id: shortId(), ticket, type: 'kill' },
-      socketPath: config.socketPath,
-      timeoutMs: 5_000,
-    },
+  requestReply(
+    config,
+    { id: shortId(), ticket, type: 'kill' },
+    5_000,
     (message): message is KillResultMessage => message.type === 'kill-result',
   ).pipe(Effect.map((result) => result?.killed === true));
 
@@ -190,12 +238,10 @@ export const awaitTicket = (
   { readonly request: RequestRecord | null; readonly timedOut: boolean },
   TicketSocketError
 > =>
-  requestExpecting(
-    {
-      message: { id: shortId(), maxWaitMs, ticket, type: 'await' },
-      socketPath: config.socketPath,
-      timeoutMs: maxWaitMs + 2_000,
-    },
+  requestReply(
+    config,
+    { id: shortId(), maxWaitMs, ticket, type: 'await' },
+    maxWaitMs + 2_000,
     (message): message is AwaitResultMessage => message.type === 'await-result',
   ).pipe(
     Effect.map((result) => ({
@@ -217,13 +263,15 @@ export const submitBackground = (
   ensureDaemonRunning(config).pipe(
     Effect.ignore,
     Effect.andThen(
+      // No `holdStop`: the daemon's default for a background request is
+      // false, the same as `exec --bg --session`. Background tickets never
+      // hold a stop; the two entry points used to disagree.
       requestExpecting(
         {
           message: {
             argv: [...input.argv],
             background: true,
             cwd: input.cwd,
-            holdStop: input.session !== undefined,
             id: shortId(),
             type: 'exec',
             ...(input.host === undefined ? {} : { host: input.host }),

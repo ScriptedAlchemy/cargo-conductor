@@ -19,6 +19,8 @@ export const infraFailure = (error: TicketSocketError): Error => {
       return new Error(
         `connection to the hauler daemon closed mid-request (socket ${error.socketPath})`,
       );
+    case 'DaemonRejected':
+      return new Error(`hauler daemon rejected the request (${error.code}): ${error.message}`);
     default: {
       const exhaustive: never = error;
       return exhaustive;

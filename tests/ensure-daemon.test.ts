@@ -11,15 +11,18 @@ import { describe, expect, it } from 'effect-rstest';
 import * as Effect from 'effect/Effect';
 import * as Schedule from 'effect/Schedule';
 
+import type { ChildProcess, SpawnOptions } from 'node:child_process';
+
 import { resolveDaemonConfig, type DaemonConfigShape } from '../src/daemon/config.js';
 import {
   daemonIsAbsent,
+  daemonSpawnEnv,
   ensureDaemonRunning,
   spawnDetachedDaemon,
 } from '../src/client/ensure-daemon.js';
 import { pingDaemon } from '../src/daemon/control.js';
 import { runDaemon } from '../src/daemon/main.js';
-import { scopedTempDir } from './harness.js';
+import { scopedEnv, scopedTempDir } from './harness.js';
 
 const configAt = (stateDir: string): DaemonConfigShape => ({
   stateDir,
@@ -67,6 +70,100 @@ describe('spawnDetachedDaemon', () => {
       expect(error.cause).toBeInstanceOf(Error);
       expect(() => fstatSync(logFd)).toThrow();
     }));
+
+  it.live('spawns the daemon with a curated environment and the state dir as cwd', () =>
+    Effect.gen(function* () {
+      const root = yield* scopedTempDir('cc-spawn-env-');
+      // Not pre-created: the spawn must build it before using it as cwd.
+      const stateDir = join(root, 'state');
+      // The first client's build knobs must not become the base of every
+      // other session's cargo for the daemon's whole life (#55).
+      yield* scopedEnv({
+        CARGO_BUILD_TARGET: 'x86_64-unknown-linux-musl',
+        CARGO_HAULER_MAX_CONCURRENT: '3',
+        CARGO_HOME: '/opt/cargo-home',
+        CARGO_TARGET_DIR: '/tmp/somebody-elses-target',
+        CC: 'clang',
+        MAKEFLAGS: '-j --jobserver-auth=3,4',
+        RUSTC_WRAPPER: 'sccache',
+        RUSTFLAGS: '-C target-cpu=native',
+        RUSTUP_TOOLCHAIN: 'nightly',
+        SCCACHE_DIR: '/tmp/sccache',
+        XDG_CACHE_HOME: '/tmp/xdg-cache',
+        https_proxy: 'http://proxy:3128',
+      });
+      let seen: SpawnOptions | undefined;
+      yield* spawnDetachedDaemon(configAt(stateDir), '/entry.js', {
+        spawnProcess: (_command, _args, options) => {
+          seen = options;
+          return { unref: () => undefined } as unknown as ChildProcess;
+        },
+      });
+
+      expect(seen?.cwd).toBe(stateDir);
+      expect(existsSync(stateDir)).toBe(true);
+      const env = seen?.env ?? {};
+      expect(env.CARGO_HAULER_STATE_DIR).toBe(stateDir);
+      expect(env.CARGO_HAULER_MAX_CONCURRENT).toBe('3');
+      expect(env.PATH).toBe(process.env.PATH);
+      expect(env.HOME).toBe(process.env.HOME);
+      expect(env.CARGO_HOME).toBe('/opt/cargo-home');
+      expect(env.XDG_CACHE_HOME).toBe('/tmp/xdg-cache');
+      expect(env.https_proxy).toBe('http://proxy:3128');
+      for (const forbidden of [
+        'CARGO_BUILD_TARGET',
+        'CARGO_TARGET_DIR',
+        'CC',
+        'MAKEFLAGS',
+        'RUSTC_WRAPPER',
+        'RUSTFLAGS',
+        'RUSTUP_TOOLCHAIN',
+        'SCCACHE_DIR',
+      ]) {
+        expect(env).not.toHaveProperty(forbidden);
+      }
+    }));
+});
+
+describe('daemonSpawnEnv', () => {
+  it('keeps only the daemon’s own settings plus locale, paths, and network knobs', () => {
+    const env = daemonSpawnEnv(
+      {
+        CARGO_CONDUCTOR_KILL_GRACE_MS: '1',
+        CARGO_HAULER_STATE_DIR: '/elsewhere',
+        CARGO_TARGET_DIR: '/t',
+        HOME: '/home/a',
+        LANG: 'C.UTF-8',
+        LC_ALL: 'C',
+        LOGNAME: 'a',
+        NO_PROXY: 'localhost',
+        PATH: '/bin',
+        RUSTFLAGS: '-C opt-level=3',
+        RUSTUP_HOME: '/rustup',
+        SHELL: '/bin/zsh',
+        SSL_CERT_FILE: '/ca.pem',
+        TMPDIR: '/tmp/x',
+        USER: 'a',
+        undefinedValue: undefined,
+      },
+      '/state',
+    );
+    expect(env).toEqual({
+      CARGO_CONDUCTOR_KILL_GRACE_MS: '1',
+      CARGO_HAULER_STATE_DIR: '/state',
+      HOME: '/home/a',
+      LANG: 'C.UTF-8',
+      LC_ALL: 'C',
+      LOGNAME: 'a',
+      NO_PROXY: 'localhost',
+      PATH: '/bin',
+      RUSTUP_HOME: '/rustup',
+      SHELL: '/bin/zsh',
+      SSL_CERT_FILE: '/ca.pem',
+      TMPDIR: '/tmp/x',
+      USER: 'a',
+    });
+  });
 });
 
 describe('ensureDaemonRunning', () => {
