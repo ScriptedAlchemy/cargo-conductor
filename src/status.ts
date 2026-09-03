@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
-import { homedir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 /**
@@ -70,15 +70,38 @@ export const isNamedPipePath = (path: string): boolean => path.startsWith(namedP
  * Windows paths are case-insensitive), keeping the endpoint stable per
  * user/state-dir so every client reaches the same daemon.
  */
+/**
+ * Longest unix socket path the kernel accepts (`sun_path` less the NUL):
+ * 103 bytes on macOS and the BSDs, 107 on Linux. A longer path fails to
+ * bind, so the daemon never comes up and clients see it as stopped.
+ */
+const maxSocketPathBytes = (platform: NodeJS.Platform): number =>
+  platform === 'linux' ? 107 : 103;
+
+const stateDirDigest = (stateDir: string): string =>
+  createHash('sha256').update(stateDir.toLowerCase()).digest('hex').slice(0, 16);
+
+/**
+ * The daemon's control endpoint for a state dir: `daemon.sock` inside it on
+ * unix, a named pipe on Windows. When the state dir is too deep for
+ * `sun_path` (a realpath'd macOS temp root gets there), the socket moves to
+ * a short per-user runtime path keyed by a digest of the state dir, so every
+ * process resolving that state dir still agrees on one endpoint.
+ */
 export const daemonSocketPath = (
   stateDir: string,
   platform: NodeJS.Platform = process.platform,
+  env: Readonly<Record<string, string | undefined>> = process.env,
 ): string => {
-  if (platform !== 'win32') {
-    return join(stateDir, 'daemon.sock');
+  if (platform === 'win32') {
+    return `${namedPipePrefix}cargo-hauler-${stateDirDigest(stateDir)}`;
   }
-  const digest = createHash('sha256').update(stateDir.toLowerCase()).digest('hex').slice(0, 16);
-  return `${namedPipePrefix}cargo-hauler-${digest}`;
+  const inState = join(stateDir, 'daemon.sock');
+  if (Buffer.byteLength(inState) <= maxSocketPathBytes(platform)) {
+    return inState;
+  }
+  const runtimeDir = env.XDG_RUNTIME_DIR ?? env.TMPDIR ?? tmpdir();
+  return join(runtimeDir, `cargo-hauler-${stateDirDigest(stateDir)}.sock`);
 };
 
 /**
