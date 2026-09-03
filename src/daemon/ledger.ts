@@ -119,6 +119,12 @@ export interface LedgerApi {
   readonly markAttached: (id: number, input: AttachRequestInput) => Effect.Effect<void>;
   readonly markRequeued: (id: number, atMs: number) => Effect.Effect<void>;
   readonly markFinished: (id: number, input: FinishRequestInput) => Effect.Effect<void>;
+  /**
+   * The submitting client stopped streaming this ticket (auto-background
+   * conversion), so its exit will reach the agent only through
+   * `sessionCompleted`. Leaves `hold_stop` untouched. False when no such row.
+   */
+  readonly markDetached: (id: number) => Effect.Effect<boolean>;
   readonly recordAttempt: (
     input: RecordAttemptInput,
   ) => Effect.Effect<{ readonly id: number; readonly ticket: string }>;
@@ -585,13 +591,18 @@ export const createLedgerApi = (db: DatabaseSync): LedgerApi => {
      WHERE session = ? AND hold_stop = 1 AND ${activeStatusFilter}
      ORDER BY created_at_ms ASC, id ASC`,
   );
+  // Only background (or detached) tickets: a foreground ticket streamed its
+  // exit to the shell the agent just watched, so re-announcing it would only
+  // prompt a redundant `hauler_result`.
   const selectSessionCompleted = db.prepare(
     `SELECT id, status, exit_code, error, error_count, warning_count
      FROM requests
      WHERE session = ? AND finished_at_ms >= ?
        AND status IN ('done', 'failed', 'killed')
+       AND background = 1
      ORDER BY created_at_ms DESC, id DESC`,
   );
+  const updateDetached = db.prepare('UPDATE requests SET background = 1 WHERE id = ?');
   const selectRecentRequests = db.prepare(
     `SELECT ${requestColumns} FROM requests ORDER BY created_at_ms DESC, id DESC LIMIT ?`,
   );
@@ -986,6 +997,8 @@ export const createLedgerApi = (db: DatabaseSync): LedgerApi => {
         );
         recordTransition(insertTransition, id, input.atMs, fromStatus, input.status);
       }),
+
+    markDetached: (id) => Effect.sync(() => toNumber(updateDetached.run(id).changes) > 0),
 
     recordAttempt: (input) => Effect.sync(() => insertAttempt(input)),
 

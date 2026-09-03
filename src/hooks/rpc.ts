@@ -63,15 +63,33 @@ const asFinished = (value: unknown): FinishedTicket | null => {
   };
 };
 
-/** One-shot NDJSON request/response over the daemon socket; null on any failure. */
-export const requestJson = (
+/**
+ * Why a one-shot request produced no usable reply. `timeout` means the daemon
+ * accepted (or is still accepting) but did not answer in time — it is alive
+ * and busy. `unreachable` is a socket error before any reply, with the error
+ * code so callers can tell "nothing listens" (`ECONNREFUSED`, `ENOENT`) from
+ * everything else. `closed` and `malformed` mean the daemon spoke, but not a
+ * JSON object.
+ */
+export type RequestOutcome =
+  | { readonly kind: 'closed' }
+  | { readonly kind: 'malformed' }
+  | { readonly kind: 'reply'; readonly message: Record<string, unknown> }
+  | { readonly kind: 'timeout' }
+  | { readonly kind: 'unreachable'; readonly code: string | undefined };
+
+const errorCode = (error: unknown): string | undefined =>
+  isRecord(error) && typeof error.code === 'string' ? error.code : undefined;
+
+/** One-shot NDJSON request/response over the daemon socket, reporting how it ended. */
+export const requestOutcome = (
   message: Record<string, unknown>,
   socketPath: string,
   timeoutMs: number,
-): Promise<Record<string, unknown> | null> =>
+): Promise<RequestOutcome> =>
   new Promise((resolve) => {
     let settled = false;
-    const finish = (value: Record<string, unknown> | null): void => {
+    const finish = (value: RequestOutcome): void => {
       if (settled) {
         return;
       }
@@ -82,7 +100,7 @@ export const requestJson = (
     const lines = new LineBuffer();
     const timer = setTimeout(() => {
       socket.destroy();
-      finish(null);
+      finish({ kind: 'timeout' });
     }, timeoutMs);
     socket.on('connect', () => {
       socket.write(`${JSON.stringify(message)}\n`);
@@ -94,28 +112,36 @@ export const requestJson = (
           if (isRecord(parsed)) {
             clearTimeout(timer);
             socket.end();
-            finish(parsed);
+            finish({ kind: 'reply', message: parsed });
             return;
           }
         } catch {
           clearTimeout(timer);
-          finish(null);
+          finish({ kind: 'malformed' });
           socket.destroy();
           return;
         }
       }
     });
-    socket.on('error', () => {
+    socket.on('error', (error) => {
       clearTimeout(timer);
-      finish(null);
+      finish({ code: errorCode(error), kind: 'unreachable' });
     });
     socket.on('close', () => {
       clearTimeout(timer);
-      if (!settled) {
-        finish(null);
-      }
+      finish({ kind: 'closed' });
     });
   });
+
+/** One-shot NDJSON request/response over the daemon socket; null on any failure. */
+export const requestJson = async (
+  message: Record<string, unknown>,
+  socketPath: string,
+  timeoutMs: number,
+): Promise<Record<string, unknown> | null> => {
+  const outcome = await requestOutcome(message, socketPath, timeoutMs);
+  return outcome.kind === 'reply' ? outcome.message : null;
+};
 
 export const recordDeniedAttempt = async (
   attempt: DeniedAttempt,

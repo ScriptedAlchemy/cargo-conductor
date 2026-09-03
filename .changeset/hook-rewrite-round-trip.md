@@ -1,0 +1,5 @@
+---
+"cargo-hauler": patch
+---
+
+Harden the `tool/before` shell rewrite and its companions. The rewrite now leaves a command untouched when the pinned `bashjsast` parser cannot round-trip it — background `&`, the `time` keyword, `|&`, `coproc`, and a heredoc feeding a pipeline previously came back as a blocking, un-timed, or syntactically broken command. It no longer passes `--cwd`, so `cd crates/foo && cargo build` builds in `crates/foo`; it skips `command -v/-V cargo`, `type cargo`, and `which cargo`; wraps the unbrokered half of `hauler exec -- cargo build && cargo test`, `while ! cargo build`, and `rustup run <toolchain> -- cargo`. The `cargo clean` guard distinguishes a busy daemon (probe timeout → brokered so the lane serializes the clean) from an absent one (raw run). `tool/after` announces only background or detached tickets, never a foreground run the agent just watched. The stop route clamps `CARGO_HAULER_STOP_WAIT_MS` to the 2 h await ceiling, and `hook-state.json` is written atomically with per-session deny-counter pruning. (#56)
