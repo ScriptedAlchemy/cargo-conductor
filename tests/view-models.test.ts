@@ -155,6 +155,20 @@ describe('laneBoardModel and admissionModel', () => {
     expect(model.memory).toBe('pressure hard (admission paused)');
     expect(model.paused).toBe(true);
   });
+
+  it('counts permit holders only and reports riders separately', () => {
+    const model = admissionModel({
+      active: [
+        record(),
+        record({ attachedTo: 'cc-1', ticket: 'cc-2' }),
+        record({ attachedTo: 'cc-1', ticket: 'cc-3' }),
+        record({ status: 'queued', ticket: 'cc-8' }),
+      ],
+      maxConcurrent: 5,
+      system: undefined,
+    });
+    expect(model.permits).toBe('1 running of 5 permits, 2 riding shared builds, 1 queued');
+  });
 });
 
 describe('kacheModel and lineageModel', () => {
