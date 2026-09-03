@@ -278,7 +278,9 @@ describe('attachment registration races (#52)', () => {
           yield* Deferred.await(leader.exit).pipe(Effect.timeout('10 seconds'));
         }),
       ).pipe(Effect.provide(layer));
-    }));
+      // 40 ticks at 20 ms plus two daemon round trips exceed the 5 s default
+      // on the macOS CI runner.
+    }), 20_000);
 
   it.live('leaves a follower settled when its leader exits during registration', () =>
     Effect.gen(function* () {
