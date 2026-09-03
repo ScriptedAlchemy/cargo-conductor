@@ -1,5 +1,3 @@
-import { mkdtempSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 
@@ -9,19 +7,8 @@ import type * as Scope from 'effect/Scope';
 
 import { createLedgerApi, openLedgerDatabase } from '../src/daemon/ledger.js';
 import type { CreateRequestInput, LedgerApi } from '../src/daemon/ledger.js';
+import { scopedDatabase, scopedTempDir } from './harness.js';
 
-/** A fresh temp directory, removed when the enclosing scope closes. */
-const scopedTempDir = (prefix: string): Effect.Effect<string, never, Scope.Scope> =>
-  Effect.acquireRelease(
-    Effect.sync(() => mkdtempSync(join(tmpdir(), prefix))),
-    (directory) => Effect.sync(() => rmSync(directory, { force: true, recursive: true })),
-  );
-
-/** A SQLite handle opened by `open`, closed when the enclosing scope closes. */
-const scopedDatabase = (open: () => DatabaseSync): Effect.Effect<DatabaseSync, never, Scope.Scope> =>
-  Effect.acquireRelease(Effect.sync(open), (db) => Effect.sync(() => db.close()));
-
-/** A ledger over a fresh temp database; the handle closes and the tree is removed with the scope. */
 const scopedLedger: Effect.Effect<LedgerApi, never, Scope.Scope> = Effect.gen(function* () {
   const directory = yield* scopedTempDir('cc-ledger-');
   const db = yield* scopedDatabase(() => openLedgerDatabase(join(directory, 'state', 'ledger.db')));

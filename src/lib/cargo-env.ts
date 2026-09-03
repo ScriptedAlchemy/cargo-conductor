@@ -40,6 +40,5 @@ const colorEnvironmentNames = new Set([
   'TERM',
 ]);
 
-/** Variables the client ships to the daemon: identity-relevant plus color-decision. */
 export const isTransportedEnvironmentVariable = (name: string): boolean =>
   isRelevantCargoEnvironmentVariable(name) || colorEnvironmentNames.has(name);

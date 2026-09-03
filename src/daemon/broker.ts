@@ -1,5 +1,6 @@
 import { availableParallelism, loadavg } from 'node:os';
 
+import * as Cause from 'effect/Cause';
 import * as Context from 'effect/Context';
 import * as Data from 'effect/Data';
 import * as Deferred from 'effect/Deferred';
@@ -8,8 +9,6 @@ import * as Layer from 'effect/Layer';
 import * as Metric from 'effect/Metric';
 import * as Ref from 'effect/Ref';
 import * as ChildProcessSpawner from 'effect/unstable/process/ChildProcessSpawner';
-
-import * as Cause from 'effect/Cause';
 
 import {
   attachModeMetric,
@@ -317,8 +316,8 @@ export const BrokerLive: Layer.Layer<
      * long cargo run polled via `hauler result` or the dashboard drawer
      * should never be blind until the end.
      */
-    const withLiveTail = (record: RequestRecord | null): RequestRecord | null => {
-      if (record === null || isTerminalStatus(record.status)) {
+    const withLiveTail = (record: RequestRecord): RequestRecord => {
+      if (isTerminalStatus(record.status)) {
         return record;
       }
       const entry = directory.get(record.ticket);
@@ -337,7 +336,7 @@ export const BrokerLive: Layer.Layer<
       if (record === null || isTerminalStatus(record.status)) {
         return Effect.succeed(record);
       }
-      const liveRecord = withLiveTail(record) ?? record;
+      const liveRecord = withLiveTail(record);
       return lanesRuntime.requestStatusFields(record.ticket, atMs).pipe(
         Effect.map((fields) => ({ ...liveRecord, ...fields })),
       );

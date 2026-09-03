@@ -1,12 +1,14 @@
 import { randomUUID } from 'node:crypto';
 
-import type * as Socket from 'effect/unstable/socket/Socket';
 import * as Cause from 'effect/Cause';
 import * as Deferred from 'effect/Deferred';
 import * as Effect from 'effect/Effect';
 import * as Queue from 'effect/Queue';
 import * as Result from 'effect/Result';
 import type * as Scope from 'effect/Scope';
+import type * as Socket from 'effect/unstable/socket/Socket';
+
+import { isRecord } from '../lib/guards.js';
 
 import type { BrokerApi } from './broker.js';
 import type {
@@ -201,11 +203,10 @@ export class ConnectionOutputBuffer {
 }
 
 const extractId = (value: unknown): string | null => {
-  if (typeof value === 'object' && value !== null && 'id' in value) {
-    const id = (value as { readonly id: unknown }).id;
-    return typeof id === 'string' ? id : null;
+  if (!isRecord(value)) {
+    return null;
   }
-  return null;
+  return typeof value.id === 'string' ? value.id : null;
 };
 
 /**
@@ -531,7 +532,7 @@ export const makeConnectionHandler =
           .run((chunk) => Effect.forEach(lineBuffer.push(chunk), handleLine, { discard: true }))
           .pipe(
             // Abrupt disconnects are routine (agent shells die mid-build).
-            Effect.catch(() => Effect.void),
+            Effect.ignore,
             Effect.ensuring(
               Effect.gen(function* () {
                 const tickets = yield* Effect.sync(() => {

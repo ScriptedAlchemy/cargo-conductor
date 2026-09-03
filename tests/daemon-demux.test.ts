@@ -5,18 +5,17 @@ import { describe, expect, it } from 'effect-rstest';
 import * as Effect from 'effect/Effect';
 import * as Fiber from 'effect/Fiber';
 
-import { createLedgerApi, openLedgerDatabase } from '../src/daemon/ledger.js';
 import { fetchTicketResult } from '../src/lib/tickets.js';
-import { decodeOutput, execRequest, findExit, pollReport, scopedDaemon } from './harness.js';
+import {
+  decodeOutput,
+  execRequest,
+  findExit,
+  pollReport,
+  scopedDaemon,
+  scopedEnv,
+  scopedLedger,
+} from './harness.js';
 import type { Fixture } from './harness.js';
-
-const restoreEnv = (name: string, value: string | undefined): void => {
-  if (value === undefined) {
-    delete process.env[name];
-  } else {
-    process.env[name] = value;
-  }
-};
 
 /**
  * A staged fake cargo: executes FAKE_STAGE_FILE line by line — `sleep:N`,
@@ -75,16 +74,6 @@ const stagedCargo = (
   writeFileSync(stageFile, `${stages.join('\n')}\n`);
   return { cargoPath, extraEnv: { FAKE_STAGE_FILE: stageFile } };
 };
-
-/** A ledger over the fixture database, closed when the scope closes. */
-const scopedLedger = (fixture: Fixture) =>
-  Effect.map(
-    Effect.acquireRelease(
-      Effect.sync(() => openLedgerDatabase(fixture.config.databasePath)),
-      (database) => Effect.sync(() => database.close()),
-    ),
-    createLedgerApi,
-  );
 
 describe('json demux early release', () => {
   it.live('persists diagnostic counts per leader and follower package scope', () =>
@@ -313,7 +302,7 @@ describe('json demux early release', () => {
         (record) => record.ticket === followerExit.ticket,
       );
       expect(followerRecord?.outputTail).toBeNull();
-      const ledger = yield* scopedLedger(fixture);
+      const ledger = yield* scopedLedger(fixture.config);
       const durableFollower = yield* ledger.getRequestByTicket(followerExit.ticket);
       expect(durableFollower?.outputTail).not.toContain('replay must hide bb');
 
@@ -356,7 +345,7 @@ describe('json demux early release', () => {
       expect(record?.errorCount).toBe(1);
       expect(record?.diagnostics?.join('')).toContain(`${esc}[38;5;9merror[E0432]`);
 
-      const ledger = yield* scopedLedger(fixture);
+      const ledger = yield* scopedLedger(fixture.config);
       const durable = yield* ledger.getRequestByTicket(exit.ticket);
       expect(durable?.outputTail).toContain(`${esc}[38;5;9merror[E0432]`);
 
@@ -365,22 +354,12 @@ describe('json demux early release', () => {
       // JSON-RPC, where an ESC byte is literal `\u001b[…` noise. Stripping
       // is unconditional — an inherited FORCE_COLOR must not reintroduce
       // ESC bytes into structured results.
-      const previousEnv = {
-        forceColor: process.env.FORCE_COLOR,
-        noColor: process.env.NO_COLOR,
-        stateDir: process.env.CARGO_HAULER_STATE_DIR,
-      };
-      yield* Effect.addFinalizer(() =>
-        Effect.sync(() => {
-          restoreEnv('CARGO_HAULER_STATE_DIR', previousEnv.stateDir);
-          restoreEnv('NO_COLOR', previousEnv.noColor);
-          restoreEnv('FORCE_COLOR', previousEnv.forceColor);
-        }),
-      );
+      yield* scopedEnv({
+        CARGO_HAULER_STATE_DIR: fixture.config.stateDir,
+        FORCE_COLOR: undefined,
+        NO_COLOR: '1',
+      });
       const context = { signal: yield* Effect.abortSignal };
-      process.env.CARGO_HAULER_STATE_DIR = fixture.config.stateDir;
-      process.env.NO_COLOR = '1';
-      delete process.env.FORCE_COLOR;
       const plain = yield* Effect.promise(() =>
         fetchTicketResult({ ticket: exit.ticket }, context),
       );

@@ -4,32 +4,15 @@ import * as Effect from 'effect/Effect';
 import type { Attachment, InFlightEntry, Job } from './job-state.js';
 import type { RequestRecord } from './protocol.js';
 
-/**
- * The one transition authority for in-flight ticket state.
- *
- * Ticket identity used to live simultaneously in the broker's `inFlight`
- * map, each leader's `Job.attachments`, and the ledger row — the divergence
- * that enabled the stranded-follower bug class. Every `inFlight` mutation
- * now flows through this directory, and the attachment/lane machines keep
- * `Job.attachments` in step inside the same synchronous frame (the methods
- * here are deliberately synchronous so multi-step transitions — gate check
- * plus registration, detach-all plus settle — stay single-frame atomic
- * exactly as before).
- *
- * Ticket waiters (await/RPC) live here too: settlement of any ticket kind
- * notifies through one path.
- */
 export interface TicketDirectory {
   readonly get: (ticket: string) => InFlightEntry | undefined;
   readonly setLeader: (job: Job) => void;
   readonly setAttachment: (leader: Job, attachment: Attachment) => void;
-  /** Removes the ticket's entry; returns whether it was present. */
   readonly remove: (ticket: string) => boolean;
   readonly entries: () => IterableIterator<InFlightEntry>;
   readonly registerWaiter: (ticket: string, waiter: Deferred.Deferred<RequestRecord>) => void;
   readonly removeWaiter: (ticket: string, waiter: Deferred.Deferred<RequestRecord>) => void;
   readonly waiterCount: (ticket?: string) => number;
-  /** Resolves every waiter on `ticket` with its current ledger record. */
   readonly notifyWaiters: (ticket: string) => Effect.Effect<void>;
 }
 

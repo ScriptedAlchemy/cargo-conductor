@@ -36,7 +36,6 @@ export const userCacheDir = (
   return join(home, '.cache');
 };
 
-/** Default daemon state root when CARGO_HAULER_STATE_DIR is unset. */
 export const defaultStateDir = (
   env: Readonly<Record<string, string | undefined>> = process.env,
   platform: NodeJS.Platform = process.platform,
@@ -61,7 +60,6 @@ export const resolveStateDir = (
 
 const namedPipePrefix = '\\\\.\\pipe\\';
 
-/** Whether a daemon endpoint is a Windows named pipe rather than a filesystem path. */
 export const isNamedPipePath = (path: string): boolean => path.startsWith(namedPipePrefix);
 
 /**

@@ -7,7 +7,10 @@ import { fileURLToPath } from 'node:url';
 
 const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 const appHtml = join(repoRoot, 'artifact', 'plugin', 'mcp-apps', 'dashboard.html');
-const haulerCli = join(repoRoot, 'artifact', 'plugin', 'scripts', 'hauler.mjs');
+// The artifact's scripts/hauler.mjs only carries exec/daemon/install-shim; the
+// routed commands (status, result, await) live in the package bin. `--json`
+// prints the same value the MCP tool returns as structuredContent.
+const haulerCli = join(repoRoot, 'dist', 'bin', 'cargo-hauler.js');
 const portFlag = process.argv.indexOf('--port');
 const port = portFlag === -1 ? 4941 : Number(process.argv[portFlag + 1]);
 if (!Number.isInteger(port) || port < 1 || port > 65_535) {
@@ -54,7 +57,7 @@ window.addEventListener('message', async (event) => {
 </html>`;
 
 const runHauler = (args, response) => {
-  execFile(process.execPath, [haulerCli, ...args], { maxBuffer: 64 * 1024 * 1024 }, (error, stdout) => {
+  execFile(process.execPath, [haulerCli, ...args, '--json'], { maxBuffer: 64 * 1024 * 1024 }, (error, stdout) => {
     if (error) {
       response.writeHead(500, { 'content-type': 'application/json' });
       response.end(JSON.stringify({ error: String(error) }));

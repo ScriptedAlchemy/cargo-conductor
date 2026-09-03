@@ -13,7 +13,7 @@ import {
   type StatusResultMessage,
 } from '../src/daemon/protocol.js';
 
-import { scopedDaemon, scopedFixture, type Fixture } from './harness.js';
+import { fakeCargoEnv, scopedDaemon, scopedFixture } from './harness.js';
 
 const collectIo = (): {
   readonly io: {
@@ -41,12 +41,6 @@ const collectIo = (): {
   };
 };
 
-const cargoEnv = (fixture: Fixture, extra: Record<string, string> = {}): Record<string, string> => ({
-  CARGO_HAULER_CARGO_BIN: join(fixture.binDir, 'cargo'),
-  PATH: `${fixture.binDir}:${process.env.PATH ?? ''}`,
-  ...extra,
-});
-
 describe('runExecClient', () => {
   it.live('streams brokered cargo output and injects queue/start progress', () =>
     Effect.gen(function* () {
@@ -57,7 +51,7 @@ describe('runExecClient', () => {
         autoSpawn: false,
         config: fixture.config,
         cwd: fixture.ws1,
-        env: cargoEnv(fixture),
+        env: fakeCargoEnv(fixture),
         io: collected.io,
       });
 
@@ -79,7 +73,7 @@ describe('runExecClient', () => {
         autoSpawn: false,
         config: fixture.config,
         cwd: fixture.ws1,
-        env: cargoEnv(fixture, { FAKE_EXIT: '17' }),
+        env: fakeCargoEnv(fixture, { FAKE_EXIT: '17' }),
         io: collected.io,
       });
 
@@ -96,7 +90,7 @@ describe('runExecClient', () => {
         autoSpawn: false,
         config: fixture.config,
         cwd: fixture.ws1,
-        env: cargoEnv(fixture),
+        env: fakeCargoEnv(fixture),
         io: collected.io,
       });
 
@@ -119,7 +113,7 @@ describe('runExecClient', () => {
         autoSpawn: false,
         config: fixture.config,
         cwd: fixture.ws1,
-        env: cargoEnv(fixture),
+        env: fakeCargoEnv(fixture),
         io: collected.io,
       });
 
@@ -178,7 +172,7 @@ describe('runExecClient', () => {
           Effect.sync(() => {
             ensured += 1;
           }),
-        env: cargoEnv(fixture),
+        env: fakeCargoEnv(fixture),
         io: collected.io,
       });
       expect(ensured).toBe(1);
@@ -196,7 +190,7 @@ describe('runExecClient', () => {
         autoSpawn: false,
         config: fixture.config,
         cwd: fixture.ws1,
-        env: cargoEnv(fixture),
+        env: fakeCargoEnv(fixture),
         io: collected.io,
         stderrColor: false,
       });
@@ -218,7 +212,7 @@ describe('runExecClient', () => {
         autoSpawn: false,
         config: fixture.config,
         cwd: fixture.ws1,
-        env: cargoEnv(fixture),
+        env: fakeCargoEnv(fixture),
         io: collected.io,
         stderrColor: true,
       });
@@ -236,7 +230,7 @@ describe('runExecClient', () => {
         autoSpawn: false,
         config: fixture.config,
         cwd: fixture.ws1,
-        env: cargoEnv(fixture, {
+        env: fakeCargoEnv(fixture, {
           FAKE_OUTPUT_COUNT: '8',
           FAKE_OUTPUT_INTERVAL: '0.04',
         }),
@@ -259,7 +253,7 @@ describe('runExecClient', () => {
         autoSpawn: false,
         config: fixture.config,
         cwd: fixture.ws1,
-        env: cargoEnv(fixture, { FAKE_SLEEP: '0.35' }),
+        env: fakeCargoEnv(fixture, { FAKE_SLEEP: '0.35' }),
         heartbeatMs: 80,
         io: collected.io,
         silenceThresholdMs: 120,

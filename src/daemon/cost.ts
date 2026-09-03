@@ -353,7 +353,7 @@ export const createCostModel = (options: CreateCostModelOptions): CostModelWithP
             refreshingIndex = false;
           }),
         ),
-        Effect.catchCause(() => Effect.void),
+        Effect.ignoreCause,
       );
     });
 
@@ -389,7 +389,7 @@ export const createCostModel = (options: CreateCostModelOptions): CostModelWithP
               refreshingEvents = false;
             }),
           ),
-          Effect.catchCause(() => Effect.void),
+          Effect.ignoreCause,
         );
         yield* Effect.forkDetach(refresh);
       }

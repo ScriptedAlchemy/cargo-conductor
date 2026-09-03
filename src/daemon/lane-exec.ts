@@ -57,12 +57,6 @@ import { selectNextIndex, shouldDeferAdmission } from './scheduler.js';
 import type { TicketDirectory } from './ticket-directory.js';
 import type { TopologyApi } from './topology.js';
 
-/**
- * The lane execution state machine: one FIFO worker per (workspace root,
- * target dir), schedule-scored job selection, batch folding, admission
- * gating, cargo execution, and the single idempotent settlement path.
- */
-
 export interface Lane {
   readonly key: string;
   readonly workspaceRoot: string;
@@ -186,7 +180,6 @@ export const makeLaneRuntime = (deps: LaneRuntimeDeps): Effect.Effect<LaneRuntim
         };
       });
 
-    /** Push to the lane's pending set and coalesce a worker wake-up. */
     const enqueueJob = (lane: Lane, job: Job): Effect.Effect<number> =>
       Effect.gen(function* () {
         const position = yield* Effect.sync(() => {
@@ -673,19 +666,19 @@ export const makeLaneRuntime = (deps: LaneRuntimeDeps): Effect.Effect<LaneRuntim
         yield* foldBatch(lane, job);
         yield* processJob(lane, job);
       }).pipe(
-        Effect.catchCause((cause) => {
-          if (Cause.hasInterruptsOnly(cause)) {
-            return Effect.failCause(cause);
-          }
-          const message = Cause.pretty(cause);
-          return Effect.logError(`lane ${lane.key} job ${job.ticket} crashed`, cause).pipe(
-            Effect.andThen(
-              settleJob(lane, job, 'failed', null, null, message, Date.now()).pipe(
-                Effect.ignore,
+        Effect.catchCauseIf(
+          (cause) => !Cause.hasInterruptsOnly(cause),
+          (cause) => {
+            const message = Cause.pretty(cause);
+            return Effect.logError(`lane ${lane.key} job ${job.ticket} crashed`, cause).pipe(
+              Effect.andThen(
+                settleJob(lane, job, 'failed', null, null, message, Date.now()).pipe(
+                  Effect.ignore,
+                ),
               ),
-            ),
-          );
-        }),
+            );
+          },
+        ),
       );
 
     const drainLane = (lane: Lane): Effect.Effect<void> =>
@@ -705,10 +698,9 @@ export const makeLaneRuntime = (deps: LaneRuntimeDeps): Effect.Effect<LaneRuntim
       Effect.forever(
         Queue.take(lane.wake).pipe(
           Effect.andThen(drainLane(lane)),
-          Effect.catchCause((cause) =>
-            Cause.hasInterruptsOnly(cause)
-              ? Effect.failCause(cause)
-              : Effect.logError(`lane ${lane.key} iteration crashed`, cause),
+          Effect.catchCauseIf(
+            (cause) => !Cause.hasInterruptsOnly(cause),
+            (cause) => Effect.logError(`lane ${lane.key} iteration crashed`, cause),
           ),
         ),
       );

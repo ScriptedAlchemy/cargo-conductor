@@ -9,7 +9,6 @@ import * as Deferred from 'effect/Deferred';
 import * as Data from 'effect/Data';
 import * as Effect from 'effect/Effect';
 import * as Fiber from 'effect/Fiber';
-import type * as Scope from 'effect/Scope';
 
 import {
   createCostModel,
@@ -20,6 +19,7 @@ import {
 import type { KacheIndexPriors } from '../src/daemon/cost.js';
 import { resolveDaemonConfig } from '../src/daemon/config.js';
 import { normalizeCargoIntent } from '../src/daemon/intent-normalizer.js';
+import { scopedTempDir } from './harness.js';
 
 const intent = (argv: readonly string[], cwd = '/tmp/ws') =>
   normalizeCargoIntent({
@@ -34,13 +34,6 @@ const indexPriors = (
 ): KacheIndexPriors => ({ compileTimeMs });
 
 class TransientError extends Data.TaggedError('TransientError')<{}> {}
-
-/** A fresh temp directory, removed when the enclosing scope closes. */
-const scopedTempDir = (prefix: string): Effect.Effect<string, never, Scope.Scope> =>
-  Effect.acquireRelease(
-    Effect.sync(() => mkdtempSync(join(tmpdir(), prefix))),
-    (root) => Effect.sync(() => rmSync(root, { recursive: true, force: true })),
-  );
 
 /** Lets detached background fibers (prior refreshes) run for one macrotask turn. */
 const nextMacrotask = Effect.promise(

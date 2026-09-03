@@ -11,7 +11,6 @@ import type { SurfaceNames } from './surface.js';
 export interface TicketCardProps {
   readonly nowMs: number;
   readonly record: RequestRecord;
-  /** Cap on output-tail lines shown inline; the full tail stays in the structured value. */
   readonly tailLines?: number;
 }
 
@@ -86,7 +85,6 @@ export const TicketCard = ({ nowMs, record, tailLines = 40 }: TicketCardProps) =
   );
 };
 
-/** The command the daemon actually spawned when it differs from the request (batched packages). */
 const ranAs = (record: RequestRecord): string | null => {
   if (record.execArgv === null) {
     return null;
@@ -96,7 +94,6 @@ const ranAs = (record: RequestRecord): string | null => {
   return same ? null : cleaned.join(' ');
 };
 
-/** What the agent should do next, as context rather than prose it must parse. */
 export const TicketGuidance = ({
   names,
   record,

@@ -161,8 +161,16 @@ export const memoryPressureLevel = (
         timeout: 1_000,
       }),
     ).trim();
-    if (output === '1' || output === '2' || output === '4') {
-      level = Number.parseInt(output, 10) as MemoryPressureLevel;
+    switch (output) {
+      case '1':
+        level = 1;
+        break;
+      case '2':
+        level = 2;
+        break;
+      case '4':
+        level = 4;
+        break;
     }
   } catch {
     level = null;

@@ -10,10 +10,9 @@ const isSqliteExperimentalWarning = (warning: Error): boolean =>
   warning.name === 'ExperimentalWarning' && warning.message.startsWith('SQLite');
 
 const installed = Symbol.for('cargo-hauler.quiet-sqlite-warning');
-const marker = process as unknown as Record<symbol, boolean | undefined>;
 
-if (marker[installed] !== true) {
-  marker[installed] = true;
+if (Reflect.get(process, installed) !== true) {
+  Reflect.set(process, installed, true);
   for (const listener of process.listeners('warning')) {
     process.removeListener('warning', listener);
   }

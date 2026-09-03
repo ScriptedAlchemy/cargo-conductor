@@ -232,7 +232,7 @@ const parseWorkspaceTable = (contents: string): WorkspaceTable => {
         return;
       default: {
         const exhaustive: never = key;
-        throw new Error(`unhandled workspace array key: ${exhaustive}`);
+        return exhaustive;
       }
     }
   };

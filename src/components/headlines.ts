@@ -31,7 +31,6 @@ export const diagnosticCounts = (
     ? null
     : `${countWord(record.errorCount, 'error')}, ${countWord(record.warningCount, 'warning')}`;
 
-/** One line an agent can act on: ticket, phase, elapsed, estimate, command. */
 export const ticketHeadline = (record: RequestRecord, nowMs: number): string => {
   const elapsed = elapsedMs(record, nowMs);
   const timing = elapsed === null ? '' : ` ${formatMs(elapsed)}`;

@@ -90,7 +90,7 @@ export const requestJson = (
     socket.on('data', (chunk) => {
       for (const line of lines.push(chunk)) {
         try {
-          const parsed = JSON.parse(line) as unknown;
+          const parsed: unknown = JSON.parse(line);
           if (isRecord(parsed)) {
             clearTimeout(timer);
             socket.end();

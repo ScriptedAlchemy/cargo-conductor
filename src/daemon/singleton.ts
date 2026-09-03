@@ -8,6 +8,8 @@ import * as Result from 'effect/Result';
 import type * as Scope from 'effect/Scope';
 import { lock } from 'proper-lockfile';
 
+import { isRecord } from '../lib/guards.js';
+
 import { DaemonConfig } from './config.js';
 import type { DaemonConfigShape } from './config.js';
 import { pingDaemon } from './control.js';
@@ -30,10 +32,7 @@ const properLockfileStaleMs = 2_147_000_000;
 const forcedExitDelayMs = 5_000;
 
 const isLockedError = (cause: unknown): boolean =>
-  typeof cause === 'object' &&
-  cause !== null &&
-  'code' in cause &&
-  (cause as { readonly code?: unknown }).code === 'ELOCKED';
+  isRecord(cause) && cause.code === 'ELOCKED';
 
 export interface SingletonCompromiseDependencies {
   readonly writeStderr: (message: string) => void;
@@ -166,7 +165,7 @@ const defaultLockDependencies: SingletonLockDependencies = {
   socketAnswers: (socketPath) =>
     pingDaemon(socketPath, 500).pipe(
       Effect.as(true),
-      Effect.catch(() => Effect.succeed(false)),
+      Effect.orElseSucceed(() => false),
     ),
   writePid: (lockTargetPath, pid) => writeFile(lockTargetPath, `${pid}\n`),
 };
@@ -200,6 +199,8 @@ export const acquireSingletonLockWith = (
   }
   const fatalShutdown = yield* Deferred.make<Error>();
   const compromise = makeSingletonCompromiseController(fatalShutdown);
+  // The proper-lockfile callback runs outside Effect, so this watcher bridges
+  // its deferred signal back into the daemon fiber.
   const fatalWatcher = Effect.runFork(
     Deferred.await(fatalShutdown).pipe(
       Effect.andThen(Fiber.interrupt(daemonFiber)),
@@ -229,12 +230,10 @@ export const acquireSingletonLockWith = (
   } else {
     const lockCause = firstAttempt.failure.cause;
     if (!isLockedError(lockCause)) {
-      return yield* Effect.fail(new SingletonLockError({ cause: lockCause }));
+      return yield* new SingletonLockError({ cause: lockCause });
     }
     if (yield* dependencies.socketAnswers(config.socketPath)) {
-      return yield* Effect.fail(
-        new DaemonAlreadyRunningError({ lockTargetPath: config.lockTargetPath }),
-      );
+      return yield* new DaemonAlreadyRunningError({ lockTargetPath: config.lockTargetPath });
     }
     const lockMtimeMs = yield* Effect.tryPromise({
       try: () => dependencies.lockMtimeMs(config.lockTargetPath),
@@ -242,8 +241,8 @@ export const acquireSingletonLockWith = (
         singletonFailure('unable to inspect the held singleton lock', cause),
     });
     if (lockMtimeMs >= dependencies.now() - staleMs) {
-      return yield* Effect.fail(
-        singletonFailure('singleton lock is held but its daemon is not yet answering'),
+      return yield* singletonFailure(
+        'singleton lock is held but its daemon is not yet answering',
       );
     }
     const recordedPid = yield* Effect.tryPromise({
@@ -251,10 +250,8 @@ export const acquireSingletonLockWith = (
       catch: (cause) => singletonFailure('unable to read the singleton owner pid', cause),
     }).pipe(Effect.map(parsePid));
     if (recordedPid !== null && dependencies.isProcessAlive(recordedPid)) {
-      return yield* Effect.fail(
-        singletonFailure(
-          `singleton lock owner pid ${recordedPid} is alive but its socket is not answering`,
-        ),
+      return yield* singletonFailure(
+        `singleton lock owner pid ${recordedPid} is alive but its socket is not answering`,
       );
     }
     yield* Effect.tryPromise({

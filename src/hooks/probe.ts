@@ -4,17 +4,15 @@ import { isRecord } from './shared.js';
 
 const defaultTimeoutMs = 250;
 
-type StatusLike = {
-  readonly active?: readonly unknown[];
-  readonly lanes?: readonly { readonly queued?: number; readonly runningTicket?: string | null }[];
-};
-
-const reportHasActive = (report: StatusLike): boolean => {
-  if ((report.active?.length ?? 0) > 0) {
+const reportHasActive = (report: Readonly<Record<string, unknown>>): boolean => {
+  if (Array.isArray(report.active) && report.active.length > 0) {
     return true;
   }
-  return (report.lanes ?? []).some(
-    (lane) => (lane.queued ?? 0) > 0 || (lane.runningTicket !== undefined && lane.runningTicket !== null),
+  return (Array.isArray(report.lanes) ? report.lanes : []).some(
+    (lane) =>
+      isRecord(lane) &&
+      ((typeof lane.queued === 'number' && lane.queued > 0) ||
+        (typeof lane.runningTicket === 'string' && lane.runningTicket.length > 0)),
   );
 };
 
@@ -34,5 +32,5 @@ export const probeActiveBuilds = async (
   if (message === null || message.type !== 'status-result' || !isRecord(message.report)) {
     return null;
   }
-  return reportHasActive(message.report as StatusLike);
+  return reportHasActive(message.report);
 };

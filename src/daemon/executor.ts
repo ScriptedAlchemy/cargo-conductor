@@ -7,6 +7,8 @@ import * as Stream from 'effect/Stream';
 import * as ChildProcess from 'effect/unstable/process/ChildProcess';
 import type * as ChildProcessSpawner from 'effect/unstable/process/ChildProcessSpawner';
 
+import { isRecord } from '../lib/guards.js';
+
 import { cargoExecutablePattern } from './intent-normalizer.js';
 import { sharedJobserverDelta } from './jobserver.js';
 import { realCargoBin } from './real-cargo.js';
@@ -102,16 +104,15 @@ const signalPattern = /signal:\s*'?(\w+)'?/;
 const parseSignal = (error: unknown): string | null => {
   let current: unknown = error;
   const seen = new Set<unknown>();
-  while (typeof current === 'object' && current !== null && !seen.has(current)) {
+  while (isRecord(current) && !seen.has(current)) {
     seen.add(current);
-    const candidate = current as { readonly message?: unknown; readonly cause?: unknown };
-    if (typeof candidate.message === 'string') {
-      const match = signalPattern.exec(candidate.message);
+    if (typeof current.message === 'string') {
+      const match = signalPattern.exec(current.message);
       if (match?.[1] !== undefined) {
         return match[1];
       }
     }
-    current = candidate.cause ?? null;
+    current = current.cause ?? null;
   }
   return null;
 };

@@ -12,10 +12,7 @@ import type { AttachMode, FinishedStatus } from './protocol.js';
 import type { ReplayAudience, ReplayBuffer, ReplayChunk } from './replay.js';
 
 /**
- * The broker's job/attachment state model: every ticket in flight is either
- * a leader `Job` owning a cargo process or an `Attachment` riding one. The
- * mutable fields on both are only ever touched inside single synchronous
- * frames (see the transition sites in attachments.ts and lane-exec.ts), so
+ * Mutable job and attachment fields change only inside synchronous frames, so
  * gate checks, registration, and settlement cannot interleave.
  */
 
@@ -321,10 +318,9 @@ export const isTerminalStatus = (status: string): boolean =>
 export const guarded = (effect: Effect.Effect<void>): Effect.Effect<void> =>
   effect.pipe(
     Effect.tapDefect((cause) => Effect.logDebug('broker callback defect', cause)),
-    Effect.catchCause((cause) =>
-      Cause.hasInterruptsOnly(cause)
-        ? Effect.failCause(cause)
-        : Effect.logError(`broker callback failed: ${Cause.pretty(cause)}`),
+    Effect.catchCauseIf(
+      (cause) => !Cause.hasInterruptsOnly(cause),
+      (cause) => Effect.logError(`broker callback failed: ${Cause.pretty(cause)}`),
     ),
   );
 

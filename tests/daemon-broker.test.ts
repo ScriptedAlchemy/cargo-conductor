@@ -9,7 +9,6 @@ import {
   quietMsSinceOutput,
   queuedWaitIsDelayed,
 } from '../src/daemon/job-state.js';
-import { createLedgerApi, openLedgerDatabase } from '../src/daemon/ledger.js';
 import { runDaemon } from '../src/daemon/main.js';
 import type {
   AckMessage,
@@ -25,19 +24,9 @@ import {
   findExit,
   pollReport,
   scopedDaemon,
+  scopedLedger,
   shortId,
 } from './harness.js';
-import type { Fixture } from './harness.js';
-
-/** A ledger over the fixture database, closed when the scope closes. */
-const scopedLedger = (fixture: Fixture) =>
-  Effect.map(
-    Effect.acquireRelease(
-      Effect.sync(() => openLedgerDatabase(fixture.config.databasePath)),
-      (database) => Effect.sync(() => database.close()),
-    ),
-    createLedgerApi,
-  );
 
 describe('hauler daemon', () => {
   it('uses the greater of twice the estimate and ten minutes for delayed waits', () => {
@@ -142,7 +131,7 @@ describe('hauler daemon', () => {
       ]);
       expect(report.savings?.totals.ridersServed ?? 0).toBeGreaterThanOrEqual(0);
 
-      const ledger = yield* scopedLedger(fixture);
+      const ledger = yield* scopedLedger(fixture.config);
       const durable = yield* ledger.getRequestByTicket(exit.ticket);
       const transitions = yield* ledger.transitionsFor(
         Number(exit.ticket.slice('cc-'.length)),

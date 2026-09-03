@@ -1,21 +1,18 @@
-import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync } from 'node:fs';
 import { createServer, type Server, type Socket } from 'node:net';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { describe, expect, it } from 'effect-rstest';
 import * as Effect from 'effect/Effect';
 import * as Schedule from 'effect/Schedule';
-import type * as Scope from 'effect/Scope';
 
 import { resolveDaemonConfig } from '../src/daemon/config.js';
-import type { DaemonConfigShape } from '../src/daemon/config.js';
 import { pingDaemon, requestOverSocket } from '../src/daemon/control.js';
-import { createLedgerApi, openLedgerDatabase } from '../src/daemon/ledger.js';
 import { runDaemon } from '../src/daemon/main.js';
 import type { RequestRecord } from '../src/daemon/protocol.js';
 import { loadLastResult, loadStatusResult } from '../src/lib/inspect.js';
 import { filterStatusRows, statusSummary } from '../src/lib/status-filter.js';
+import { scopedEnv, scopedLedger, scopedTempDir } from './harness.js';
 import {
   describeRequestRecord,
   displayRequestRecord,
@@ -155,41 +152,9 @@ describe('display projection', () => {
   });
 });
 
-/** A daemon config rooted in a fresh temp tree, removed when the scope closes. */
-const isolatedConfig: Effect.Effect<DaemonConfigShape, never, Scope.Scope> = Effect.acquireRelease(
-  Effect.sync(() => {
-    const root = mkdtempSync(join(tmpdir(), 'cc-query-'));
-    return {
-      config: resolveDaemonConfig({ CARGO_HAULER_STATE_DIR: join(root, 'state') }),
-      root,
-    };
-  }),
-  ({ root }) => Effect.sync(() => rmSync(root, { recursive: true, force: true })),
-).pipe(Effect.map(({ config }) => config));
-
-/** Overrides `process.env` entries for the scope, restoring the originals on close. */
-const scopedEnv = (
-  overrides: Readonly<Record<string, string>>,
-): Effect.Effect<void, never, Scope.Scope> =>
-  Effect.acquireRelease(
-    Effect.sync(() => {
-      const saved = Object.fromEntries(
-        Object.keys(overrides).map((name) => [name, process.env[name]]),
-      );
-      Object.assign(process.env, overrides);
-      return saved;
-    }),
-    (saved) =>
-      Effect.sync(() => {
-        for (const [name, value] of Object.entries(saved)) {
-          if (value === undefined) {
-            delete process.env[name];
-          } else {
-            process.env[name] = value;
-          }
-        }
-      }),
-  ).pipe(Effect.asVoid);
+const isolatedConfig = scopedTempDir('cargo-hauler-query-').pipe(
+  Effect.map((root) => resolveDaemonConfig({ CARGO_HAULER_STATE_DIR: join(root, 'state') })),
+);
 
 describe('loadHaulerSnapshot', () => {
   it.live('reports a stopped daemon and empty history when nothing has run', () =>
@@ -239,22 +204,24 @@ describe('loadHaulerSnapshot', () => {
   it.live('reads the ledger when the daemon is down', () =>
     Effect.gen(function* () {
       const config = yield* isolatedConfig;
-      const db = openLedgerDatabase(config.databasePath);
-      const ledger = createLedgerApi(db);
-      yield* ledger.createRequest({
-        argv: ['cargo', 'check'],
-        createdAtMs: 1_000,
-        cwd: '/repo',
-        host: 'cursor',
-        intentJson: null,
-        intentKey: 'k',
-        laneKey: '/repo::/repo/target',
-        session: 's',
-        targetDir: '/repo/target',
-        workspaceRoot: '/repo',
-      });
-      yield* ledger.markFinished(1, { atMs: 2_000, exitCode: 0, status: 'done' });
-      db.close();
+      yield* Effect.scoped(
+        Effect.gen(function* () {
+          const ledger = yield* scopedLedger(config);
+          yield* ledger.createRequest({
+            argv: ['cargo', 'check'],
+            createdAtMs: 1_000,
+            cwd: '/repo',
+            host: 'cursor',
+            intentJson: null,
+            intentKey: 'k',
+            laneKey: '/repo::/repo/target',
+            session: 's',
+            targetDir: '/repo/target',
+            workspaceRoot: '/repo',
+          });
+          yield* ledger.markFinished(1, { atMs: 2_000, exitCode: 0, status: 'done' });
+        }),
+      );
 
       const snapshot = yield* loadHaulerSnapshot({ config, recentLimit: 10 });
       expect(snapshot.daemon).toBe('stopped');
@@ -270,27 +237,29 @@ describe('loadHaulerSnapshot', () => {
       // where an ESC byte is literal `\u001b[…` noise. An environment that
       // forces color on (FORCE_COLOR/CLICOLOR_FORCE) must not reintroduce it.
       const config = yield* isolatedConfig;
-      const db = openLedgerDatabase(config.databasePath);
-      const ledger = createLedgerApi(db);
-      yield* ledger.createRequest({
-        argv: ['cargo', 'check'],
-        createdAtMs: 1_000,
-        cwd: '/repo',
-        host: 'cursor',
-        intentJson: null,
-        intentKey: 'k',
-        laneKey: '/repo::/repo/target',
-        session: 's',
-        targetDir: '/repo/target',
-        workspaceRoot: '/repo',
-      });
-      yield* ledger.markFinished(1, {
-        atMs: 2_000,
-        exitCode: 101,
-        outputTail: `${esc}[1m${esc}[31merror${esc}[0m: it broke\n`,
-        status: 'failed',
-      });
-      db.close();
+      yield* Effect.scoped(
+        Effect.gen(function* () {
+          const ledger = yield* scopedLedger(config);
+          yield* ledger.createRequest({
+            argv: ['cargo', 'check'],
+            createdAtMs: 1_000,
+            cwd: '/repo',
+            host: 'cursor',
+            intentJson: null,
+            intentKey: 'k',
+            laneKey: '/repo::/repo/target',
+            session: 's',
+            targetDir: '/repo/target',
+            workspaceRoot: '/repo',
+          });
+          yield* ledger.markFinished(1, {
+            atMs: 2_000,
+            exitCode: 101,
+            outputTail: `${esc}[1m${esc}[31merror${esc}[0m: it broke\n`,
+            status: 'failed',
+          });
+        }),
+      );
 
       yield* scopedEnv({
         CARGO_HAULER_STATE_DIR: config.stateDir,

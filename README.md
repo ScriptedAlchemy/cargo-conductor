@@ -45,10 +45,20 @@ commands, an optional PATH shim, or the `hauler_request` MCP tool. The daemon
 normalizes the Cargo command into an intent, records a ticket in the SQLite
 ledger, and assigns the request to a lane.
 
+The hook parses the shell command and rewrites each Cargo invocation to
+`hauler exec --session … --host … -- cargo …`. It recognizes `cargo` behind an
+absolute path (`~/.cargo/bin/cargo`), and behind the wrappers agents actually
+use: `env -u VAR X=y cargo …`, `timeout 600 cargo …`,
+`rustup run <toolchain> cargo …`, `stdbuf`, `nice`, `ionice`, `nohup`,
+`time`, `strace`, `sudo`, `xargs`, `command`, `exec`, and `builtin`. Other
+`rustup` subcommands and already-wrapped commands are left alone.
+
 A lane is keyed by workspace root and resolved target directory. It runs one
-job at a time. Different lanes may run concurrently after passing the global
-admission semaphore. `CARGO_HAULER_MAX_CONCURRENT` controls the machine-wide
-limit and defaults to five Cargo processes.
+job at a time. Different lanes may run concurrently after acquiring one of the
+global admission permits. `CARGO_HAULER_MAX_CONCURRENT` controls the
+machine-wide permit count and defaults to five Cargo processes. Attached
+requests (riders) do not hold permits; the admission meter counts permit
+holders and reports riders separately.
 
 Within a lane, the daemon can reduce work in three ways:
 
@@ -78,10 +88,27 @@ eventually runs.
 
 Admission is separate from lane scheduling. It observes one-minute load per
 core and, on Linux, CPU PSI `some avg10`, then applies the configured thresholds
-and the global process cap. Load average can include tasks blocked on I/O; the
-PSI input is CPU pressure only. The per-run `CARGO_BUILD_JOBS` grant defaults to
-the available cores divided across the configured process limit, with a floor
-of four jobs.
+and the global permit cap. Load average can include tasks blocked on I/O; the
+PSI input is CPU pressure only. Load and CPU pressure never defer below
+`CARGO_HAULER_LOAD_MIN` running processes, so a saturated machine still makes
+progress.
+
+Memory pressure is a separate admission input. On Linux the daemon reads
+memory PSI `full avg10` and `MemAvailable`; on macOS it reads the kernel VM
+pressure level. Soft pressure (PSI at or above 10%, or macOS level `warn`)
+defers admission like load does, respecting the same floor. Hard pressure
+(PSI at or above 20% with `full avg60` at least half that, `MemAvailable`
+below 8 GiB, or macOS level `critical`) defers admission regardless of the
+floor; a bounded wait still prevents a deadlocked queue.
+
+The per-run `CARGO_BUILD_JOBS` grant defaults to the available cores divided
+across the configured permit count, with a floor of four jobs. Separately, the
+daemon arms one GNU make jobserver FIFO with `cores - 1` tokens when it
+acquires the singleton lock and passes it to every Cargo it spawns through
+`MAKEFLAGS`, so concurrent lanes share one global rustc parallelism budget.
+Callers that pin `CARGO_BUILD_JOBS`, `CARGO_MAKEFLAGS`, or an inherited
+jobserver keep their own settings; passthrough runs without a daemon inject
+nothing.
 
 ## Behavior
 
@@ -89,11 +116,13 @@ of four jobs.
 | --- | --- |
 | Work sharing | Identical requests attach, covered checks attach, and compatible queued compile or test requests fold. |
 | Lane isolation | A workspace-root and target-directory pair is serialized independently from other lanes. |
-| Admission | Per-core load, Linux CPU PSI, configured thresholds, and the global process cap control new starts. |
+| Admission | Per-core load, Linux CPU PSI, Linux memory PSI and `MemAvailable`, macOS VM pressure, configured thresholds, and the global permit cap control new starts. |
+| Parallelism | A per-run `CARGO_BUILD_JOBS` grant plus one daemon-owned jobserver FIFO shared by every spawned Cargo. |
 | Scheduling | EWMA estimates, optional kache priors, fan-out, dependency topology, recent edits, and request age determine lane order. |
 | Persistence | Tickets, output tails, timings, outcomes, and savings are stored in SQLite. |
 | Caller output and status | Output streams to attached callers; late callers receive buffered replay. After 30 seconds without output, the client emits a progress heartbeat every 15 seconds. Queued heartbeats include the lane queue position, the lane-head ticket with its elapsed time and estimate, and an aggregate wait ETA, so a busy lane is distinguishable from a stall. |
-| Wait escalation | A queued request waiting longer than twice its own estimate (or ten minutes) is flagged as delayed in status rows, the dashboard, and heartbeats. Running jobs silent for more than five minutes show a quiet-duration hint; nothing is killed automatically. |
+| Wait escalation | A queued request waiting longer than the larger of twice its own estimate and ten minutes is flagged as delayed in status rows, the dashboard, and heartbeats. Running jobs silent for more than five minutes show a quiet-duration hint; nothing is killed automatically. |
+| Daemon status | `running`, `stopped`, or `unresponsive`. A socket that exists but does not answer the status read within its 5 second budget is reported as unresponsive, not stopped, so a loaded daemon with jobs in flight is never mistaken for a missing one. |
 
 ### Metric time windows
 
@@ -131,27 +160,33 @@ pnpm install
 pnpm run build
 ```
 
-`artifact/plugin` is the generated multi-host plugin bundle:
+`artifact/plugin` is the generated multi-host plugin bundle. Install it from
+that directory:
 
 ```sh
+cd artifact/plugin
+
 # Claude Code
-claude plugin marketplace add ./artifact/plugin
-claude plugin install cargo-hauler@cargo-hauler-marketplace
+claude plugin marketplace add ./
+claude plugin install cargo-hauler@cargo-hauler-marketplace --scope user
 
 # Codex CLI
-codex plugin marketplace add ./artifact/plugin
+codex plugin marketplace add ./
 codex plugin add cargo-hauler@cargo-hauler-marketplace
 
 # Cursor
-node ./artifact/plugin/install.mjs
+node ./install.mjs
 ```
 
-Restart Cursor after installation so new sessions load the hooks. The
-generated bundle includes the `hauler` CLI:
+Restart Cursor after installation so new sessions load the hooks. The bundle's
+own `hauler` entry (`artifact/plugin/scripts/hauler.mjs`) is what the hooks
+rewrite Cargo to; it provides `exec`, `daemon`, and `install-shim`. The full
+CLI, including `status`, `log`, `last`, `await`, `result`, and `request`, is
+the package binary built into `dist/bin/` by the same `pnpm run build`:
 
 ```sh
-hauler daemon start
-hauler status
+node dist/bin/hauler.js daemon start
+node dist/bin/hauler.js status
 ```
 
 The first brokered request makes one daemon-start attempt. Hooks cover Cargo
@@ -159,19 +194,24 @@ commands submitted directly through supported agent shells. The optional PATH
 shim also covers Cargo invoked by scripts and ordinary terminals:
 
 ```sh
-hauler install-shim --dir ~/.local/bin
+node dist/bin/hauler.js install-shim --dir ~/.local/bin
 ```
 
 MCP App-capable hosts load the dashboard from
-`ui://cargo-hauler/dashboard.html`. To run the same built dashboard in a
-browser:
-
-```sh
-node scripts/preview-dashboard.mjs --port 4941
-```
+`ui://cargo-hauler/dashboard.html`; see [Development](#development) for the
+browser preview.
 
 See [docs/install.md](docs/install.md) for host-specific installation and hook
 details.
+
+### Known host limitation
+
+On current Cursor builds, plugin-manifest hooks do not fire for tool events
+(tracked upstream as
+[ScriptedAlchemy/agent-bundle#407](https://github.com/ScriptedAlchemy/agent-bundle/issues/407)).
+The bundle still declares them, but until that lands the PATH shim is the
+effective interception on Cursor. Codex and Claude Code hooks fire as
+documented.
 
 ## Tickets and long-running requests
 
@@ -205,7 +245,10 @@ probe setup and observed edge cases.
 ## PATH shim
 
 At installation, the shim resolves and embeds absolute paths for both the
-`hauler` CLI and the Cargo binary. It tags requests with `--host shim`. When the
+`hauler` CLI and the Cargo binary. The Cargo path is the `~/.cargo/bin/cargo`
+link itself, not its rustup proxy target: rustup dispatches on `argv[0]`, so
+embedding the canonical binary would turn `cargo check` into `rustup check`.
+The shim tags requests with `--host shim`. When the
 daemon starts Cargo, it sets `CARGO_HAULER_INSIDE=1`; the shim then invokes the
 embedded Cargo path directly. This prevents the daemon's own Cargo process
 from returning through the broker.
@@ -215,18 +258,22 @@ directory on `PATH`. Replacing an existing destination requires `--force`.
 
 ## Interfaces
 
-The `hauler` CLI is available as the package binary and as
-`scripts/hauler.mjs` in each generated host artifact.
+`hauler` is the process entry (`src/scripts/hauler.ts`). It owns `exec`,
+`daemon`, and `install-shim` and forwards every other command to the routed
+`cargo-hauler` CLI (`src/cli/*`) when that binary sits beside it, which is the
+case for the package binaries in `dist/bin/`. The copy shipped inside each
+host artifact (`scripts/hauler.mjs`) has only the three process commands.
+Routed commands accept `--json` for the canonical result.
 
 | Command | Behavior |
 | --- | --- |
 | `hauler exec [--session ID] [--host HOST] [--cwd DIR] [--bg] -- <cargo …>` | Submit Cargo through the daemon and stream output; hooks rewrite commands to this form. |
-| `hauler status [--limit N]` | Show the queue, active runs, lanes, and admission state. |
+| `hauler status [--limit N] [--cwd DIR] [--session ID] [--lane KEY] [--ticket ID …] [--status S …] [--command-contains TEXT]` | Show the queue, active runs, lanes, and admission state, optionally filtered. |
 | `hauler log [--limit N]` | Read recent requests from the ledger. |
 | `hauler last` | Read the most recent request. |
-| `hauler await <ticket> [--max-wait-ms N]` | Long-poll until the ticket finishes or the wait expires. |
-| `hauler result <ticket>` | Read a stored ticket result. |
-| `hauler request [--session ID] [--cwd DIR] -- <cargo …>` | Submit a background request and return its ticket. |
+| `hauler await <ticket> [--max-wait-ms N]` | Long-poll until the ticket finishes or the wait expires (default 30 s, ceiling two hours). |
+| `hauler result <ticket>` | Read a stored ticket result; running tickets include a live output tail. |
+| `hauler request [--session ID] [--host HOST] [--cwd DIR] -- <cargo …>` | Submit a background request and return its ticket. |
 | `hauler daemon <run\|start\|stop\|status>` | Manage the daemon lifecycle. |
 | `hauler install-shim [--dir DIR] [--real-cargo PATH] [--force]` | Install the optional PATH shim. |
 
@@ -234,10 +281,10 @@ The `hauler` MCP server projects the same operations:
 
 | MCP tool | Behavior |
 | --- | --- |
-| `hauler_status` | Return daemon, queue, active-run, lane, and metric state; render the dashboard where MCP Apps are supported. |
+| `hauler_status` | Return daemon, queue, active-run, lane, and metric state, with the same filters as the CLI; render the dashboard where MCP Apps are supported. |
 | `hauler_log` | Read recent requests from the ledger. |
 | `hauler_last` | Read the most recent request. |
-| `hauler_await` | Long-poll a ticket. |
+| `hauler_await` | Long-poll a ticket, streaming progress while it waits. |
 | `hauler_result` | Read a stored ticket result. |
 | `hauler_request` | Submit a background Cargo request. |
 
@@ -254,25 +301,36 @@ The daemon and hooks read the following environment variables:
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `CARGO_HAULER_STATE_DIR` | Per-user cache directory | Unix socket or Windows named pipe source, SQLite ledger, daemon log, pid lock, and `hook-events.jsonl`. The legacy `CARGO_CONDUCTOR_STATE_DIR` alias was removed on 2026-09-01. |
+| `CARGO_HAULER_STATE_DIR` | Per-user cache directory | Unix socket or Windows named pipe source, SQLite ledger, daemon log, pid lock, `hook-state.json`, and `hook-events.jsonl`. No legacy alias. |
 | `CARGO_HAULER_CARGO_BIN` | `$CARGO_HOME/bin/cargo` | Cargo binary for daemon-started work; bare `cargo` is the last fallback. The daemon does not resolve it through `PATH`. |
 | `CARGO_HAULER_MAX_CONCURRENT` | `5` | Global admission permits for Cargo processes across all lanes. |
 | `CARGO_HAULER_JOBS_GRANT` | `max(4, cores / max concurrent)` | `CARGO_BUILD_JOBS` added to each Cargo process; `0` disables injection and caller-provided `-j` or environment values take precedence. |
 | `CARGO_HAULER_LOAD_THRESHOLD` | Disabled | Per-core one-minute load threshold for deferring new admissions. |
-| `CARGO_HAULER_LOAD_MIN` | `2` | Number of active Cargo processes below which load and PSI do not defer admission. |
+| `CARGO_HAULER_LOAD_MIN` | `2` | Number of active Cargo processes below which load, CPU PSI, and soft memory pressure do not defer admission. |
 | `CARGO_HAULER_CPU_PRESSURE_THRESHOLD` | `75` | Linux CPU PSI `some avg10` percentage for deferring new admissions; `0` disables this input. |
+| `CARGO_HAULER_MEM_PRESSURE_SOFT` | `10` (Linux) | Memory PSI `full avg10` percentage for soft deferral; `0` disables it. |
+| `CARGO_HAULER_MEM_PRESSURE_HARD` | `20` (Linux) | Memory PSI `full avg10` percentage for hard deferral, confirmed by `full avg60` at half the value; `0` disables it. |
+| `CARGO_HAULER_MEM_AVAILABLE_MIN_GB` | `8` (Linux) | `MemAvailable` floor in GiB for hard deferral; `0` disables it. |
+| `CARGO_HAULER_MEM_PRESSURE_LEVEL` | `2` (macOS) | Kernel VM pressure level that starts soft deferral (`2` warn, `4` critical); level `4` is always hard. Any other value disables it. |
 | `CARGO_HAULER_REPLAY_BUFFER_BYTES` | `4194304` | Leader output retained in memory for late-attacher replay. |
 | `CARGO_HAULER_KACHE_INDEX` | kache's configured store | kache index for per-crate timing priors; an empty string disables it. |
 | `CARGO_HAULER_BATCH` | Enabled | `0` disables the batch composer. |
 | `CARGO_HAULER_BATCH_WINDOW_MS` | `150` | Delay applied to a batchable lane head so nearby requests can fold; `0` disables the delay. |
+| `CARGO_HAULER_KILL_GRACE_MS` | `8000` | Time between SIGTERM and SIGKILL when the daemon stops a Cargo process. |
 | `CARGO_HAULER_STOP_WAIT_MS` | `30000` | Maximum wait for one stop-hook invocation. |
+| `CARGO_HAULER_LOG_LEVEL` | `Info` | Daemon log level. |
+| `CARGO_HAULER_HOST`, `CARGO_HAULER_SESSION` | Unset | Default `--host` and `--session` attribution for `hauler exec`. |
 
 Each `CARGO_HAULER_*` setting takes precedence over its retained legacy
 `CARGO_CONDUCTOR_*` alias. Legacy aliases remain supported only for settings
-that cannot select persistent daemon identity, including tuning values and the
-read-only kache index. `CARGO_CONDUCTOR_STATE_DIR` is ignored with a warning:
-on 2026-09-01, a stale login-session value recreated a migrated directory and
-split the daemon socket and ledger from the active cargo-hauler store.
+that cannot select persistent daemon identity: tuning values, the read-only
+kache index, and host/session attribution. The memory-pressure settings are
+new since the rename and have no alias. `CARGO_CONDUCTOR_STATE_DIR` is
+ignored, and hand-run commands print a one-line warning naming its
+replacement: on 2026-09-01, a stale login-session value recreated a migrated
+directory and split the daemon socket and ledger from the active cargo-hauler
+store (see
+[docs/incidents/2026-09-01-state-identity-split-brain.md](docs/incidents/2026-09-01-state-identity-split-brain.md)).
 
 The state directory defaults to `$XDG_CACHE_HOME/cargo-hauler` when
 `XDG_CACHE_HOME` is set, otherwise `~/.cache/cargo-hauler` on Linux,
@@ -288,7 +346,10 @@ exists, it uses `<user cache>/kache/index.db`. The file is opened read-only.
 
 - Hook and client transport failures fail open. A hook passes the original
   command through. If the client cannot reach the daemon, it makes one
-  auto-start attempt and then invokes Cargo directly.
+  auto-start attempt and then invokes Cargo directly. A daemon that is alive
+  but too loaded to accept a connection within 2 seconds is not treated as
+  absent: `exec` retries the connection for up to 60 seconds before falling
+  back to a direct run.
 - Missing kache data and topology analysis failures use the scheduler's
   fallback estimates. They do not reject Cargo requests.
 - Test sharing uses identity attachment or batch folding, never coverage.
@@ -312,7 +373,8 @@ exists, it uses `<user cache>/kache/index.db`. The file is opened read-only.
 
 ```sh
 pnpm run dev     # agent-bundle workbench with live rebuilds (portable target)
-pnpm run check   # validate + build + typecheck + rstest
+pnpm run build   # artifact/plugin, artifact/portable, and dist/bin
+pnpm run check   # validate + build + typecheck + Effect diagnostics + rstest + route tests
 ```
 
 To preview the built dashboard outside an MCP host:
@@ -322,8 +384,8 @@ node scripts/preview-dashboard.mjs --port 4941
 ```
 
 The preview server reads `artifact/plugin/mcp-apps/dashboard.html` and answers
-the dashboard's MCP App messages with `hauler status` output. Run
-`pnpm run build` before starting it.
+the dashboard's MCP App messages with `cargo-hauler status --json` output from
+`dist/bin/`. Run `pnpm run build` before starting it.
 
 `repos/effect` is a read-only subtree containing the Effect v4 source pinned to
 `effect@4.0.0-rc.112`. It is reference material for development and is not a
@@ -344,10 +406,12 @@ hand-written server or CLI parser.
 | `src/mcp/hauler/tools/*.tsx` | The six `hauler_*` MCP tools; each renders an Agent Document. |
 | `src/mcp/hauler/apps/dashboard.tsx` | The dashboard MCP App (`ui://cargo-hauler/dashboard.html`). |
 | `src/events/tool/{before,after}.tsx`, `src/events/stop.tsx` | Hook routes over the shared hook libraries; shipped for Claude, Codex, and Cursor. |
-| `src/cli/*.tsx` | The routed `cargo-hauler` CLI; the same documents as the MCP tools, printed as Markdown or `--json`. |
+| `src/cli/*` | The routed `cargo-hauler` CLI; the same documents as the MCP tools, printed as Markdown or `--json`. |
 | `src/scripts/hauler.ts` | The `hauler` process entry: `exec`, `install-shim`, `daemon`; everything else forwards to the routed CLI. |
 | `src/providers/daemon-config.ts` | Request-scoped daemon configuration for routes and tests. |
 | `src/components/` | Document components shared by the MCP and CLI surfaces. |
+| `src/skills/*/SKILL.md` | The `cargo-hauler` and `hauler-dashboard` agent skills shipped in the bundle. |
+| `src/daemon/`, `src/client/`, `src/hooks/`, `src/shim/`, `src/lib/` | The broker, the `exec` client, the shared hook libraries, the PATH shim installer, and shared utilities. |
 
 `pnpm test:routes` renders the routes through the framework compiler without an
 artifact build (`tests/route-unit/`).

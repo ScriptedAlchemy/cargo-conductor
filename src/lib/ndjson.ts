@@ -27,7 +27,7 @@ export const parseJsonLines = (text: string): readonly unknown[] => {
       continue;
     }
     try {
-      parsed.push(JSON.parse(line) as unknown);
+      parsed.push(JSON.parse(line));
     } catch {
       // Lenient readers ignore malformed records and keep scanning.
     }

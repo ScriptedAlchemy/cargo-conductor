@@ -204,7 +204,6 @@ const statusRequestColumns = `id, created_at_ms, session, host, cwd, workspace_r
   estimate_ms, exec_argv_json, error_count, warning_count, diagnostics_json, saved_compute_ms,
   saved_compute_source, saved_latency_ms`;
 
-/** Additive column migrations for databases created by earlier builds. */
 const columnMigrations: readonly (readonly [column: string, ddl: string])[] = [
   ['attached_to', 'ALTER TABLE requests ADD COLUMN attached_to TEXT'],
   ['attach_mode', 'ALTER TABLE requests ADD COLUMN attach_mode TEXT'],
@@ -469,7 +468,17 @@ const parsePassthroughSpoolRecord = (line: string): PassthroughSpoolRecord | nul
   ) {
     return null;
   }
-  return value as unknown as PassthroughSpoolRecord;
+  return {
+    version: 1,
+    id: value.id,
+    kind: 'passthrough',
+    atMs: value.atMs,
+    argv: value.argv,
+    cwd: value.cwd,
+    session: value.session,
+    host: value.host,
+    exitCode: value.exitCode,
+  };
 };
 
 /** A failing ledger is a defect, not a recoverable condition, so nothing here has a typed error. */

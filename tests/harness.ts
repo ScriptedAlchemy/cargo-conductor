@@ -10,6 +10,8 @@ import type * as Scope from 'effect/Scope';
 import { resolveDaemonConfig } from '../src/daemon/config.js';
 import type { DaemonConfigShape } from '../src/daemon/config.js';
 import { pingDaemon, requestOverSocket } from '../src/daemon/control.js';
+import { createLedgerApi, openLedgerDatabase } from '../src/daemon/ledger.js';
+import type { LedgerApi } from '../src/daemon/ledger.js';
 import { runDaemon } from '../src/daemon/main.js';
 import type {
   ExitMessage,
@@ -44,8 +46,8 @@ export interface Fixture {
   readonly ws2: string;
 }
 
-export const makeFixture = (maxConcurrent: number): Fixture => {
-  const root = mkdtempSync(join(tmpdir(), 'cc-it-'));
+const makeFixture = (maxConcurrent: number): Fixture => {
+  const root = mkdtempSync(join(tmpdir(), 'cargo-hauler-it-'));
   const stateDir = join(root, 'state');
   const binDir = join(root, 'bin');
   mkdirSync(stateDir, { recursive: true });
@@ -69,20 +71,12 @@ export const makeFixture = (maxConcurrent: number): Fixture => {
   return { config, root, binDir, ws1: makeWorkspace('ws1'), ws2: makeWorkspace('ws2') };
 };
 
-/**
- * A fresh fixture tree, removed when the enclosing scope closes. Inside
- * `it.live` the test runner owns that scope.
- */
 export const scopedFixture = (maxConcurrent: number): Effect.Effect<Fixture, never, Scope.Scope> =>
   Effect.acquireRelease(
     Effect.sync(() => makeFixture(maxConcurrent)),
     (fixture) => Effect.sync(() => rmSync(fixture.root, { recursive: true, force: true })),
   );
 
-/**
- * A fixture with an in-process daemon listening on its socket. The daemon
- * fiber is interrupted, then the tree removed, when the scope closes.
- */
 export const scopedDaemon = (maxConcurrent: number): Effect.Effect<Fixture, unknown, Scope.Scope> =>
   Effect.gen(function* () {
     const fixture = yield* scopedFixture(maxConcurrent);
@@ -92,6 +86,65 @@ export const scopedDaemon = (maxConcurrent: number): Effect.Effect<Fixture, unkn
     );
     return fixture;
   });
+
+export const scopedTempDir = (
+  prefix: string,
+): Effect.Effect<string, never, Scope.Scope> =>
+  Effect.acquireRelease(
+    Effect.sync(() => mkdtempSync(join(tmpdir(), prefix))),
+    (directory) => Effect.sync(() => rmSync(directory, { recursive: true, force: true })),
+  );
+
+export const scopedDatabase = <Database extends { close(): void }>(
+  open: () => Database,
+): Effect.Effect<Database, never, Scope.Scope> =>
+  Effect.acquireRelease(Effect.sync(open), (database) => Effect.sync(() => database.close()));
+
+export const scopedLedger = (
+  config: Pick<DaemonConfigShape, 'databasePath'>,
+): Effect.Effect<LedgerApi, never, Scope.Scope> =>
+  Effect.map(
+    scopedDatabase(() => openLedgerDatabase(config.databasePath)),
+    createLedgerApi,
+  );
+
+export const scopedEnv = (
+  overrides: Readonly<Record<string, string | undefined>>,
+): Effect.Effect<void, never, Scope.Scope> =>
+  Effect.acquireRelease(
+    Effect.sync(() => {
+      const saved = Object.fromEntries(
+        Object.keys(overrides).map((name) => [name, process.env[name]]),
+      );
+      for (const [name, value] of Object.entries(overrides)) {
+        if (value === undefined) {
+          delete process.env[name];
+        } else {
+          process.env[name] = value;
+        }
+      }
+      return saved;
+    }),
+    (saved) =>
+      Effect.sync(() => {
+        for (const [name, value] of Object.entries(saved)) {
+          if (value === undefined) {
+            delete process.env[name];
+          } else {
+            process.env[name] = value;
+          }
+        }
+      }),
+  ).pipe(Effect.asVoid);
+
+export const fakeCargoEnv = (
+  fixture: Pick<Fixture, 'binDir'>,
+  extra: Readonly<Record<string, string>> = {},
+): Record<string, string> => ({
+  CARGO_HAULER_CARGO_BIN: join(fixture.binDir, 'cargo'),
+  PATH: `${fixture.binDir}:${process.env.PATH ?? ''}`,
+  ...extra,
+});
 
 export const shortId = (): string => randomUUID().slice(0, 8);
 
@@ -110,10 +163,7 @@ export interface ExecOptions {
 
 export const execRequest = (fixture: Fixture, options: ExecOptions) => {
   const env: Record<string, string> = {
-    PATH: `${fixture.binDir}:${process.env.PATH ?? ''}`,
-    // The executor refuses to resolve bare `cargo` through PATH (shim
-    // recursion guard); pin jobs at the fixture's fake cargo explicitly.
-    CARGO_HAULER_CARGO_BIN: join(fixture.binDir, 'cargo'),
+    ...fakeCargoEnv(fixture),
     ...options.extraEnv,
   };
   if (options.sleep !== undefined) {

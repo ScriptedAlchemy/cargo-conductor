@@ -53,13 +53,9 @@ export const sectionOrder: readonly DashboardSection[] = [
   'history',
 ];
 
-/** One dashboard polling emission: the last good status plus this poll's outcome. */
 export interface StatusPoll<A> {
-  /** Latest successfully fetched status, held across failed polls. */
   readonly value: A | null;
-  /** Failure message of the most recent poll; null when it succeeded. */
   readonly error: string | null;
-  /** Wall-clock ms of the last successful poll; null before the first. */
   readonly updatedAtMs: number | null;
 }
 
@@ -291,7 +287,6 @@ export const waitMetricsView = (
   };
 };
 
-/** Entries of a frequency metric with zero and non-numeric counts dropped. */
 export const frequencyEntries = (
   record: Readonly<Record<string, unknown>> | undefined,
 ): readonly (readonly [string, number])[] =>
@@ -334,7 +329,6 @@ const stringArrayOrNull = (value: unknown): readonly string[] | null =>
     ? (value as readonly string[])
     : null;
 
-/** Shape a request record (status row or hauler_result payload) for the detail drawer. */
 export const ticketDetailFrom = (record: unknown): TicketDetail | null => {
   if (record === null || typeof record !== 'object') {
     return null;
@@ -394,17 +388,12 @@ export const resolveTicketDetail = async (
   if (fromRow === null) {
     return null;
   }
-  // Status rows never carry a tail. Terminal rows fetch once for the settled
-  // tail; non-terminal rows must ALSO fetch — the daemon overlays a live
-  // snapshot of the in-progress output onto the result record.
   if (fromRow.outputTail !== null) {
     return fromRow;
   }
   const fetched = ticketDetailFrom(await fetchRecord(fromRow.ticket));
   return fetched ?? fromRow;
 };
-
-const displayJoin = commandDisplay;
 
 const filterCompactionThreshold = 120;
 const filterExpressionFlags = new Set(['-E', '--filterset', '--filter-expr']);
@@ -586,17 +575,16 @@ export const compactArgvText = (argv: unknown): string => {
   if (parts === null) {
     return '';
   }
-  return displayJoin(compactCargoTestFilters(compactNextestFiltersets(parts)));
+  return commandDisplay(compactCargoTestFilters(compactNextestFiltersets(parts)));
 };
 
 export const argvText = (argv: unknown): string => {
   const parts = stringArrayOrNull(argv);
-  return parts === null ? '' : displayJoin(parts);
+  return parts === null ? '' : commandDisplay(parts);
 };
 
 export const argvTitle = (argv: unknown): string => stringArrayOrNull(argv)?.join(' ') ?? '';
 
-/** The dashboard header is a status headline, not the MCP run-detail surface. */
 export const summaryFirstLine = (summary: string): string => summary.split('\n', 1)[0] ?? '';
 
 interface RanAs {
@@ -627,7 +615,7 @@ export const ranAsFor = (argvValue: unknown, execArgvValue: unknown): RanAs | nu
       extraPackages += 1;
     }
   }
-  return { command: displayJoin(cleaned), extraPackages };
+  return { command: commandDisplay(cleaned), extraPackages };
 };
 
 export interface MemoryStatView {
@@ -636,7 +624,6 @@ export interface MemoryStatView {
   readonly value: string;
 }
 
-/** Stable memory-pressure display shape for both current and older daemons. */
 export const memoryStatView = (system: {
   readonly memAvailableBytes?: unknown;
   readonly memClamp?: unknown;
@@ -957,7 +944,6 @@ export interface DiagnosticBadge {
   readonly count: number;
 }
 
-/** Error/warning badges for a row; zero and unknown counts render nothing. */
 export const diagnosticBadges = (
   errorCount: unknown,
   warningCount: unknown,
@@ -995,7 +981,6 @@ export const quietOutputHint = (
   };
 };
 
-/** A lane is worth a row only while it holds work. */
 export const laneIsActive = (lane: {
   readonly queued?: unknown;
   readonly runningTicket?: unknown;
@@ -1065,7 +1050,6 @@ export const attachSavings = (
   let batchExtraPackages = 0;
   for (const row of deduped) {
     if (row.attachedTo == null) {
-      // Leaders (not followers) carry the batch-folded packages in execArgv.
       batchExtraPackages += ranAsFor(row.argv, row.execArgv)?.extraPackages ?? 0;
       continue;
     }

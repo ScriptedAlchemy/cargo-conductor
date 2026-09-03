@@ -1,7 +1,5 @@
 import * as Metric from 'effect/Metric';
 
-/** Broker-wide metrics, shared by the attachment and lane state machines. */
-
 const cargoRunBoundaries = [1e3, 5e3, 15e3, 3e4, 6e4, 12e4, 3e5];
 
 export const cargoRunMetric = Metric.timer('cargo_run_ms', {

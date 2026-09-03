@@ -11,7 +11,6 @@ export interface RequestTableProps {
   readonly heading?: string;
   readonly nowMs: number;
   readonly records: readonly RequestRecord[];
-  /** Shown when there are no rows, instead of an empty table. */
   readonly empty?: string;
 }
 

@@ -4,11 +4,6 @@ import { join } from 'node:path';
 import { resolveHookStateDir } from './paths.js';
 import { isRecord } from './shared.js';
 
-interface HookStateFile {
-  readonly cursors?: Readonly<Record<string, number>>;
-  readonly denies?: Readonly<Record<string, number>>;
-}
-
 const statePath = (stateDir: string): string => join(stateDir, 'hook-state.json');
 
 const loadState = (stateDir: string): { cursors: Record<string, number>; denies: Record<string, number> } => {
@@ -17,7 +12,10 @@ const loadState = (stateDir: string): { cursors: Record<string, number>; denies:
     return { cursors: {}, denies: {} };
   }
   try {
-    const parsed = JSON.parse(readFileSync(path, 'utf8')) as HookStateFile;
+    const parsed: unknown = JSON.parse(readFileSync(path, 'utf8'));
+    if (!isRecord(parsed)) {
+      return { cursors: {}, denies: {} };
+    }
     const cursors = isRecord(parsed.cursors)
       ? Object.fromEntries(
           Object.entries(parsed.cursors).filter((entry): entry is [string, number] => typeof entry[1] === 'number'),

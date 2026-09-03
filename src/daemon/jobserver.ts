@@ -3,6 +3,8 @@ import { closeSync, constants, mkdirSync, openSync, readSync, statSync, writeSyn
 import { availableParallelism } from 'node:os';
 import { join } from 'node:path';
 
+import { isRecord } from '../lib/guards.js';
+
 /**
  * Machine-wide GNU make jobserver FIFO shared by every cargo the daemon
  * spawns.
@@ -49,7 +51,7 @@ const drain = (fd: number): void => {
     try {
       read = readSync(fd, buffer, 0, buffer.length, null);
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'EAGAIN') {
+      if (isRecord(error) && error.code === 'EAGAIN') {
         return;
       }
       throw error;

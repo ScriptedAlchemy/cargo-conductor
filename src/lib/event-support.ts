@@ -35,7 +35,7 @@ const nativeRecord = (
 
 const parseJsonRecord = (text: string): Readonly<Record<string, unknown>> | undefined => {
   try {
-    const parsed = JSON.parse(text) as unknown;
+    const parsed: unknown = JSON.parse(text);
     return isRecord(parsed) ? parsed : undefined;
   } catch {
     return undefined;

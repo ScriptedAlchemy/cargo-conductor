@@ -19,7 +19,7 @@ const valuedFlags = ['--cwd', '--host', '--session'] as const;
 type ValuedFlag = (typeof valuedFlags)[number];
 
 const isValuedFlag = (argument: string): argument is ValuedFlag =>
-  (valuedFlags as readonly string[]).includes(argument);
+  valuedFlags.some((flag) => flag === argument);
 
 const takeValue = (argv: readonly string[], index: number, option: ValuedFlag): string => {
   const value = argv[index + 1];

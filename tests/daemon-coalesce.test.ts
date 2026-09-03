@@ -2,7 +2,6 @@ import { describe, expect, it } from 'effect-rstest';
 import * as Effect from 'effect/Effect';
 import * as Fiber from 'effect/Fiber';
 
-import { createLedgerApi, openLedgerDatabase } from '../src/daemon/ledger.js';
 import type {
   AckMessage,
   RequeuedMessage,
@@ -15,8 +14,8 @@ import {
   findExit,
   pollReport,
   scopedDaemon,
+  scopedLedger,
 } from './harness.js';
-import type { Fixture } from './harness.js';
 
 const findAck = (messages: readonly { type: string }[]): AckMessage => {
   const ack = messages.find((message): message is AckMessage => message.type === 'ack');
@@ -25,16 +24,6 @@ const findAck = (messages: readonly { type: string }[]): AckMessage => {
   }
   return ack;
 };
-
-/** A ledger over the fixture database, closed when the scope closes. */
-const scopedLedger = (fixture: Fixture) =>
-  Effect.map(
-    Effect.acquireRelease(
-      Effect.sync(() => openLedgerDatabase(fixture.config.databasePath)),
-      (database) => Effect.sync(() => database.close()),
-    ),
-    createLedgerApi,
-  );
 
 describe('identity coalescing', () => {
   it.live('attaches an identical concurrent request, replays output, and mirrors success', () =>
@@ -101,7 +90,7 @@ describe('identity coalescing', () => {
 
       // The follower is queued against the leader, then inherits the
       // leader's real running phase instead of starting at attach time.
-      const ledger = yield* scopedLedger(fixture);
+      const ledger = yield* scopedLedger(fixture.config);
       const transitions = yield* ledger.transitionsFor(
         Number(followerExit.ticket.slice('cc-'.length)),
       );
@@ -239,7 +228,7 @@ describe('coverage subsumption', () => {
 
       // Ledger shows the full journey: requested -> queued -> running
       // (attached) -> queued (requeued) -> running -> done.
-      const ledger = yield* scopedLedger(fixture);
+      const ledger = yield* scopedLedger(fixture.config);
       const transitions = yield* ledger.transitionsFor(
         Number(followerExit.ticket.slice('cc-'.length)),
       );

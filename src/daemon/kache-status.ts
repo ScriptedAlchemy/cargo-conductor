@@ -390,7 +390,7 @@ export const createKacheStatus = (
             refreshing = false;
           }),
         ),
-        Effect.catchCause(() => Effect.void),
+        Effect.ignoreCause,
       );
     });
 

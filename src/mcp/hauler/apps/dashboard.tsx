@@ -396,6 +396,8 @@ const dashboardWindows = (value: unknown): readonly DashboardMetricsWindow[] =>
     .filter((entry): entry is DashboardMetricsWindow => entry !== null);
 
 const duration = (value: unknown): string => (typeof value === 'number' ? formatMs(value) : '—');
+const countValue = (value: unknown): string =>
+  typeof value === 'number' ? formatCompactNumber(value) : '—';
 const signedDuration = (value: number): string =>
   value < 0 ? `-${formatMs(Math.abs(value))}` : formatMs(value);
 
@@ -466,7 +468,6 @@ const elapsedCell = (
   );
 };
 
-/** Error/warning count badges for a row; nothing renders when both are zero or unknown. */
 const DiagBadges = ({ row }: { readonly row: RequestRow }): ReactNode => {
   const badges = diagnosticBadges(row.errorCount, row.warningCount);
   if (badges.length === 0) {
@@ -487,7 +488,6 @@ const DiagBadges = ({ row }: { readonly row: RequestRow }): ReactNode => {
   );
 };
 
-/** Queued rows: time waited, plus the prior-run estimate labeled as such (it is not a countdown). */
 const waitingCell = (
   sinceMs: unknown,
   estimateMs: unknown,
@@ -1117,7 +1117,7 @@ const MetricsSection = ({
         ) : null}
       </div>
       {attachEntries.length === 0 && ridersByMode === null ? null : (
-        <div className="stats metricsdetail">
+        <div className="stats">
           {attachEntries.length === 0 ? null : (
             <Stat label="attach modes" value={frequencyText(attachEntries)} />
           )}
@@ -1177,9 +1177,6 @@ const KacheSection = ({ value }: { readonly value: unknown }): ReactNode => {
       typeof row.ms === 'number' &&
       row.ms > 0,
   );
-  const countValue = (value: unknown): string =>
-    typeof value === 'number' ? formatCompactNumber(value) : '—';
-
   return (
     <section className="kache-section">
       <h2>Kache <span className="count">(machine-wide)</span></h2>
@@ -1206,8 +1203,6 @@ const KacheSection = ({ value }: { readonly value: unknown }): ReactNode => {
   );
 };
 
-// Empty kache sub-panels collapse like the top-level sections: no
-// "No recent heartbeats." placeholder on an idle machine.
 const KacheColumns = ({
   roots,
   topCrates,
@@ -1219,8 +1214,6 @@ const KacheColumns = ({
   if (columns.length === 0) {
     return null;
   }
-  const countValue = (value: unknown): string =>
-    typeof value === 'number' ? formatCompactNumber(value) : '—';
   return (
     <div className={`kache-columns${columns.length === 1 ? ' single' : ''}`}>
       {columns.map((column) => {
@@ -1229,7 +1222,7 @@ const KacheColumns = ({
             return (
               <div key="roots">
                 <h3>Compiling roots <span>(last 5m)</span></h3>
-                <div className="root-list">
+                <div>
                   {roots.map((row, index) => {
                     const root = typeof row.root === 'string' ? row.root : '';
                     return (
@@ -1243,9 +1236,6 @@ const KacheColumns = ({
               </div>
             );
           case 'crates':
-            // Grouped by profile: dev/release/test timings are different
-            // populations, so crates are never ranked — and never metered —
-            // across profiles; each group's meter is relative to its own max.
             return (
               <div key="crates">
                 <h3>Slowest crates <span>(per profile)</span></h3>
@@ -1254,7 +1244,7 @@ const KacheColumns = ({
                     <div className="crate-group-head">
                       <span className="profile">{group.profile}</span>
                     </div>
-                    <div className="crate-list">
+                    <div>
                       {group.rows.map((row) => (
                         <div className="crate-row" key={`${group.profile}-${row.crate}`}>
                           <div className="crate-label">
@@ -1298,7 +1288,6 @@ const DashboardContent = ({ structured }: { readonly structured: StructuredConte
   const attached = active.filter((row) => typeof row.attachedTo === 'string');
   const maxConcurrent = typeof structured?.maxConcurrent === 'number' ? structured.maxConcurrent : 0;
   const queueRows = queued.concat(attached.filter((row) => row.status !== 'running'));
-  // Idle lanes (nothing running, nothing queued) collapse out of the table.
   const activeLanes = lanes.filter(laneIsActive);
   const finished = recent
     .filter((row) => typeof row.status === 'string' && terminalStatuses.has(row.status))
@@ -1550,6 +1539,13 @@ const pollErrorFrom = (result: StatusPollResult): string | null => {
   }
 };
 
+const DashboardHeader = ({ children }: { readonly children: ReactNode }) => (
+  <header>
+    <h1>cargo-hauler</h1>
+    <div id="status">{children}</div>
+  </header>
+);
+
 const Dashboard = ({ pushed }: { readonly pushed: PushedStatus | null }) => {
   const result = useAtomValue(statusAtom);
   const refresh = useAtomRefresh(statusAtom);
@@ -1568,13 +1564,10 @@ const Dashboard = ({ pushed }: { readonly pushed: PushedStatus | null }) => {
 
   return (
     <main>
-      <header>
-        <h1>cargo-hauler</h1>
-        <div id="status">
-          {summary}
-          {result.waiting ? <span className="refreshing" title="Refreshing status">●</span> : null}
-        </div>
-      </header>
+      <DashboardHeader>
+        {summary}
+        {result.waiting ? <span className="refreshing" title="Refreshing status">●</span> : null}
+      </DashboardHeader>
       {pollError !== null ? (
         <div className="error-line">
           Error: {pollError}{' '}
@@ -1661,10 +1654,7 @@ const DashboardApp = () => {
     case 'Initializing':
       return (
         <main>
-          <header>
-            <h1>cargo-hauler</h1>
-            <div id="status">Connecting…</div>
-          </header>
+          <DashboardHeader>Connecting…</DashboardHeader>
         </main>
       );
     case 'Ready':
@@ -1672,10 +1662,7 @@ const DashboardApp = () => {
     case 'Failed':
       return (
         <main>
-          <header>
-            <h1>cargo-hauler</h1>
-            <div id="status">Error: {initialization.error.message}</div>
-          </header>
+          <DashboardHeader>Error: {initialization.error.message}</DashboardHeader>
           <div className="error-line">
             Could not initialize the MCP App.{' '}
             <button type="button" onClick={() => setAttempt((value) => value + 1)}>Retry</button>

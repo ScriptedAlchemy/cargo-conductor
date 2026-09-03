@@ -24,11 +24,8 @@ import type { ServedSavings } from './savings.js';
 import type { TicketDirectory } from './ticket-directory.js';
 
 /**
- * The attachment/replay/demux state machine: everything that fans a
- * leader's lifecycle out to the tickets riding it. Registration, gate
- * checks, and detachment run in single synchronous frames so they can never
- * interleave with settlement — the same atomicity the broker closure
- * provided before this extraction.
+ * Registration, gate checks, and detachment run in single synchronous frames
+ * so they cannot interleave with settlement.
  */
 
 export interface AttachmentRuntimeDeps {
@@ -356,7 +353,6 @@ export const makeAttachmentRuntime = (deps: AttachmentRuntimeDeps): AttachmentRu
       return coverageCandidate === null ? null : register(coverageCandidate, 'coverage');
     });
 
-  /** Sync-removes one attachment from its leader; returns false if already gone. */
   const removeAttachment = (job: Job, attachment: Attachment): Effect.Effect<boolean> =>
     Effect.sync(() => {
       const present = job.attachments.delete(attachment.ticket);
@@ -454,7 +450,6 @@ export const makeAttachmentRuntime = (deps: AttachmentRuntimeDeps): AttachmentRu
       yield* releaseSatisfiedAttachments(leader);
     });
 
-  /** Routes one line of the leader's JSON stdout stream. */
   const handleStdoutLine = (job: Job, line: string): Effect.Effect<void> => {
     const demux = job.demux;
     if (demux === null) {

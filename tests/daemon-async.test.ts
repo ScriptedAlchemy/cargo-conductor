@@ -12,11 +12,11 @@ import { Broker, BrokerLive } from '../src/daemon/broker.js';
 import { DaemonConfig } from '../src/daemon/config.js';
 import { requestOverSocket } from '../src/daemon/control.js';
 import { CostModel, createCostModel } from '../src/daemon/cost.js';
-import { createLedgerApi, Ledger, openLedgerDatabase } from '../src/daemon/ledger.js';
+import { Ledger } from '../src/daemon/ledger.js';
 import type { LedgerApi } from '../src/daemon/ledger.js';
 import type { AckMessage, AwaitResultMessage, ResultResultMessage } from '../src/daemon/protocol.js';
 import { Topology } from '../src/daemon/topology.js';
-import { pollReport, scopedDaemon, scopedFixture, shortId } from './harness.js';
+import { pollReport, scopedDaemon, scopedFixture, scopedLedger, shortId } from './harness.js';
 import type { Fixture } from './harness.js';
 
 interface BrokerFixture {
@@ -25,18 +25,13 @@ interface BrokerFixture {
   readonly layer: Layer.Layer<Broker>;
 }
 
-/** A fixture, an open ledger, and a broker layer over it, all released with the scope. */
 const brokerFixture = (
   maxConcurrent: number,
   wrapLedger: (base: LedgerApi) => LedgerApi = (base) => base,
 ): Effect.Effect<BrokerFixture, never, Scope.Scope> =>
   Effect.gen(function* () {
     const fixture = yield* scopedFixture(maxConcurrent);
-    const db = yield* Effect.acquireRelease(
-      Effect.sync(() => openLedgerDatabase(fixture.config.databasePath)),
-      (database) => Effect.sync(() => database.close()),
-    );
-    const baseLedger = createLedgerApi(db);
+    const baseLedger = yield* scopedLedger(fixture.config);
     const ledger = wrapLedger(baseLedger);
     const costModel = createCostModel({
       kacheReader: null,
@@ -57,7 +52,7 @@ const brokerFixture = (
     return { fixture, ledger, layer };
   });
 
-describe('async tickets', () => {
+describe('broker ticket lifecycle', () => {
   it.live('removes an interrupted ticket waiter immediately', () =>
     Effect.gen(function* () {
       const { fixture, layer } = yield* brokerFixture(1);

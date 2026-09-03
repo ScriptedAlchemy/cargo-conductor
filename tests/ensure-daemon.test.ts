@@ -2,18 +2,14 @@ import {
   existsSync,
   fstatSync,
   mkdirSync,
-  mkdtempSync,
   readFileSync,
-  rmSync,
   writeFileSync,
 } from 'node:fs';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { describe, expect, it } from 'effect-rstest';
 import * as Effect from 'effect/Effect';
 import * as Schedule from 'effect/Schedule';
-import type * as Scope from 'effect/Scope';
 
 import { resolveDaemonConfig, type DaemonConfigShape } from '../src/daemon/config.js';
 import {
@@ -23,6 +19,7 @@ import {
 } from '../src/client/ensure-daemon.js';
 import { pingDaemon } from '../src/daemon/control.js';
 import { runDaemon } from '../src/daemon/main.js';
+import { scopedTempDir } from './harness.js';
 
 const configAt = (stateDir: string): DaemonConfigShape => ({
   stateDir,
@@ -45,13 +42,6 @@ const configAt = (stateDir: string): DaemonConfigShape => ({
   memAvailableMinBytes: null,
   memPressureLevelThreshold: null,
 });
-
-/** A fresh temp directory, removed when the scope closes. */
-const scopedTempDir = (prefix: string): Effect.Effect<string, never, Scope.Scope> =>
-  Effect.acquireRelease(
-    Effect.sync(() => mkdtempSync(join(tmpdir(), prefix))),
-    (directory) => Effect.sync(() => rmSync(directory, { recursive: true, force: true })),
-  );
 
 describe('spawnDetachedDaemon', () => {
   it.live('closes the log descriptor and returns a typed failure when spawn throws', () =>

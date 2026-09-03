@@ -1,5 +1,21 @@
 # Agent instructions
 
+## Build and check
+
+- `pnpm run build` compiles the plugin bundle (`artifact/plugin`), the
+  workbench target (`artifact/portable`), and the package binaries
+  (`dist/bin/hauler.js`, `dist/bin/cargo-hauler.js`).
+- `pnpm run check` is the gate: validate, build, typecheck, Effect
+  diagnostics, `rstest`, and the route-unit suite. Run it before claiming a
+  change is done.
+- The plugin surface is agent-bundle framework mode: `src/mcp/hauler/tools`
+  and `src/mcp/hauler/apps` (MCP), `src/events` (hooks), `src/cli` (routed
+  CLI), `src/scripts/hauler.ts` (process entry). The README's layout table is
+  the map; do not reintroduce a hand-written server or argv parser.
+- Names are `hauler` / `cargo-hauler` / `CARGO_HAULER_*`. `CARGO_CONDUCTOR_*`
+  survives only as a read-only compat alias for tuning values; never add a new
+  one, and never honor it for state, socket, or database location.
+
 ## Effect version
 
 This branch is **Effect v4** (`effect` 4.0.0-rc.112), not v3. v3 idioms

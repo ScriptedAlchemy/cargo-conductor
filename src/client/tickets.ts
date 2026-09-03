@@ -97,7 +97,6 @@ type TicketStatusFetcher = (
   config: DaemonConfigShape,
 ) => Effect.Effect<RequestRecord | null, unknown>;
 
-/** One heartbeat: the human line plus the live record it was rendered from. */
 export interface AwaitProgress {
   readonly line: string;
   readonly record: RequestRecord | null;

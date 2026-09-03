@@ -14,7 +14,7 @@ for submitting, scoping, or waiting on work.
 - **Plain browser:** build the artifact, then start the live preview:
 
   ```sh
-  npm run build
+  pnpm build
   node scripts/preview-dashboard.mjs --port 4941
   ```
 

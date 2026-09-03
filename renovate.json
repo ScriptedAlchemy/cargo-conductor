@@ -11,8 +11,9 @@
     "@typescript/native-preview",
     "typescript",
     "agent-bundle",
-    "@agent-bundle/rsc-runtime",
+    "@agent-bundle/runtime",
+    "effect-rstest",
     "bashjsast"
   ],
-  "description": "Effect stays pinned to its 4.0.0-rc line (bumped deliberately with migration review), agent-bundle tracks pkg.pr.new preview URLs, and typescript is pinned by the tsgo integration; Renovate manages the rest on a weekly schedule."
+  "description": "Effect stays pinned to its 4.0.0-rc line (bumped deliberately with migration review), agent-bundle and effect-rstest track pkg.pr.new preview URLs, and typescript is pinned by the tsgo integration; Renovate manages the rest on a weekly schedule."
 }

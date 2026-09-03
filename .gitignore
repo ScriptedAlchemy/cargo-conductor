@@ -1,11 +1,10 @@
 .agent-bundle/
-.repos/
 .runtime/
-.tmp-hook-simulate/
+.tmp-*/
 .worktrees/
 artifact/
 dist/
-evals/fixture/target/
+evals/**/target/
 node_modules/
 .env
 state/
