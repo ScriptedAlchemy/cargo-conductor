@@ -17,3 +17,11 @@ version = "0.1.0"
 [[package]]
 name = "test-pkg"
 version = "0.1.0"
+
+[[package]]
+name = "test-pkg-b"
+version = "0.1.0"
+
+[[package]]
+name = "test-pkg-fail"
+version = "0.1.0"

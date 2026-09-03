@@ -27,7 +27,8 @@ export type FinishedStatus = 'done' | 'failed' | 'killed';
  * 'identity' mirrors everything, 'coverage' rides a stronger in-flight run,
  * 'batch' was composed into a merged invocation. Coverage and compile-batch
  * attachments requeue when the leader fails (unless their scope was proven);
- * folded test/nextest batches mirror the composite's shared exit.
+ * a folded test/nextest participant mirrors the composite's failure only
+ * when it named every package the composite ran, and requeues otherwise.
  */
 export type AttachMode = 'identity' | 'coverage' | 'batch';
 

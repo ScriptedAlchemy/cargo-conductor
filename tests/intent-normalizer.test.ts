@@ -167,6 +167,99 @@ describe('parseCargoArgv', () => {
     expect(parseCargoArgv(['cargo', 'nextest', 'list']).nextestCommand).toBe('list');
   });
 
+  it('consumes the value of unmodeled post-subcommand options instead of reading it as a filter', () => {
+    // `cargo test -j 4 -- name` runs tests matching `name` on four threads;
+    // `4` is never a test-name filter (#53).
+    const parsed = parseCargoArgv([
+      'cargo',
+      'test',
+      '-p',
+      'alpha',
+      '-j',
+      '4',
+      '--jobs',
+      '8',
+      '--color',
+      'always',
+      '--message-format',
+      'short',
+      '-Z',
+      'unstable-options',
+      '--config',
+      'build.jobs=2',
+      'real_filter',
+    ]);
+    expect(parsed.testFilters).toEqual(['real_filter']);
+    expect(parsed.opaqueArguments).toEqual([
+      '-j',
+      '4',
+      '--jobs',
+      '8',
+      '--color',
+      'always',
+      '--message-format',
+      'short',
+      '-Z',
+      'unstable-options',
+      '--config',
+      'build.jobs=2',
+    ]);
+  });
+
+  it('keeps inline-valued opaque options as one token', () => {
+    const parsed = parseCargoArgv(['cargo', 'test', '--color=always', '-j=4', 'only_filter']);
+    expect(parsed.opaqueArguments).toEqual(['--color=always', '-j=4']);
+    expect(parsed.testFilters).toEqual(['only_filter']);
+  });
+
+  it('still models --target-dir, --manifest-path, and --features after the subcommand', () => {
+    const parsed = parseCargoArgv([
+      'cargo',
+      'test',
+      '--target-dir',
+      'out',
+      '--manifest-path',
+      'crates/x/Cargo.toml',
+      '--features',
+      'net',
+      'only_filter',
+    ]);
+    expect(parsed.targetDir).toBe('out');
+    expect(parsed.manifestPath).toBe('crates/x/Cargo.toml');
+    expect(parsed.features).toEqual(['net']);
+    expect(parsed.testFilters).toEqual(['only_filter']);
+    expect(parsed.opaqueArguments).toEqual([]);
+  });
+
+  it('consumes values of nextest-only options without stealing filters', () => {
+    const parsed = parseCargoArgv([
+      'cargo',
+      'nextest',
+      'run',
+      '-p',
+      'alpha',
+      '--retries',
+      '2',
+      '--test-threads',
+      '4',
+      '-P',
+      'ci',
+      'only_filter',
+    ]);
+    expect(parsed.nextestCommand).toBe('run');
+    expect(parsed.testFilters).toEqual(['only_filter']);
+    expect(parsed.opaqueArguments).toEqual(['--retries', '2', '--test-threads', '4', '-P', 'ci']);
+    // Outside nextest those spellings stay bare opaque tokens.
+    expect(parseCargoArgv(['cargo', 'test', '--retries', 'name']).testFilters).toEqual(['name']);
+  });
+
+  it('rejects an unmodeled value-taking option without a value', () => {
+    expect(() => parseCargoArgv(['cargo', 'test', '-j'])).toThrow('-j requires a value');
+    expect(() => parseCargoArgv(['cargo', 'test', '--color', '--', 'f'])).toThrow(
+      '--color requires a value',
+    );
+  });
+
   it('keeps -E opaque outside nextest without consuming a value', () => {
     const parsed = parseCargoArgv(['cargo', 'test', '-E', 'expr']);
     expect(parsed.opaqueArguments).toEqual(['-E']);

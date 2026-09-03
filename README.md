@@ -288,8 +288,17 @@ Each admitted leader starts one Cargo process. Identity, coverage, and folded
 batch requests share that process and receive its streamed output. A failed
 stronger compile does not satisfy a coverage or compile-batch attachment; the
 attached request returns to its lane unless its required compilation units were
-already observed as successful. Folded tests share the composite process,
-output, and exit code.
+already observed as successful. Folded tests share the composite process and
+output. `cargo test` / `cargo nextest run` requests fold only when their test
+selection is identical — the same `--test` targets, name filters, arguments
+after `--`, and nextest filterset — so only the package set differs:
+`cargo test -p a` and `cargo test -p b` become
+`cargo test -p a -p b --no-fail-fast`. On success every participant shares
+the exit. When the composite fails, a participant inherits that failure only
+if it named every package the composite ran; otherwise the failing tests may
+belong to another participant's package, so it is requeued and runs alone
+(cargo's test output does not attribute failures to packages). The leader
+keeps the composite exit, as compile-batch leaders do.
 
 Brokered output keeps cargo's stdout and stderr as separate channels. When the
 caller's own stdout and stderr are the same open file (`cargo run 2>&1`, a
