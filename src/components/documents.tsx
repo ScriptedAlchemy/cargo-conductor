@@ -7,6 +7,7 @@ import { documentValue } from '../lib/json.js';
 import { awaitMaxWaitMs } from '../lib/protocol-schemas.js';
 import type {
   AwaitResult,
+  KillResult,
   LastResult,
   LogResult,
   RequestSubmitResult,
@@ -121,6 +122,18 @@ export const ResultDocument = ({ names, nowMs, result }: DocumentProps<ResultFet
     ) : (
       <TicketDetail names={names} nowMs={nowMs} record={result.request} />
     )}
+  </Agent.Result>
+);
+
+export const KillDocument = ({ names, nowMs, result }: DocumentProps<KillResult>) => (
+  <Agent.Result value={documentValue(result)}>
+    <Agent.Text>{result.summary}</Agent.Text>
+    {result.request === null ? null : <TicketCard nowMs={nowMs} record={result.request} />}
+    <Agent.Context>
+      {result.killed
+        ? `Riders attached to ${result.ticket} return to their lane or fail with it. Confirm with ${names.result} ${result.ticket} (status becomes killed) and re-submit only if the work is still wanted.`
+        : `Nothing changed. Use ${names.status} to find the ticket that is actually holding the lane.`}
+    </Agent.Context>
   </Agent.Result>
 );
 

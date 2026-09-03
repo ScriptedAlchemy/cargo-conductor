@@ -14,6 +14,7 @@ import type {
   AckMessage,
   AwaitResultMessage,
   ErrorMessage,
+  KillResultMessage,
   RequestRecord,
   ResultResultMessage,
 } from '../daemon/protocol.js';
@@ -41,6 +42,24 @@ export const fetchTicket = (
     },
     (message): message is ResultResultMessage => message.type === 'result-result',
   ).pipe(Effect.map((result) => result?.request ?? null));
+
+/**
+ * Ask the daemon to stop a ticket: a queued job is dropped, a running leader
+ * gets SIGTERM (then SIGKILL after the grace period) on its process group.
+ * `false` means there was nothing to kill — unknown or already finished.
+ */
+export const killTicket = (
+  ticket: string,
+  config: DaemonConfigShape = resolveDaemonConfig(),
+): Effect.Effect<boolean, TicketSocketError> =>
+  requestExpecting(
+    {
+      message: { id: shortId(), ticket, type: 'kill' },
+      socketPath: config.socketPath,
+      timeoutMs: 5_000,
+    },
+    (message): message is KillResultMessage => message.type === 'kill-result',
+  ).pipe(Effect.map((result) => result?.killed === true));
 
 const formatSeconds = (ms: number): string => {
   const seconds = Math.max(0, Math.floor(ms / 1000));

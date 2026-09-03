@@ -32,7 +32,7 @@ describe('routed CLI', () => {
   it('lists every command in help and exits 0', async () => {
     const help = await invokeCli(['--help']);
     expect(help.exitCode).toBe(0);
-    for (const command of ['status', 'log', 'last', 'await', 'result', 'request', 'daemon']) {
+    for (const command of ['status', 'log', 'last', 'await', 'result', 'request', 'kill', 'daemon']) {
       expect(help.stdout).toContain(command);
     }
   });

@@ -28,6 +28,7 @@ describe('route manifest', () => {
       'tool:hauler/hauler_await',
       'tool:hauler/hauler_result',
       'tool:hauler/hauler_request',
+      'tool:hauler/hauler_kill',
       'event:session/start',
       'event:tool/before',
       'event:tool/after',
@@ -38,6 +39,7 @@ describe('route manifest', () => {
       'cli:await',
       'cli:result',
       'cli:request',
+      'cli:kill',
       'cli:daemon',
     ]) {
       expect(routes).toContain(id);

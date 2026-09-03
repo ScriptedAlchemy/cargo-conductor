@@ -136,6 +136,7 @@ the same filter as its `session` field). Results carry
 | `tool:hauler/hauler_last` · `cli:last` | most recent request | `LastDocument` |
 | `tool:hauler/hauler_await` · `cli:await` | long-poll a ticket (≤ 2 h) | `AwaitStream` → `AwaitDocument` |
 | `tool:hauler/hauler_result` · `cli:result` | one ticket, live tail while running | `ResultDocument` |
+| `tool:hauler/hauler_kill` · `cli:kill` | stop a queued or running ticket | `KillDocument` |
 | `tool:hauler/hauler_request` · `cli:request` | submit a background request | `RequestDocument` |
 | `cli:daemon` | `run` / `start` / `stop` / `status` | plain JSON, exit code from the result |
 | `event:session/start` | new session | daemon state and the no-kill rule as context |
@@ -221,13 +222,14 @@ executable beside it (`dist/bin/cargo-hauler.js` in the package,
 | `hauler last` | The most recent request. |
 | `hauler await <ticket> [--max-wait-ms N]` | Long-poll until the ticket finishes or the wait expires (default 30 s, ceiling 55 s per call — the rendered-route budget; call again to keep waiting). |
 | `hauler result <ticket>` | A stored ticket; running tickets include a live output tail. |
+| `hauler kill <ticket>` | Stop a ticket: drop it from the queue or SIGTERM (then SIGKILL) its cargo process group, freeing the lane. Riders return to their lane or fail with it. |
 | `hauler request [--session ID] [--host HOST] [--cwd DIR] -- <cargo …>` | Submit a background request and return its ticket. |
 | `hauler daemon <run\|start\|stop\|status>` | Manage the daemon lifecycle. |
 | `hauler install-shim [--dir DIR] [--real-cargo PATH] [--force]` | Install the optional PATH shim. |
 
 The `hauler` MCP server projects the same operations as `hauler_status`,
-`hauler_log`, `hauler_last`, `hauler_await`, `hauler_result`, and
-`hauler_request`, with the same filters as the CLI.
+`hauler_log`, `hauler_last`, `hauler_await`, `hauler_result`, `hauler_kill`,
+and `hauler_request`, with the same filters as the CLI.
 
 ## Testing
 

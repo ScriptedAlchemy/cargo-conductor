@@ -1,6 +1,7 @@
 import {
   awaitTicketWithProgress,
   fetchTicket,
+  killTicket,
   submitBackground,
   type AwaitProgress,
 } from '../client/tickets.js';
@@ -13,6 +14,7 @@ import { enrichTicketRequest, ticketAttribution } from './attribution.js';
 import {
   awaitMaxWaitMs,
   type AwaitResult,
+  type KillResult,
   type RequestInput,
   type RequestSubmitResult,
   type ResultFetchResult,
@@ -92,6 +94,23 @@ export const fetchTicketResult = async (
     operation: 'result',
     request: requestForConsumer(request),
     summary: describeRequestRecord(input.ticket, request),
+    ticket: input.ticket,
+  };
+};
+
+export const killTicketResult = async (
+  input: Pick<TicketInput, 'ticket'>,
+  options: TicketOptions,
+): Promise<KillResult> => {
+  const killed = await runTicketEffect(killTicket(input.ticket, options.config), options.signal);
+  const request = await runTicketEffect(fetchTicket(input.ticket, options.config), options.signal);
+  return {
+    killed,
+    operation: 'kill',
+    request: requestForConsumer(request),
+    summary: killed
+      ? `${input.ticket} kill requested; the daemon stops its cargo process and frees the lane`
+      : `${input.ticket}: nothing to kill (${request === null ? 'unknown ticket' : `already ${request.status}`})`,
     ticket: input.ticket,
   };
 };

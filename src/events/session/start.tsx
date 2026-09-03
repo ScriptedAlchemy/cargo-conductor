@@ -24,7 +24,7 @@ export const config = {
 const notice = (model: ReturnType<typeof daemonBadgeModel>): string => {
   switch (model.state) {
     case 'running':
-      return `cargo-hauler ${model.headline}; ${model.detail ?? ''}. Before running cargo, check \`hauler status --session <id>\` (or the hauler_status tool with its session field) and attach to in-flight work instead of starting a duplicate; never kill in-flight cargo.`;
+      return `cargo-hauler ${model.headline}; ${model.detail ?? ''}. Before running cargo, check \`hauler status --session <id>\` (or the hauler_status tool with its session field) and attach to in-flight work instead of starting a duplicate; never kill cargo by PID — \`hauler kill cc-N\` stops a stuck ticket through the broker.`;
     case 'stopped':
       return `cargo-hauler ${model.headline} (${model.detail ?? 'no detail'}). It starts on demand with the first brokered cargo command; the hooks route cargo through it automatically.`;
     case 'unresponsive':

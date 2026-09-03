@@ -4,6 +4,7 @@
  */
 export interface SurfaceNames {
   readonly await: string;
+  readonly kill: string;
   readonly log: string;
   readonly request: string;
   readonly result: string;
@@ -12,6 +13,7 @@ export interface SurfaceNames {
 
 export const mcpSurface: SurfaceNames = {
   await: 'hauler_await',
+  kill: 'hauler_kill',
   log: 'hauler_log',
   request: 'hauler_request',
   result: 'hauler_result',
@@ -20,6 +22,7 @@ export const mcpSurface: SurfaceNames = {
 
 export const cliSurface: SurfaceNames = {
   await: 'hauler await',
+  kill: 'hauler kill',
   log: 'hauler log',
   request: 'hauler request',
   result: 'hauler result',

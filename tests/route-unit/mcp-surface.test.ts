@@ -15,7 +15,15 @@ import { withIsolatedStateDir, withStateDir } from './support.js';
  * project real daemon state through the real MCP wire contract. (App HTML
  * itself is a browser build output and is not registered at this level.)
  */
-const toolNames = ['hauler_await', 'hauler_last', 'hauler_log', 'hauler_request', 'hauler_result', 'hauler_status'];
+const toolNames = [
+  'hauler_await',
+  'hauler_kill',
+  'hauler_last',
+  'hauler_log',
+  'hauler_request',
+  'hauler_result',
+  'hauler_status',
+];
 
 describe('hauler MCP surface', () => {
   it('pins the hauler tool names and the dashboard resource link', async () => {

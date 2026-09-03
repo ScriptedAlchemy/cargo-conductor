@@ -26,7 +26,9 @@ export const inputSchema = z.object({
     .number()
     .int()
     .min(0)
-    .max(awaitMaxWaitMs)
+    .max(awaitMaxWaitMs, {
+      message: 'maxWaitMs is capped at 55000 ms (55 s) per call — the rendered-route budget; run await again to keep waiting',
+    })
     .optional()
     .describe(
       'Give up after this many milliseconds (default 30000, ceiling 55000 — one rendered call); call again to keep waiting',

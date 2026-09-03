@@ -9,7 +9,10 @@ clippy, fmt, nextest) or is waiting on someone else's cargo.
 
 ## Rules
 
-- Do not kill in-flight `cargo` processes. Attach or await the existing ticket.
+- Do not kill in-flight `cargo` processes by PID. Attach or await the existing
+  ticket. If a ticket is genuinely stuck (a deadlocked test, an owner session
+  that is gone), stop it through the broker — `hauler kill cc-N` or
+  `hauler_kill` — so riders, the lane, and the ledger settle correctly.
 - Scope work with `-p <crate>` instead of workspace-wide `--all-features` when
   a single crate answers the question.
 - Prefer `hauler status`, `hauler last`, and the `hauler_status` MCP

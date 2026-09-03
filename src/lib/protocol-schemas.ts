@@ -363,7 +363,14 @@ export const awaitMaxWaitMs = 55_000;
 export const ticketInputSchema = z
   .object({
     ticket: z.string().min(1),
-    maxWaitMs: z.number().int().min(0).max(awaitMaxWaitMs).optional(),
+    maxWaitMs: z
+      .number()
+      .int()
+      .min(0)
+      .max(awaitMaxWaitMs, {
+        message: `maxWaitMs is capped at ${awaitMaxWaitMs} ms (55 s) per call — the rendered-route budget; call await again to keep waiting`,
+      })
+      .optional(),
   })
   .strict();
 
@@ -374,6 +381,16 @@ export const awaitResultSchema = z
     summary: z.string(),
     ticket: z.string(),
     timedOut: z.boolean(),
+  })
+  .strict();
+
+export const killResultSchema = z
+  .object({
+    killed: z.boolean(),
+    operation: z.literal('kill'),
+    request: requestRecordSchema.nullable(),
+    summary: z.string(),
+    ticket: z.string(),
   })
   .strict();
 
@@ -429,6 +446,16 @@ export interface AwaitResult {
   readonly summary: string;
   readonly ticket: string;
   readonly timedOut: boolean;
+}
+
+export interface KillResult {
+  /** True when the daemon accepted the kill; false when the ticket was unknown or already finished. */
+  readonly killed: boolean;
+  readonly operation: 'kill';
+  /** The ticket right after the request was accepted; it settles as `killed` once the process is gone. */
+  readonly request: RequestRecord | null;
+  readonly summary: string;
+  readonly ticket: string;
 }
 
 export interface ResultFetchResult {

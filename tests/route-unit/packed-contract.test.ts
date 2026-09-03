@@ -116,6 +116,8 @@ const fixturesFor = (
     input: { maxWaitMs: 1_000, ticket: tickets.finished },
     resultCompat: 'additive',
   },
+  // Killing an unknown ticket is a no-op answer, so the matrix stays hermetic.
+  'tool:hauler/hauler_kill': { input: { ticket: 'cc-999999' }, resultCompat: 'additive' },
   'tool:hauler/hauler_last': { input: {}, resultCompat: 'additive' },
   'tool:hauler/hauler_log': { input: { limit: 5 }, inputs: [{}], resultCompat: 'additive' },
   'tool:hauler/hauler_request': {
@@ -181,6 +183,7 @@ describe('packed stdio contract', () => {
         const tools = yield* Effect.promise(() => session.client.listTools());
         expect(tools.tools.map((tool) => tool.name).sort()).toEqual([
           'hauler_await',
+          'hauler_kill',
           'hauler_last',
           'hauler_log',
           'hauler_request',
