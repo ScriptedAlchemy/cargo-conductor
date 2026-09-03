@@ -229,6 +229,14 @@ const columnMigrations: readonly (readonly [column: string, ddl: string])[] = [
 const activeStatusFilter = "status IN ('requested', 'queued', 'running')";
 
 /**
+ * Terminal rows are never reopened. Attach and running writes can trail a
+ * settlement (a follower registered as its leader exits); without this guard
+ * the late write would flip a `done` row back to `queued`/`running` and the
+ * ticket would never read as terminal again.
+ */
+const notTerminalFilter = "status NOT IN ('done', 'failed', 'killed', 'denied', 'passthrough')";
+
+/**
  * Dashboard windows scan only recent leader-settled rows. Keeping this bounded
  * prevents one status poll from full-scanning a very large ledger.
  */
@@ -521,7 +529,7 @@ export const createLedgerApi = (db: DatabaseSync): LedgerApi => {
            ELSE MAX(0, ? - queued_at_ms)
          END,
          exec_argv_json = ?
-     WHERE id = ?`,
+     WHERE id = ? AND ${notTerminalFilter}`,
   );
   const updateAttached = db.prepare(
     `UPDATE requests
@@ -531,7 +539,7 @@ export const createLedgerApi = (db: DatabaseSync): LedgerApi => {
          wait_ms = NULL,
          attached_to = ?,
          attach_mode = ?
-     WHERE id = ?`,
+     WHERE id = ? AND ${notTerminalFilter}`,
   );
   const updateRequeued = db.prepare(
     `UPDATE requests
@@ -949,7 +957,7 @@ export const createLedgerApi = (db: DatabaseSync): LedgerApi => {
 
     markRunning: (id, atMs, execArgv) =>
       Effect.sync(() => {
-        updateRunning.run(
+        const result = updateRunning.run(
           'running',
           atMs,
           atMs,
@@ -957,14 +965,16 @@ export const createLedgerApi = (db: DatabaseSync): LedgerApi => {
           execArgv === undefined ? null : JSON.stringify(execArgv),
           id,
         );
-        recordTransition(insertTransition, id, atMs, 'queued', 'running');
+        if (result.changes > 0) {
+          recordTransition(insertTransition, id, atMs, 'queued', 'running');
+        }
       }),
 
     markAttached: (id, input) =>
       Effect.sync(() => {
         const fromStatus = readStatus(selectStatus, id);
-        updateAttached.run(input.leaderTicket, input.mode, id);
-        if (fromStatus !== 'queued') {
+        const result = updateAttached.run(input.leaderTicket, input.mode, id);
+        if (result.changes > 0 && fromStatus !== 'queued') {
           recordTransition(insertTransition, id, input.atMs, fromStatus, 'queued');
         }
       }),

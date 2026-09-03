@@ -94,6 +94,27 @@ describe('ledger lifecycle', () => {
       expect(finished?.savedLatencyMs).toBeNull();
     }));
 
+  it.effect('never reopens a settled row through late attach or running writes', () =>
+    Effect.gen(function* () {
+      const ledger = yield* scopedLedger;
+      yield* ledger.createRequest(makeInput());
+      yield* ledger.markFinished(1, { atMs: 4_200, exitCode: 0, status: 'done' });
+
+      // A follower registered as its leader exits: the leader's settlement
+      // writes `done` first, then the attach follow-up lands.
+      yield* ledger.markAttached(1, { atMs: 4_300, leaderTicket: 'cc-9', mode: 'identity' });
+      yield* ledger.markRunning(1, 4_400);
+
+      const settled = yield* ledger.getRequest(1);
+      expect(settled?.status).toBe('done');
+      expect(settled?.attachedTo).toBeNull();
+      expect(settled?.finishedAtMs).toBe(4_200);
+      expect((yield* ledger.transitionsFor(1)).map((transition) => transition.toStatus)).toEqual([
+        'requested',
+        'done',
+      ]);
+    }));
+
   it.effect('records every transition in order', () =>
     Effect.gen(function* () {
       const ledger = yield* scopedLedger;
