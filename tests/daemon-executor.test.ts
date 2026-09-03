@@ -29,6 +29,12 @@ if [ "$1" = knob ]; then
   echo "knob:\${BUILD_SCRIPT_KNOB:-unset} state:\${CARGO_HAULER_STATE_DIR:-unset}"
   exit 0
 fi
+if [ "$1" = orphan-holder ]; then
+  # A descendant that outlives the child and keeps the output pipe open.
+  echo "out:orphan"
+  ( trap '' TERM; sleep 4 ) &
+  exit 0
+fi
 if [ "$1" = interleave ]; then
   for i in 0 1 2 3 4; do
     echo "out$i"
@@ -144,6 +150,26 @@ describe('executeCargo', () => {
       expect(result.outputTail).toContain('err:hello');
       expect(concatUtf8(stdout)).toBe('out:hello\n');
       expect(concatUtf8(stderr)).toBe('err:hello\n');
+    }));
+
+  it.live('settles once the child exits even if a descendant keeps the output pipe open', () =>
+    Effect.gen(function* () {
+      const { dir, script } = yield* scopedWorkspace;
+      const started = Date.now();
+
+      const result = yield* runExecute({
+        argv: [script, 'orphan-holder'],
+        cwd: dir,
+        killSignal: unusedKill(),
+        tailBytes: 4096,
+        onOutput: () => Effect.void,
+      });
+
+      // The ticket must not hang on pipe EOF for a process that is not cargo.
+      expect(result.outcome).toBe('done');
+      expect(result.exitCode).toBe(0);
+      expect(result.outputTail).toContain('out:orphan');
+      expect(Date.now() - started).toBeLessThan(3_000);
     }));
 
   it.live('keeps the child’s own write order when stderr is merged into stdout', () =>
