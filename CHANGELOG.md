@@ -4,6 +4,16 @@ Notable changes per release, newest first. Versions are the `version` field in
 `package.json`; releases before 0.3.0 are described by their commit messages in
 `git log`.
 
+## Unreleased
+
+- `hauler exec` (shim and hook rewrites) forwards the caller's whole
+  environment to the daemon-spawned Cargo, withholding only `CARGO_HAULER_*`
+  and legacy `CARGO_CONDUCTOR_*`. Previously only `CARGO_*`, `RUST*`, the C
+  toolchain variables, and color variables travelled, so a `build.rs` or test
+  reading any other variable built differently through the broker than
+  directly (#29). Request identity still digests the build-relevant subset
+  only, so coalescing is unchanged.
+
 ## 0.3.5 (2026-09-03)
 
 Repository hygiene release; no behavior change.

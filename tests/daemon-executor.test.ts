@@ -8,7 +8,7 @@ import * as Deferred from 'effect/Deferred';
 import * as Effect from 'effect/Effect';
 import type * as Scope from 'effect/Scope';
 
-import { buildRelevantEnv } from '../src/client/env.js';
+import { buildTransportedEnv } from '../src/client/env.js';
 import type { ExecuteCargoOptions, ExecutionResult } from '../src/daemon/executor.js';
 import { executeCargo, TailBuffer } from '../src/daemon/executor.js';
 
@@ -23,6 +23,10 @@ if [ "$1" = unterminated ]; then
 fi
 if [ "$1" = color ]; then
   echo "color:\${CARGO_TERM_COLOR:-unset}"
+  exit 0
+fi
+if [ "$1" = knob ]; then
+  echo "knob:\${BUILD_SCRIPT_KNOB:-unset} state:\${CARGO_HAULER_STATE_DIR:-unset}"
   exit 0
 fi
 echo "out:$1"
@@ -213,7 +217,7 @@ describe('executeCargo', () => {
       const result = yield* runExecute({
         argv: [script, 'color'],
         cwd: dir,
-        env: buildRelevantEnv({ HOME: '/home/alice', NO_COLOR: '1', TERM: 'xterm-256color' }),
+        env: buildTransportedEnv({ HOME: '/home/alice', NO_COLOR: '1', TERM: 'xterm-256color' }),
         killSignal: unusedKill(),
         tailBytes: 4096,
         onOutput: () => Effect.void,
@@ -221,6 +225,31 @@ describe('executeCargo', () => {
 
       expect(result.outcome).toBe('done');
       expect(result.outputTail).toContain('color:never');
+    }));
+
+  it.live('forwards a caller-only build-script knob and withholds hauler settings', () =>
+    Effect.gen(function* () {
+      const { dir, script } = yield* scopedWorkspace;
+
+      // What a build.rs reads via std::env::var must match the caller's
+      // shell, so `FOO=bar cargo build` cannot silently build something
+      // else through the broker. The daemon's own settings never ride along.
+      const result = yield* runExecute({
+        argv: [script, 'knob'],
+        cwd: dir,
+        env: buildTransportedEnv({
+          BUILD_SCRIPT_KNOB: 'from-caller',
+          CARGO_HAULER_STATE_DIR: '/caller/state',
+          HOME: '/home/alice',
+        }),
+        killSignal: unusedKill(),
+        tailBytes: 4096,
+        onOutput: () => Effect.void,
+      });
+
+      expect(result.outcome).toBe('done');
+      expect(result.outputTail).toContain('knob:from-caller');
+      expect(result.outputTail).not.toContain('state:/caller/state');
     }));
 
   it.live('runs the child with the requested cwd', () =>

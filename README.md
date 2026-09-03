@@ -260,6 +260,26 @@ from returning through the broker.
 The shim is POSIX-only. Its directory must appear before rustup's Cargo
 directory on `PATH`. Replacing an existing destination requires `--force`.
 
+## Caller environment
+
+`hauler exec` (and therefore the shim and the hook rewrites) forwards the
+caller's whole environment to the daemon, except the `CARGO_HAULER_*` and
+legacy `CARGO_CONDUCTOR_*` settings, which configure the broker itself. The
+daemon lays the forwarded variables over its own environment when it spawns
+Cargo, so `FOO=bar cargo build` reaches `build.rs`, `env!()`, `cargo run`, and
+`cargo test` processes exactly as a direct invocation would. A variable the
+caller leaves unset is not removed from the daemon's environment.
+
+Request identity for coalescing is digested from the build-relevant subset
+only: `CARGO_*`, `RUST*`, `CC`/`CXX`/`AR`/`CFLAGS`/`CXXFLAGS`/`LDFLAGS` (with
+target-suffixed forms), and `PKG_CONFIG_PATH`. Two requests that differ only
+in another variable share a leader and receive its output; pass knobs a
+`build.rs` reads through `--config 'env.FOO="bar"'` when they must also split
+identity, because `--config` is part of the argv digest.
+
+`hauler request` and the `hauler_request` MCP tool submit without a caller
+environment; their Cargo processes run with the daemon's environment.
+
 ## Interfaces
 
 `hauler` is the process entry (`src/scripts/hauler.ts`). It owns `exec`,
