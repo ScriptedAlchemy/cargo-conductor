@@ -1,7 +1,10 @@
 import { Effect, Schedule, Stream, type Duration } from 'effect';
 
 import { cargoJsonDemuxFlag, namedPackagesInArgv } from '../src/lib/argv.js';
+import { formatBytes, formatMs, pathBasename, relativeTime, shortenPath } from '../src/lib/format.js';
 import { packageVersion } from '../src/lib/version.js';
+
+export { formatBytes, formatMs, pathBasename, relativeTime, shortenPath };
 
 /**
  * Pure logic for the dashboard widget, kept DOM-free so unit tests can import
@@ -635,58 +638,6 @@ export const ranAsFor = (argvValue: unknown, execArgvValue: unknown): RanAs | nu
   return { command: displayJoin(cleaned), extraPackages };
 };
 
-export const relativeTime = (thenMs: number, nowMs: number): string => {
-  const seconds = Math.round(Math.max(0, nowMs - thenMs) / 1000);
-  if (seconds < 60) {
-    return `${seconds}s ago`;
-  }
-  const minutes = Math.round(seconds / 60);
-  if (minutes < 60) {
-    return `${minutes}m ago`;
-  }
-  const hours = Math.round(minutes / 60);
-  if (hours < 24) {
-    return `${hours}h ago`;
-  }
-  return `${Math.round(hours / 24)}d ago`;
-};
-
-export const formatMs = (ms: number): string => {
-  if (ms < 1000) {
-    return `${Math.round(ms)}ms`;
-  }
-  const seconds = ms / 1000;
-  if (seconds < 60) {
-    return `${seconds.toFixed(1)}s`;
-  }
-  // Round to whole seconds before splitting so 17m 59.6s carries to 18m
-  // instead of rendering the impossible "17m 60s".
-  const wholeSeconds = Math.round(seconds);
-  if (wholeSeconds >= 3600) {
-    const hours = Math.floor(wholeSeconds / 3600);
-    const minutes = Math.floor((wholeSeconds % 3600) / 60);
-    return minutes === 0 ? `${hours}h` : `${hours}h ${minutes}m`;
-  }
-  const minutes = Math.floor(wholeSeconds / 60);
-  const rest = wholeSeconds - minutes * 60;
-  return rest === 0 ? `${minutes}m` : `${minutes}m ${rest}s`;
-};
-
-/** 1536 → "1.5 KB", 1610612736 → "1.5 GB"; bytes get binary-ish 1024 steps. */
-export const formatBytes = (bytes: number): string => {
-  if (!Number.isFinite(bytes) || bytes < 0) {
-    return '—';
-  }
-  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
-  let value = bytes;
-  let unit = 0;
-  while (value >= 1024 && unit < units.length - 1) {
-    value /= 1024;
-    unit += 1;
-  }
-  return `${unit === 0 ? String(Math.round(value)) : value.toFixed(1)} ${units[unit]}`;
-};
-
 export interface MemoryStatView {
   readonly clamp: 'none' | 'soft' | 'hard';
   readonly label: string;
@@ -756,13 +707,6 @@ export const remainingEstimateMs = (elapsedMs: number, estimateMs: unknown): num
   return remaining >= remainingMinMs && remaining >= estimateMs * remainingMinFraction
     ? remaining
     : null;
-};
-
-/** Last path component (repo folder name); the full path belongs in the title. */
-export const pathBasename = (path: string): string => {
-  const segments = path.split('/').filter((segment) => segment.length > 0);
-  const last = segments[segments.length - 1];
-  return last === undefined ? path : last;
 };
 
 /**
@@ -1178,15 +1122,4 @@ export const attachSavings = (
     }
   }
   return { avoidedRuns, batchExtraPackages, savedEstimatedMs, savedExactMs };
-};
-export const shortenPath = (path: string, maxLength = 38): string => {
-  const homed = path.replace(/^\/(?:home|Users)\/[^/]+/u, '~');
-  if (homed.length <= maxLength) {
-    return homed;
-  }
-  const segments = homed.split('/').filter((segment) => segment.length > 0);
-  if (segments.length <= 2) {
-    return homed;
-  }
-  return `…/${segments.slice(-2).join('/')}`;
 };
