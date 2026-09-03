@@ -1,4 +1,4 @@
-import { Mcp } from '@agent-bundle/rsc-runtime';
+import { Mcp } from '@agent-bundle/runtime';
 import * as React from 'react';
 
 import type {

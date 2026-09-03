@@ -1,7 +1,7 @@
 import { describe, expect, it, rs } from '@rstest/core';
-import * as rscPlugin from '@agent-bundle/rsc-runtime/plugin' with { rstest: 'importActual' };
+import * as rscPlugin from '@agent-bundle/runtime/plugin' with { rstest: 'importActual' };
 
-rs.mock('@agent-bundle/rsc-runtime/plugin', () => ({
+rs.mock('@agent-bundle/runtime/plugin', () => ({
   ...rscPlugin,
   agent: rs.fn(),
 }));

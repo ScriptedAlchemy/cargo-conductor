@@ -1,4 +1,4 @@
-import { createRscMcpServer } from '@agent-bundle/rsc-runtime/plugin';
+import { createRscMcpServer } from '@agent-bundle/runtime/plugin';
 import type { McpServer } from '@modelcontextprotocol/server';
 import type { McpAppResource } from 'agent-bundle/mcp-apps';
 

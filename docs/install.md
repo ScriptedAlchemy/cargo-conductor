@@ -11,11 +11,11 @@ POSIX-only and refuses to install). Node >= 22.19 is required (`node:sqlite`).
 ## Build
 
 ```sh
-npm install
-npm run check
+pnpm install
+pnpm run check
 ```
 
-`artifact/plugin` is the installable multi-host bundle (or `npm run dev` and
+`artifact/plugin` is the installable multi-host bundle (or `pnpm run dev` and
 open the portable target in the workbench playground).
 
 ## Per-host notes
@@ -50,7 +50,7 @@ open the portable target in the workbench playground).
   It installs into `~/.cursor/plugins/local/cargo-hauler`
   (`CURSOR_PLUGINS_DIR` overrides the base). Restart or reload Cursor so new
   agent sessions pick up the hooks. Re-run the script after every
-  `npm run build` — hook wrapper filenames are content-hashed.
+  `pnpm run build` — hook wrapper filenames are content-hashed.
 
 - Hook events: `preToolUse`, `postToolUse`. Cursor drops `beforeTool`
   additionalContext but honors `afterTool` context injection.
@@ -78,7 +78,7 @@ open the portable target in the workbench playground).
 - If a Stop hook is ever cut off mid-hold anyway:
   1. Shorten the in-hook wait (`CARGO_HAULER_STOP_WAIT_MS`, default 30000).
   2. Rely on the re-deny loop: the next Stop re-enters with `stopHookActive`.
-- Integration: `npm run test` covers native Codex PreToolUse envelopes on
+- Integration: `ppnpm test` covers native Codex PreToolUse envelopes on
   the generated wrapper. The live Codex Stop timeout probe is documented in
   [codex-hooks.md](codex-hooks.md), not a CI gate.
 

@@ -41,7 +41,7 @@
     "prepare": "effect-tsgo patch --typescript --no-oxlint"
   },
   "dependencies": {
-    "@agent-bundle/rsc-runtime": "https://pkg.pr.new/ScriptedAlchemy/agent-bundle/@agent-bundle/rsc-runtime@b3c12f316",
+    "@agent-bundle/runtime": "https://pkg.pr.new/ScriptedAlchemy/agent-bundle/@agent-bundle/runtime@105c65d8f",
     "@effect/atom-react": "4.0.0-rc.112",
     "@effect/platform-node": "4.0.0-rc.112",
     "@modelcontextprotocol/server": "2.0.0",
@@ -51,7 +51,7 @@
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
     "scheduler": "^0.27.0",
-    "zod": "4.4.3"
+    "zod": "4.5.4"
   },
   "devDependencies": {
     "@effect/tsgo": "0.38.0",
@@ -61,7 +61,8 @@
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.5",
     "@typescript/native-preview": "^7.0.0-dev.20260707.2",
-    "agent-bundle": "https://pkg.pr.new/ScriptedAlchemy/agent-bundle/agent-bundle@b3c12f316",
+    "agent-bundle": "https://pkg.pr.new/ScriptedAlchemy/agent-bundle/agent-bundle@105c65d8f",
     "typescript": "7.0.2"
-  }
+  },
+  "packageManager": "pnpm@11.23.0"
 }

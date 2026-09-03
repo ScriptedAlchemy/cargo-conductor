@@ -127,8 +127,8 @@ ledger.
 Requirements: Node 22.19 or newer, Cargo, and Linux or macOS.
 
 ```sh
-npm install
-npm run build
+pnpm install
+pnpm run build
 ```
 
 `artifact/plugin` is the generated multi-host plugin bundle:
@@ -311,8 +311,8 @@ exists, it uses `<user cache>/kache/index.db`. The file is opened read-only.
 ## Development
 
 ```sh
-npm run dev     # agent-bundle workbench with live rebuilds (portable target)
-npm run check   # validate + build + typecheck + rstest
+pnpm run dev     # agent-bundle workbench with live rebuilds (portable target)
+pnpm run check   # validate + build + typecheck + rstest
 ```
 
 To preview the built dashboard outside an MCP host:
@@ -323,7 +323,7 @@ node scripts/preview-dashboard.mjs --port 4941
 
 The preview server reads `artifact/plugin/mcp-apps/dashboard.html` and answers
 the dashboard's MCP App messages with `hauler status` output. Run
-`npm run build` before starting it.
+`pnpm run build` before starting it.
 
 `repos/effect` is a read-only subtree containing the Effect v4 source pinned to
 `effect@4.0.0-rc.112`. It is reference material for development and is not a

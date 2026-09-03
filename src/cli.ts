@@ -1,7 +1,7 @@
 import { realpathSync } from 'node:fs';
 import { resolve } from 'node:path';
 
-import { runRscCli } from '@agent-bundle/rsc-runtime/plugin';
+import { runRscCli } from '@agent-bundle/runtime/plugin';
 import * as Cause from 'effect/Cause';
 import * as Effect from 'effect/Effect';
 

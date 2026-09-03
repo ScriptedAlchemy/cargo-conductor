@@ -1,4 +1,4 @@
-import { defineOperation, type RscOperationContext } from '@agent-bundle/rsc-runtime/plugin';
+import { defineOperation, type RscOperationContext } from '@agent-bundle/runtime/plugin';
 import * as React from 'react';
 import * as Effect from 'effect/Effect';
 

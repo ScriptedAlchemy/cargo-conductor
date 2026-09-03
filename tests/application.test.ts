@@ -1,4 +1,4 @@
-import { lowerMcpResult } from '@agent-bundle/rsc-runtime';
+import { lowerMcpResult } from '@agent-bundle/runtime';
 import { describe, expect, it } from '@rstest/core';
 
 import { createHaulerApplication } from '../src/application.js';

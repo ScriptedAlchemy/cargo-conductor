@@ -3,7 +3,7 @@ import {
   defineOperation,
   type AgentRequestContext,
   type RscOperationContext,
-} from '@agent-bundle/rsc-runtime/plugin';
+} from '@agent-bundle/runtime/plugin';
 import * as React from 'react';
 import * as Cause from 'effect/Cause';
 import * as Effect from 'effect/Effect';

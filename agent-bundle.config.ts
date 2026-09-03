@@ -9,7 +9,7 @@ import packageJson from './package.json' with { type: 'json' };
  * - `src/mcp/hauler.ts` is the conventional stdio entry (no `entry` field).
  * - `src/cli.ts` is the package bin by convention; declaring it as a script
  *   also ships `hauler` inside every host artifact.
- * - `skills/cargo-hauler/SKILL.md` is discovered by convention.
+ * - `src/skills/cargo-hauler/SKILL.md` is discovered by convention.
  * - Adapters inject `AGENT_BUNDLE_PLUGIN_ROOT`; daemon state lives under the
  *   per-user cache dir (`CARGO_HAULER_STATE_DIR` overrides).
  */

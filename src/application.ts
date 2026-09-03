@@ -1,4 +1,4 @@
-import { defineRscApplication } from '@agent-bundle/rsc-runtime/plugin';
+import { defineRscApplication } from '@agent-bundle/runtime/plugin';
 
 import { packageVersion } from './lib/version.js';
 import { daemonOperations, defaultDaemonOperations, type DaemonOperations } from './operations/daemon.js';
