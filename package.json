@@ -2,7 +2,7 @@
   "name": "cargo-hauler",
   "version": "0.3.5",
   "license": "MIT",
-  "private": true,
+  "private": false,
   "description": "Orchestrate cargo across Claude, Codex, and Cursor so concurrent agent sessions share work instead of fighting locks.",
   "keywords": [
     "cargo",
@@ -17,6 +17,11 @@
   "repository": {
     "type": "git",
     "url": "git+https://github.com/ScriptedAlchemy/cargo-hauler.git"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true,
+    "registry": "https://registry.npmjs.org/"
   },
   "type": "module",
   "engines": {
@@ -35,13 +40,16 @@
   "scripts": {
     "build": "agent-bundle build --output artifact",
     "check": "pnpm validate && pnpm build && pnpm typecheck && pnpm diagnostics && pnpm test && pnpm test:routes",
+    "changeset": "changeset",
     "dev": "agent-bundle dev",
     "diagnostics": "effect-tsgo diagnostics --project tsconfig.json",
     "test": "rstest",
     "test:routes": "rstest --config rstest.route-unit.config.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "validate": "agent-bundle validate",
-    "prepare": "effect-tsgo patch --typescript --no-oxlint"
+    "prepare": "effect-tsgo patch --typescript --no-oxlint",
+    "release:publish": "pnpm run build && changeset publish",
+    "release:version": "changeset version"
   },
   "dependencies": {
     "@agent-bundle/runtime": "https://pkg.pr.new/ScriptedAlchemy/agent-bundle/@agent-bundle/runtime@105c65d8f",
@@ -57,6 +65,7 @@
     "zod": "4.5.4"
   },
   "devDependencies": {
+    "@changesets/cli": "3.0.1",
     "@effect/tsgo": "0.38.0",
     "@rstest/core": "0.11.11",
     "@types/node": "^22.18.0",
