@@ -18,7 +18,7 @@ import type { RequestRecord } from '../../src/daemon/protocol.js';
 import { type Fixture, scopedDaemon } from '../harness.js';
 
 /**
- * Packed-stdio proof: the built `artifact/plugin` MCP entry runs as a separate
+ * Packed-stdio proof: the built `artifact/cursor` MCP entry runs as a separate
  * process over real stdio, against a real broker, and every tool route passes
  * the framework's wire-contract matrix (surface completeness including the
  * dashboard resource, successful-path sweep with bundled resultSchema
@@ -29,7 +29,7 @@ import { type Fixture, scopedDaemon } from '../harness.js';
  * through `CARGO_HAULER_STATE_DIR`.
  */
 const projectRoot = resolve(import.meta.dirname, '../..');
-const pluginRoot = join(projectRoot, 'artifact', 'plugin');
+const pluginRoot = join(projectRoot, 'artifact', 'cursor');
 
 interface McpJson {
   readonly mcpServers: Readonly<
@@ -41,7 +41,7 @@ const packedEntry = (): { readonly entry: string; readonly env: Record<string, s
   const mcpJson = JSON.parse(readFileSync(join(pluginRoot, 'mcp.json'), 'utf8')) as McpJson;
   const server = mcpJson.mcpServers['hauler'];
   if (server === undefined) {
-    throw new Error('artifact/plugin/mcp.json does not declare the hauler server');
+    throw new Error('artifact/cursor/mcp.json does not declare the hauler server');
   }
   // Cursor expands ${CURSOR_PLUGIN_ROOT} before spawning; the test stands in.
   const expand = (value: string): string => value.replaceAll('${CURSOR_PLUGIN_ROOT}', pluginRoot);

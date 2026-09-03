@@ -7,7 +7,7 @@ const packageJson = JSON.parse(
 ) as { readonly version: string };
 const cursorPluginJson = JSON.parse(
   readFileSync(
-    new URL('../artifact/plugin/.cursor-plugin/plugin.json', import.meta.url),
+    new URL('../artifact/cursor/.cursor-plugin/plugin.json', import.meta.url),
     'utf8',
   ),
 ) as { readonly version: string };

@@ -91,20 +91,23 @@ describe('agent event routes', () => {
   });
 
   it('declares the expected static route configs', async () => {
-    const [before, after, stop] = await Promise.all([
+    const [before, after, stop, sessionStart] = await Promise.all([
       import('../src/events/tool/before.js'),
       import('../src/events/tool/after.js'),
       import('../src/events/stop.js'),
+      import('../src/events/session/start.js'),
     ]);
+    const hosts = ['claude', 'codex', 'cursor'];
     expect(before.config).toEqual({
       fallback: 'standalone',
       runtime: 'shared',
-      targets: ['plugin'],
+      targets: hosts,
       timeoutMs: 10_000,
       tools: ['shell'],
     });
     expect(after.config).toEqual(before.config);
-    expect(stop.config).toEqual({ runtime: 'standalone', targets: ['plugin'], timeoutMs: 900_000 });
+    expect(stop.config).toEqual({ runtime: 'standalone', targets: hosts, timeoutMs: 900_000 });
+    expect(sessionStart.config).toEqual({ runtime: 'standalone', targets: hosts, timeoutMs: 5_000 });
   });
 
   it('tool/before rewrites a cargo shell command from a Claude envelope', async () => {

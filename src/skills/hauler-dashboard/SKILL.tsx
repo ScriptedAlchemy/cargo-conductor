@@ -1,0 +1,97 @@
+import React from 'react';
+
+import { cliSurface, mcpSurface } from '../../components/surface.js';
+import { APP_RESOURCE_URI } from '../../constants.js';
+
+/**
+ * Rendered skill: the build turns this component into `skills/hauler-dashboard/SKILL.md`
+ * for every host. It is computed from the same sources the plugin ships — the
+ * MCP App resource URI and the tool and CLI spellings — so the document cannot
+ * drift from the surface it describes. (The release version is deliberately
+ * not printed: the Skill renderer evaluates this module outside the compiler,
+ * where `agent-bundle/meta` is unavailable — agent-bundle#440.)
+ */
+export const frontmatter = {
+  description:
+    'Use when opening, previewing, interpreting, or troubleshooting the cargo-hauler dashboard, its metrics windows, admission state, lanes, kache data, or live ticket output.',
+  name: 'hauler-dashboard',
+};
+
+const filters = ['--session', '--cwd', '--ticket', '--status', '--command-contains'] as const;
+
+export default () => (
+  <>
+    <h1>hauler-dashboard</h1>
+    <p>
+      Use the dashboard for machine-wide fleet state. Use the <code>cargo-hauler</code> Skill for submitting,
+      scoping, or waiting on work.
+    </p>
+    <h2>Open it</h2>
+    <ul>
+      <li>
+        <strong>MCP App host:</strong> call <code>{mcpSurface.status}</code>. Hosts that render MCP Apps attach{' '}
+        <code>{APP_RESOURCE_URI}</code> beside the result; the same document's text form carries the daemon
+        badge, admission meter, lane board, in-flight and recent tickets, and kache summary.
+      </li>
+      <li>
+        <strong>Plain browser:</strong> build the artifact, then start the live preview:
+        <pre>{'pnpm build\nnode scripts/preview-dashboard.mjs --port 4941'}</pre>
+        Open <code>http://127.0.0.1:4941</code>. The preview uses the production daemon and polls every five
+        seconds.
+      </li>
+    </ul>
+    <h2>Read the panels</h2>
+    <ul>
+      <li>
+        <strong>Contention:</strong> machine load, CPU I/O wait, disk pressure, and admission permits.{' '}
+        <code>3/5 +1 riding</code> means three real Cargo processes hold permits and one request is sharing
+        existing work.
+      </li>
+      <li>
+        <strong>In flight / Queue:</strong> active leaders and waiting tickets, including workspace, submitter,
+        elapsed/wait time, and cost estimate.
+      </li>
+      <li>
+        <strong>Metrics:</strong> switch among <code>1h</code>, <code>24h</code>, and <code>all</code>. Run
+        counts, outcomes, and percentiles use the selected window. Compute avoided, latency saved, and riders
+        served are all-time SQLite-ledger totals; negative latency is included.
+      </li>
+      <li>
+        <strong>Kache:</strong> optional machine-wide cache freshness, active compile roots, and slowest crates
+        grouped by profile. No panel means kache is unavailable or disabled, not that the daemon failed.
+      </li>
+      <li>
+        <strong>Lanes:</strong> work grouped by resolved <code>(workspace root, target dir)</code>. Only lanes
+        with queued or running work are active.
+      </li>
+      <li>
+        <strong>History:</strong> finished tickets and the command each request actually ran as, including
+        composite batch expansion.
+      </li>
+    </ul>
+    <p>
+      Click an in-flight row to open its live output drawer. It refreshes every three seconds. Completed and
+      queued rows show their durable ledger state.
+    </p>
+    <h2>Diagnose contention</h2>
+    <ol>
+      <li>Check the admission meter before assuming the daemon is stalled.</li>
+      <li>Match queued work to its lane and current leader.</li>
+      <li>
+        Filter with <code>{cliSurface.status}</code>{' '}
+        {filters.map((flag, index) => (
+          <React.Fragment key={flag}>
+            {index === 0 ? '' : ', '}
+            <code>{flag}</code>
+          </React.Fragment>
+        ))}{' '}
+        (or the equivalent structured fields of <code>{mcpSurface.status}</code>); do not replace the dashboard
+        with <code>ps</code> polling.
+      </li>
+      <li>
+        Await or attach to the ticket with <code>{mcpSurface.await}</code> / <code>{cliSurface.await}</code>. Do
+        not kill Cargo to clear a lane.
+      </li>
+    </ol>
+  </>
+);

@@ -6,9 +6,10 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)));
-const appHtml = join(repoRoot, 'artifact', 'plugin', 'mcp-apps', 'dashboard.html');
-// The routed CLI's `--json` prints the same value the MCP tool returns as
-// structuredContent.
+const appHtml = join(repoRoot, 'artifact', 'cursor', 'mcp-apps', 'dashboard.html');
+// The routed CLI (status, result, await): the package bin here, or
+// `bin/cargo-hauler.mjs` inside any host pack. `--json` prints the same value
+// the MCP tool returns as structuredContent.
 const haulerCli = join(repoRoot, 'dist', 'bin', 'cargo-hauler.js');
 const portFlag = process.argv.indexOf('--port');
 const port = portFlag === -1 ? 4941 : Number(process.argv[portFlag + 1]);

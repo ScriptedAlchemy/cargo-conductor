@@ -2,48 +2,259 @@
 
 # cargo-hauler
 
-Cargo request broker for concurrent Rust development tools.
+Cargo request broker for concurrent Rust development tools, shipped as an
+[agent-bundle](https://github.com/ScriptedAlchemy/agent-bundle) application
+for Claude Code, Codex, and Cursor.
 
-cargo-hauler accepts Cargo requests from Claude Code, Codex, Cursor, scripts,
-and terminals. A daemon groups compatible work, limits process concurrency,
-and returns each result to the callers that requested it.
+cargo-hauler accepts Cargo requests from agent sessions, scripts, and
+terminals. A daemon groups compatible work, limits process concurrency, and
+returns each result to the callers that requested it. The plugin in this
+repository is the app that agents talk to: six MCP tools, a routed CLI, four
+hook routes, two skills, and a browser dashboard, all rendered from one
+component library through one shared layout.
 
 ![cargo-hauler dashboard with active and queued requests](docs/media/dashboard-overview.png)
 
-## Problem
+## Tour
 
-Several tools working in the same Rust workspace often submit the same checks.
-If they share a target directory, Cargo serializes parts of the work behind
-file locks. If each worktree uses a separate `CARGO_TARGET_DIR`, the locks are
-reduced, but dependencies may be compiled repeatedly. Concurrent runs also
-compete for CPU time, memory, and storage bandwidth.
+Everything an agent sees is a React Server Component rendered by the
+agent-bundle runtime into an Agent Document, then lowered to MCP content, CLI
+Markdown, `--json`, or a host hook envelope. There is no hand-written server,
+argv parser, or string-concatenated Markdown; the `src/` tree is the app.
 
-One deployment on a 96-core machine reported the following values:
+```text
+src/
+  layout.tsx                    the hauler shell around every rendered route
+  providers/hauler-daemon.ts    request-scoped daemon connection + health probe
+  components/                   typed components over pure view-models
+  mcp/hauler/tools/*.tsx        hauler_status, _log, _last, _await, _result, _request
+  mcp/hauler/apps/dashboard.tsx the MCP App (ui://cargo-hauler/dashboard.html)
+  cli/*.tsx, cli/daemon.ts      the routed `cargo-hauler` CLI, same components
+  events/{session/start,tool/before,tool/after,stop}.tsx   hook routes
+  skills/cargo-hauler/SKILL.md, skills/hauler-dashboard/SKILL.tsx
+  scripts/hauler.ts             the `hauler` process entry hooks rewrite cargo to
+  daemon/, client/, hooks/, shim/, lib/   the broker and its libraries
+```
 
-| Metric | Value | Window |
-| --- | ---: | --- |
-| Cargo runs handled | 782 | Rolling 24 hours |
-| Compile time not executed | 7h 42m | All time |
-| Caller latency saved | 3h 37m | All time |
-| Requests served by attachment | 138 | All time |
+### The shell (`src/layout.tsx`)
 
-The run count uses a rolling 24-hour window. Compile time, latency, and
-attachment counts use all-time SQLite ledger records. Latency savings remain
-signed, so an attached request that completes later than its standalone
-estimate contributes a negative value. Attachment counts include identity,
-coverage, and batch attachments.
+Every rendered route — MCP tool, CLI command, rendered script — composes
+through one layout, the way a page framework's `layout.tsx` wraps every page:
 
-The workload that led to the project included a 49-crate workspace with about
-73,000 Cargo invocations and 45,600 `Blocking waiting for file lock` messages
-over three months. Within those records, Cursor repeated 12,783 identical
-command-and-directory pairs within 15-minute intervals.
+- **Header:** `<DaemonBadge>` prints what the request-start probe proved:
+  `cargo-hauler · daemon running (pid 4021) · 2/5 permits +1 riding, 1 queued
+  · 2 lanes busy · up since 3h ago`, or `daemon stopped · no socket; it starts
+  on demand…`, or `daemon unresponsive · did not accept a connection within
+  750ms (machine saturated)…`.
+- **Body:** the route's own document, unchanged. The route keeps its
+  `<Agent.Result value>`; the runtime merges it into the shell so
+  `structuredContent` and `--json` are exactly what the route declared.
+- **Footer:** `<LineageFooter>` names the conversation the request belongs to
+  (`Requested by conversation conv-7f (depth 1 under conv-2a; registry)`),
+  read synchronously with `useAgent()`, and stays silent when the host cannot
+  place the request rather than guessing.
+- **`_meta.hauler`** on every MCP result: `route`, `surface`, `server`,
+  `version`, `daemon: { state, pid? }`, `lineage: { conversation, root, depth } | null`.
 
-## Request processing
+Event routes are host protocol responses and are never wrapped.
 
-Requests enter through the `hauler` CLI, `beforeTool` hooks that rewrite shell
-commands, an optional PATH shim, or the `hauler_request` MCP tool. The daemon
-normalizes the Cargo command into an intent, records a ticket in the SQLite
-ledger, and assigns the request to a lane.
+### The daemon provider (`src/providers/hauler-daemon.ts`)
+
+One request-context provider mounts `providers.haulerDaemon` for every tool,
+command, event, and script: the resolved `config` (state dir, socket, ledger)
+and a `health` value from one bounded `status` probe:
+
+| `health.state` | meaning |
+| --- | --- |
+| `running` | `pid`, `startedAtMs`, `latencyMs`, `running` (permit holders), `riding` (attached), `queued`, `busyLanes`, `maxConcurrent` |
+| `stopped` | `socket-missing` (starts on demand) or `connection-refused` (stale socket) |
+| `unresponsive` | `accept-timeout` or `connection-closed` within the probe budget; ledger reads still work |
+| `unprobed` | `event-surface`: hooks run on every shell command and skip the probe by design |
+
+The provider fails closed on nothing it can observe and fabricates nothing.
+Routes read it through `requestDaemon(context)` / `requestDaemonConfig(context)`;
+tests inject a fixture through the harness `context.providers` seam.
+
+### Components (`src/components/`)
+
+Components render view-models and nothing else. The models are pure functions
+in `view-models.ts`, so the MCP document, the CLI Markdown, and a test
+assertion share one derivation.
+
+| Component | Renders |
+| --- | --- |
+| `<TicketCard>` | one ticket: headline, attribution, lane, queue position, attach mode, timings, exit, then `<BuildDiagnostics>` and `<LogTail>` |
+| `<TicketList>` | the in-flight and recent tables of status, and the whole of log |
+| `<LaneBoard>` | busy lanes with their leader ticket, its command, and how long it has run |
+| `<AdmissionState>` | permits in use, load, memory clamp, sharing savings; calls out a paused admission gate |
+| `<KacheStats>` | kache coverage and freshness, slowest crates by profile, or an honest "not detected" |
+| `<LogTail>` | the captured output tail, labelled live while the run is in progress |
+| `<BuildDiagnostics>` | cargo `error[E…]`/`warning:` blocks as level / code / message / location rows; unparsed blocks verbatim |
+| `<DashboardLink>` | where the MCP App lives and how to open it elsewhere |
+| `<TicketGuidance>` | what to do next, one component per ticket status |
+| `<DaemonBadge>`, `<LineageFooter>` | the shell header and footer |
+| `<EmptyState>`, `<UnavailableState>`, `<ErrorState>` | the three non-happy shapes every document may take |
+
+`documents.tsx` composes them into one document per hauler result
+(`StatusDocument`, `LogDocument`, `LastDocument`, `ResultDocument`,
+`AwaitDocument`, `RequestDocument`); the MCP tool and the CLI command for the
+same operation render the same document with different command spellings
+(`surface.ts`).
+
+### Streaming (`src/components/streaming.tsx`)
+
+`hauler_await` and `hauler_log` are progressive documents. Each is a
+valueless `Agent.Result` container around one `Suspense` boundary:
+
+- `<AwaitStream>`: the fallback is the ticket **as it is now** — its live
+  output tail and a progress node — rendered before the daemon-side wait
+  blocks; the settled child is the ordinary `AwaitDocument`. MCP hosts receive
+  the fallback's progress as notifications and the settled value as
+  `structuredContent`; the routed CLI updates the terminal in place. Heartbeats
+  (queue position, elapsed time, cost estimate) still flow through
+  `context.progress`.
+- `<LogStream>`: a "reading the ledger" progress frame, then the listing.
+
+### Attribution and lineage
+
+`hauler_request` attributes tickets from the request context: an explicit
+`host`/`session` wins; otherwise the negotiated host and native session are
+used; and when the transport publishes no session id (bare stdio MCP), the
+conversation from `request.lineage` becomes the session of record. That is
+what makes parallel agents' builds attributable in the ledger, the dashboard,
+and `hauler_status --session <conversation>`. Results carry
+`attribution: { host, session, lineage }`.
+
+### Routes
+
+| Route | Surface | Document |
+| --- | --- | --- |
+| `tool:hauler/hauler_status` · `cli:status` | queue, lanes, admission, kache, filters | `StatusDocument`; the tool advertises the dashboard App |
+| `tool:hauler/hauler_log` · `cli:log` | recent requests | `LogStream` → `LogDocument` |
+| `tool:hauler/hauler_last` · `cli:last` | most recent request | `LastDocument` |
+| `tool:hauler/hauler_await` · `cli:await` | long-poll a ticket (≤ 2 h) | `AwaitStream` → `AwaitDocument` |
+| `tool:hauler/hauler_result` · `cli:result` | one ticket, live tail while running | `ResultDocument` |
+| `tool:hauler/hauler_request` · `cli:request` | submit a background request | `RequestDocument` |
+| `cli:daemon` | `run` / `start` / `stop` / `status` | plain JSON, exit code from the result |
+| `event:session/start` | new session | daemon state and the no-kill rule as context |
+| `event:tool/before` | shell tool about to run | rewrites `cargo …` to `hauler exec --session … --host … -- cargo …`; denies `cargo clean` during in-flight builds |
+| `event:tool/after` | shell tool finished | injects finished-ticket results once per session |
+| `event:stop` | agent stopping | holds the stop while a foreground ticket is pending (bounded, re-deniable) |
+
+### Skills
+
+`skills/cargo-hauler/SKILL.md` is the operating rule set (do not kill
+in-flight cargo, scope with `-p`, await tickets, fail open when the daemon is
+unreachable). `skills/hauler-dashboard/SKILL.tsx` is a rendered skill: the
+build computes its Markdown from the tool and CLI spellings and the App
+resource URI it describes, so the document cannot drift from the surface.
+
+### Dashboard
+
+`src/mcp/hauler/apps/dashboard.tsx` is the MCP App at
+`ui://cargo-hauler/dashboard.html`, attached to `hauler_status` on hosts that
+render MCP Apps. It shows contention and admission, in-flight and queued
+work, metrics windows, optional kache data, lanes, and history, with a live
+output drawer per ticket.
+
+![cargo-hauler metrics for one-hour, 24-hour, and all-time windows](docs/media/dashboard-metrics.png)
+
+## Install
+
+Requirements: Node 22.19 or newer, Cargo, and Linux or macOS (Windows is
+experimental: named-pipe transport, no PATH shim).
+
+```sh
+pnpm install
+pnpm run build      # artifact/{claude,codex,cursor,portable} + dist/bin
+```
+
+Each host pack under `artifact/<host>` is independently installable through
+the framework's installer. The packs are framework-owned; this project ships
+no installer of its own.
+
+```sh
+# Claude Code (local marketplace + plugin install)
+pnpm exec agent-bundle install claude --from artifact/claude --scope user
+
+# Codex
+pnpm exec agent-bundle install codex --from artifact/codex
+
+# Cursor: safe-copy into ~/.cursor/plugins/local/cargo-hauler (default), or
+# stage a local marketplace repository for Customize → Add Plugins from Local Repository
+pnpm exec agent-bundle install cursor --from artifact/cursor --mode local
+pnpm exec agent-bundle install cursor --from artifact/cursor --mode marketplace
+```
+
+Add `--replace` to any of them after a same-version rebuild. From an `npm
+pack`ed tarball the same operations are
+`npx cargo-hauler-install install <host> [--scope …] [--mode …] [--json]`
+(`dist/bin/cargo-hauler-install.js`, generated by the build and gated by
+`agent-bundle prepack`). `agent-bundle doctor --host <host>` reports the
+installed copy versus the artifact (`current`, `stale`, `version-mismatch`,
+`foreign`, `not-installed`) and, for Cursor, whether the manifest hooks are
+registered. Each pack's `INSTALL.md` carries the same commands with the exact
+compiled names. Restart or reload the host after installing so new sessions
+load the hooks. Per-host notes, hook timeouts, and the optional PATH shim are
+in [docs/install.md](docs/install.md).
+
+The first brokered request makes one daemon-start attempt. Hooks cover Cargo
+commands submitted through supported agent shells; the optional PATH shim
+(`node dist/bin/hauler.js install-shim`) also covers Cargo invoked by scripts
+and terminals.
+
+## Interfaces
+
+`hauler` is the process entry (`src/scripts/hauler.ts`): `exec`, `daemon`, and
+`install-shim`, forwarding every other command to the routed `cargo-hauler`
+executable beside it (`dist/bin/cargo-hauler.js` in the package,
+`bin/cargo-hauler.mjs` inside every host pack). Routed commands accept
+`--json` for the canonical value and `--ndjson` for the render-event stream.
+
+| Command | Behavior |
+| --- | --- |
+| `hauler exec [--session ID] [--host HOST] [--cwd DIR] [--bg] -- <cargo …>` | Submit Cargo through the daemon and stream output; hooks rewrite commands to this form. |
+| `hauler status [--limit N] [--cwd DIR] [--session ID] [--lane KEY] [--ticket ID …] [--status S …] [--command-contains TEXT]` | Queue, active runs, lanes, admission, kache, optionally filtered. |
+| `hauler log [--limit N]` | Recent requests from the ledger. |
+| `hauler last` | The most recent request. |
+| `hauler await <ticket> [--max-wait-ms N]` | Long-poll until the ticket finishes or the wait expires (default 30 s, ceiling two hours). |
+| `hauler result <ticket>` | A stored ticket; running tickets include a live output tail. |
+| `hauler request [--session ID] [--host HOST] [--cwd DIR] -- <cargo …>` | Submit a background request and return its ticket. |
+| `hauler daemon <run\|start\|stop\|status>` | Manage the daemon lifecycle. |
+| `hauler install-shim [--dir DIR] [--real-cargo PATH] [--force]` | Install the optional PATH shim. |
+
+The `hauler` MCP server projects the same operations as `hauler_status`,
+`hauler_log`, `hauler_last`, `hauler_await`, `hauler_result`, and
+`hauler_request`, with the same filters as the CLI.
+
+## Testing
+
+```sh
+pnpm run check   # validate + build + typecheck + Effect diagnostics + rstest + route tests
+```
+
+`tests/route-unit/` renders the app through the framework compiler with no
+artifact build, at the harness proof levels:
+
+| Level | Suite | What it proves |
+| --- | --- | --- |
+| route-unit | `routes`, `layout`, `streaming`, `events` | documents, shell metadata, Suspense fallbacks and settled values, lineage attribution, event decisions |
+| cli-dispatch | `cli-dispatch`, `layout` | argv through the routed CLI shell; Markdown wrapped by the shell, `--json` bare |
+| script-dispatch | `script-dispatch` | the `hauler` entry through its `main` envelope as its own process |
+| mcp-in-memory | `mcp-surface`, `layout` | tool names, `outputSchema`, the dashboard resource link, `_meta.hauler`, and a live fixture broker over the in-memory transport |
+| packed-stdio | `packed-contract` | the built `artifact/cursor` server as a real process against a live broker, every tool through the wire-contract matrix |
+| workbench-surface | `tests/workbench-surface.test.ts` | what `agent-bundle dev` would show: catalog, provider, lifecycles per host, counts |
+
+Daemon-backed cases run a real broker in-process with a fake `cargo`
+(`tests/harness.ts`) and reach it either through the `haulerDaemon` provider
+seam or through `CARGO_HAULER_STATE_DIR`.
+
+## How the broker works
+
+Requests enter through the `hauler` CLI, `tool/before` hooks that rewrite
+shell commands, an optional PATH shim, or the `hauler_request` MCP tool. The
+daemon normalizes the Cargo command into an intent, records a ticket in the
+SQLite ledger, and assigns the request to a lane.
 
 The hook parses the shell command and rewrites each Cargo invocation to
 `hauler exec --session … --host … -- cargo …`. It recognizes `cargo` behind an
@@ -76,8 +287,6 @@ attached request returns to its lane unless its required compilation units were
 already observed as successful. Folded tests share the composite process,
 output, and exit code.
 
-### How it works
-
 ![cargo-hauler request normalization, lane-local serialization, scheduling, admission, and concurrent Cargo processes](docs/media/how-it-works.png)
 
 The scheduler estimates run cost from per-intent EWMA history. It can also use
@@ -88,33 +297,26 @@ eventually runs.
 
 Admission is separate from lane scheduling. It observes one-minute load per
 core and, on Linux, CPU PSI `some avg10`, then applies the configured thresholds
-and the global permit cap. Load average can include tasks blocked on I/O; the
-PSI input is CPU pressure only. Load and CPU pressure never defer below
+and the global permit cap. Load and CPU pressure never defer below
 `CARGO_HAULER_LOAD_MIN` running processes, so a saturated machine still makes
-progress.
-
-Memory pressure is a separate admission input. On Linux the daemon reads
-memory PSI `full avg10` and `MemAvailable`; on macOS it reads the kernel VM
-pressure level. Soft pressure (PSI at or above 10%, or macOS level `warn`)
-defers admission like load does, respecting the same floor. Hard pressure
-(PSI at or above 20% with `full avg60` at least half that, `MemAvailable`
-below 8 GiB, or macOS level `critical`) defers admission regardless of the
-floor; a bounded wait still prevents a deadlocked queue. While Linux
+progress. Memory pressure is a separate admission input: on Linux the daemon
+reads memory PSI `full avg10` and `MemAvailable`; on macOS it reads the kernel
+VM pressure level. Soft pressure defers admission like load does, respecting
+the same floor; hard pressure defers admission regardless of the floor, and
+the `<AdmissionState>` component calls it out as a paused gate. While Linux
 `MemAvailable` is below 16 GiB, heavy leaders (`--release`/`-r`, non-dev
 `--profile`, `cargo bench`, `--workspace`/`--all`) are additionally capped to
 one at a time; other leaders, riders, and machines without the signal are
-unaffected.
+unaffected, and a held ticket says why (`waiting: …`) in its card and in
+heartbeats. Non-compiling cargo subcommands (`fmt`, `update`, `fetch`, `add`,
+`remove`, `generate-lockfile`, `vendor`, `new`, `init`, `info`, `uninstall`)
+run locally instead of queueing for a permit.
 
 The per-run `CARGO_BUILD_JOBS` grant defaults to the available cores divided
 across the configured permit count, with a floor of four jobs. Separately, the
 daemon arms one GNU make jobserver FIFO with `cores - 1` tokens when it
 acquires the singleton lock and passes it to every Cargo it spawns through
 `MAKEFLAGS`, so concurrent lanes share one global rustc parallelism budget.
-Callers that pin `CARGO_BUILD_JOBS`, `CARGO_MAKEFLAGS`, or an inherited
-jobserver keep their own settings; passthrough runs without a daemon inject
-nothing.
-
-## Behavior
 
 | Capability | Behavior |
 | --- | --- |
@@ -124,320 +326,148 @@ nothing.
 | Parallelism | A per-run `CARGO_BUILD_JOBS` grant plus one daemon-owned jobserver FIFO shared by every spawned Cargo. |
 | Scheduling | EWMA estimates, optional kache priors, fan-out, dependency topology, recent edits, and request age determine lane order. |
 | Persistence | Tickets, output tails, timings, outcomes, and savings are stored in SQLite. |
-| Caller output and status | Output streams to attached callers; late callers receive buffered replay. After 30 seconds without output, the client emits a progress heartbeat every 15 seconds. Queued heartbeats include the lane queue position, the lane-head ticket with its elapsed time and estimate, and an aggregate wait ETA, so a busy lane is distinguishable from a stall. |
-| Wait escalation | A queued request waiting longer than the larger of twice its own estimate and ten minutes is flagged as delayed in status rows, the dashboard, and heartbeats. Running jobs silent for more than five minutes show a quiet-duration hint; nothing is killed automatically. |
-| Daemon status | `running`, `stopped`, or `unresponsive`. A socket that exists but does not answer the status read within its 5 second budget is reported as unresponsive, not stopped, so a loaded daemon with jobs in flight is never mistaken for a missing one. |
+| Caller output and status | Output streams to attached callers; late callers receive buffered replay. After 30 seconds without output, the client emits a progress heartbeat every 15 seconds with lane queue position, the lane-head ticket, and an aggregate wait ETA. |
+| Wait escalation | A queued request waiting longer than the larger of twice its own estimate and ten minutes is flagged as delayed; running jobs silent for more than five minutes show a quiet-duration hint. Nothing is killed automatically. |
+| Daemon status | `running`, `stopped`, or `unresponsive`: a socket that exists but does not answer within its budget is reported as unresponsive, never as stopped. |
 
-### Metric time windows
-
-The dashboard exposes one-hour, 24-hour, and all-time request populations. Run
-and wait percentiles use the selected window. Savings use all-time ledger
-records.
-
-![cargo-hauler metrics for one-hour, 24-hour, and all-time windows](docs/media/dashboard-metrics.png)
-
-### Kache integration
-
-When [kache](https://github.com/ScriptedAlchemy/kache) is available,
-cargo-hauler reads its machine-wide index for per-crate compile-time priors and
-reports the slowest crates by profile. Without that index, estimates come from
-the daemon's EWMA history and mined p50 defaults for unseen intents. A missing
-or incompatible kache index is reported as unavailable and does not reject a
-request.
-
-![cargo-hauler dashboard kache timing panel](docs/media/dashboard-kache.png)
-
-### Ticket output
-
-The dashboard displays the output tail for active and completed tickets. It
-refreshes while a run is active. Completed output remains available from the
-ledger.
-
-![cargo-hauler ticket output drawer](docs/media/dashboard-live-output.png)
-
-## Quickstart
-
-Requirements: Node 22.19 or newer, Cargo, and Linux or macOS.
-
-```sh
-pnpm install
-pnpm run build
-```
-
-`artifact/plugin` is the generated multi-host plugin bundle. Install it from
-that directory:
-
-```sh
-cd artifact/plugin
-
-# Claude Code
-claude plugin marketplace add ./
-claude plugin install cargo-hauler@cargo-hauler-marketplace --scope user
-
-# Codex CLI
-codex plugin marketplace add ./
-codex plugin add cargo-hauler@cargo-hauler-marketplace
-
-# Cursor
-node ./install.mjs
-```
-
-Restart Cursor after installation so new sessions load the hooks. The bundle's
-own `hauler` entry (`artifact/plugin/scripts/hauler.mjs`) is what the hooks
-rewrite Cargo to; it provides `exec`, `daemon`, and `install-shim`. The full
-CLI, including `status`, `log`, `last`, `await`, `result`, and `request`, is
-the package binary built into `dist/bin/` by the same `pnpm run build`:
-
-```sh
-node dist/bin/hauler.js daemon start
-node dist/bin/hauler.js status
-```
-
-The first brokered request makes one daemon-start attempt. Hooks cover Cargo
-commands submitted directly through supported agent shells. The optional PATH
-shim also covers Cargo invoked by scripts and ordinary terminals:
-
-```sh
-node dist/bin/hauler.js install-shim --dir ~/.local/bin
-```
-
-MCP App-capable hosts load the dashboard from
-`ui://cargo-hauler/dashboard.html`; see [Development](#development) for the
-browser preview.
-
-See [docs/install.md](docs/install.md) for host-specific installation and hook
-details.
-
-### Known host limitation
-
-On current Cursor builds, plugin-manifest hooks do not fire for tool events
-(tracked upstream as
-[ScriptedAlchemy/agent-bundle#407](https://github.com/ScriptedAlchemy/agent-bundle/issues/407)).
-The bundle still declares them, but until that lands the PATH shim is the
-effective interception on Cursor. Codex and Claude Code hooks fire as
-documented.
-
-## Tickets and long-running requests
+### Tickets and long-running requests
 
 Every request has a durable ticket (`cc-<n>`). Its status, exit code, output
 tail, estimate, and timestamps are stored in SQLite and can be read from later
-sessions.
+sessions. `hauler exec --bg -- cargo …` and `hauler_request` return the ticket
+immediately; a synchronous request also switches to background mode when its
+estimate exceeds the configured host threshold (nine minutes for Claude, ten
+for Codex, fourteen for Cursor).
 
-`hauler exec --bg -- cargo …` and the `hauler_request` MCP tool return the
-ticket immediately. A synchronous request also switches to background mode
-when its estimate exceeds the configured host threshold: nine minutes for
-Claude, ten for Codex, and fourteen for Cursor.
+The `tool/after` route checks session tickets and, on the first tool call
+after a ticket finishes, adds its result to the agent context. For foreground
+tickets, the `stop` route waits for the lower of the remaining estimate and
+`CARGO_HAULER_STOP_WAIT_MS`; if the ticket finishes it denies the stop and
+returns the result, otherwise it denies with status and ETA. `stopHookActive`
+and an eight-denial cap per ticket prevent a repeated stop loop; background
+tickets never hold a stop. Codex 0.147.0 stop-hold behaviour is verified in
+[docs/codex-hooks.md](docs/codex-hooks.md).
 
-The `afterTool` hook checks session tickets. On the first tool call after a
-ticket finishes, it adds the ticket result to the agent context. Use
-`hauler_await <ticket>` to long-poll a ticket and `hauler_result <ticket>` to
-read its stored result.
+### PATH shim
 
-For foreground tickets, the `stop` hook waits for the lower of the remaining
-estimate and `CARGO_HAULER_STOP_WAIT_MS`. If a ticket finishes, the hook denies
-the stop and returns its result. If it remains active, the hook denies the stop
-with status and ETA. A later stop invocation can wait again. `stopHookActive`
-and an eight-denial cap per ticket prevent a repeated stop loop. Background
-tickets never hold a stop.
+At installation the shim embeds absolute paths for both the `hauler` CLI and
+the Cargo binary (the `~/.cargo/bin/cargo` link, not its rustup proxy target,
+because rustup dispatches on `argv[0]`). It tags requests with `--host shim`.
+When the daemon starts Cargo it sets `CARGO_HAULER_INSIDE=1`, and the shim then
+invokes the embedded Cargo directly, so the daemon's own Cargo never returns
+through the broker. The shim is POSIX-only; its directory must appear before
+rustup's Cargo directory on `PATH`; replacing an existing destination requires
+`--force`.
 
-Codex 0.147.0 was tested with stop-hook process lifetimes of about 29 seconds
-and 72.4 seconds; both reached their configured wait bound and returned a deny
-decision. Longer holds were not tested. Hook trust must be granted or bypassed
-for Codex hooks to run. See [docs/codex-hooks.md](docs/codex-hooks.md) for the
-probe setup and observed edge cases.
-
-## PATH shim
-
-At installation, the shim resolves and embeds absolute paths for both the
-`hauler` CLI and the Cargo binary. The Cargo path is the `~/.cargo/bin/cargo`
-link itself, not its rustup proxy target: rustup dispatches on `argv[0]`, so
-embedding the canonical binary would turn `cargo check` into `rustup check`.
-The shim tags requests with `--host shim`. When the
-daemon starts Cargo, it sets `CARGO_HAULER_INSIDE=1`; the shim then invokes the
-embedded Cargo path directly. This prevents the daemon's own Cargo process
-from returning through the broker.
-
-The shim is POSIX-only. Its directory must appear before rustup's Cargo
-directory on `PATH`. Replacing an existing destination requires `--force`.
-
-## Caller environment
+### Caller environment
 
 `hauler exec` (and therefore the shim and the hook rewrites) forwards the
 caller's whole environment to the daemon, except the `CARGO_HAULER_*` and
 legacy `CARGO_CONDUCTOR_*` settings, which configure the broker itself. The
 daemon lays the forwarded variables over its own environment when it spawns
 Cargo, so `FOO=bar cargo build` reaches `build.rs`, `env!()`, `cargo run`, and
-`cargo test` processes exactly as a direct invocation would. A variable the
-caller leaves unset is not removed from the daemon's environment.
+`cargo test` processes exactly as a direct invocation would. Request identity
+for coalescing is digested from the build-relevant subset only (`CARGO_*`,
+`RUST*`, `CC`/`CXX`/`AR`/`CFLAGS`/`CXXFLAGS`/`LDFLAGS` with target-suffixed
+forms, and `PKG_CONFIG_PATH`); pass knobs a `build.rs` reads through
+`--config 'env.FOO="bar"'` when they must also split identity.
+`hauler request` and `hauler_request` submit without a caller environment;
+their Cargo processes run with the daemon's environment.
 
-Request identity for coalescing is digested from the build-relevant subset
-only: `CARGO_*`, `RUST*`, `CC`/`CXX`/`AR`/`CFLAGS`/`CXXFLAGS`/`LDFLAGS` (with
-target-suffixed forms), and `PKG_CONFIG_PATH`. Two requests that differ only
-in another variable share a leader and receive its output; pass knobs a
-`build.rs` reads through `--config 'env.FOO="bar"'` when they must also split
-identity, because `--config` is part of the argv digest.
+### Kache integration
 
-`hauler request` and the `hauler_request` MCP tool submit without a caller
-environment; their Cargo processes run with the daemon's environment.
+When [kache](https://github.com/ScriptedAlchemy/kache) is available,
+cargo-hauler reads its machine-wide index for per-crate compile-time priors and
+reports the slowest crates by profile (`<KacheStats>`). Without that index,
+estimates come from the daemon's EWMA history. A missing or incompatible index
+is reported as unavailable and never rejects a request.
 
-## Interfaces
-
-`hauler` is the process entry (`src/scripts/hauler.ts`). It owns `exec`,
-`daemon`, and `install-shim` and forwards every other command to the routed
-`cargo-hauler` CLI (`src/cli/*`): `dist/bin/cargo-hauler.js` beside it in the
-package, or `bin/cargo-hauler.mjs` inside each host artifact, so an installed
-plugin's `scripts/hauler.mjs status` works too. Routed commands accept
-`--json` for the canonical result.
-
-| Command | Behavior |
-| --- | --- |
-| `hauler exec [--session ID] [--host HOST] [--cwd DIR] [--bg] -- <cargo …>` | Submit Cargo through the daemon and stream output; hooks rewrite commands to this form. |
-| `hauler status [--limit N] [--cwd DIR] [--session ID] [--lane KEY] [--ticket ID …] [--status S …] [--command-contains TEXT]` | Show the queue, active runs, lanes, and admission state, optionally filtered. |
-| `hauler log [--limit N]` | Read recent requests from the ledger. |
-| `hauler last` | Read the most recent request. |
-| `hauler await <ticket> [--max-wait-ms N]` | Long-poll until the ticket finishes or the wait expires (default 30 s, ceiling two hours). |
-| `hauler result <ticket>` | Read a stored ticket result; running tickets include a live output tail. |
-| `hauler request [--session ID] [--host HOST] [--cwd DIR] -- <cargo …>` | Submit a background request and return its ticket. |
-| `hauler daemon <run\|start\|stop\|status>` | Manage the daemon lifecycle. |
-| `hauler install-shim [--dir DIR] [--real-cargo PATH] [--force]` | Install the optional PATH shim. |
-
-The `hauler` MCP server projects the same operations:
-
-| MCP tool | Behavior |
-| --- | --- |
-| `hauler_status` | Return daemon, queue, active-run, lane, and metric state, with the same filters as the CLI; render the dashboard where MCP Apps are supported. |
-| `hauler_log` | Read recent requests from the ledger. |
-| `hauler_last` | Read the most recent request. |
-| `hauler_await` | Long-poll a ticket, streaming progress while it waits. |
-| `hauler_result` | Read a stored ticket result. |
-| `hauler_request` | Submit a background Cargo request. |
-
-The dashboard displays contention and admission state, active runs, queued
-requests, metrics, optional kache data, active lanes, and completed history.
-Delayed queued requests carry a visible cue, and running rows that have
-produced no output for several minutes show a quiet-duration hint (long
-compile and link phases are legitimately silent). Status and log views can
-read ledger data while the daemon is stopped.
+![cargo-hauler dashboard kache timing panel](docs/media/dashboard-kache.png)
 
 ## Configuration
-
-The daemon and hooks read the following environment variables:
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `CARGO_HAULER_STATE_DIR` | Per-user cache directory | Unix socket or Windows named pipe source, SQLite ledger, daemon log, pid lock, `hook-state.json`, and `hook-events.jsonl`. No legacy alias. |
-| `CARGO_HAULER_CARGO_BIN` | `$CARGO_HOME/bin/cargo` | Cargo binary for daemon-started work; bare `cargo` is the last fallback. The daemon does not resolve it through `PATH`. |
+| `CARGO_HAULER_CARGO_BIN` | `$CARGO_HOME/bin/cargo` | Cargo binary for daemon-started work; bare `cargo` is the last fallback. Never resolved through `PATH`. |
 | `CARGO_HAULER_MAX_CONCURRENT` | `5` | Global admission permits for Cargo processes across all lanes. |
-| `CARGO_HAULER_JOBS_GRANT` | `max(4, cores / max concurrent)` | `CARGO_BUILD_JOBS` added to each Cargo process; `0` disables injection and caller-provided `-j` or environment values take precedence. |
+| `CARGO_HAULER_JOBS_GRANT` | `max(4, cores / max concurrent)` | `CARGO_BUILD_JOBS` added to each Cargo process; `0` disables injection. |
 | `CARGO_HAULER_LOAD_THRESHOLD` | Disabled | Per-core one-minute load threshold for deferring new admissions. |
-| `CARGO_HAULER_LOAD_MIN` | `2` | Number of active Cargo processes below which load, CPU PSI, and soft memory pressure do not defer admission. |
-| `CARGO_HAULER_CPU_PRESSURE_THRESHOLD` | `75` | Linux CPU PSI `some avg10` percentage for deferring new admissions; `0` disables this input. |
-| `CARGO_HAULER_MEM_PRESSURE_SOFT` | `10` (Linux) | Memory PSI `full avg10` percentage for soft deferral; `0` disables it. |
-| `CARGO_HAULER_MEM_PRESSURE_HARD` | `20` (Linux) | Memory PSI `full avg10` percentage for hard deferral, confirmed by `full avg60` at half the value; `0` disables it. |
-| `CARGO_HAULER_MEM_AVAILABLE_MIN_GB` | `8` (Linux) | `MemAvailable` floor in GiB for hard deferral; `0` disables it. |
-| `CARGO_HAULER_MEM_PRESSURE_LEVEL` | `2` (macOS) | Kernel VM pressure level that starts soft deferral (`2` warn, `4` critical); level `4` is always hard. Any other value disables it. |
-| `CARGO_HAULER_HEAVY_MEM_AVAILABLE_GB` | `16` (Linux) | `MemAvailable` in GiB below which concurrent heavy leaders (release/perf/bench profiles, workspace-wide runs) are capped; `0` or `off` disables the cap. On a machine with 16 GB or less this is always below the default, so heavy leaders serialize unless you lower or disable it. |
+| `CARGO_HAULER_LOAD_MIN` | `2` | Active Cargo processes below which load, CPU PSI, and soft memory pressure do not defer admission. |
+| `CARGO_HAULER_CPU_PRESSURE_THRESHOLD` | `75` | Linux CPU PSI `some avg10` percentage for deferring new admissions; `0` disables. |
+| `CARGO_HAULER_MEM_PRESSURE_SOFT` | `10` (Linux) | Memory PSI `full avg10` percentage for soft deferral; `0` disables. |
+| `CARGO_HAULER_MEM_PRESSURE_HARD` | `20` (Linux) | Memory PSI `full avg10` percentage for hard deferral, confirmed by `full avg60` at half the value; `0` disables. |
+| `CARGO_HAULER_MEM_AVAILABLE_MIN_GB` | `8` (Linux) | `MemAvailable` floor in GiB for hard deferral; `0` disables. |
+| `CARGO_HAULER_MEM_PRESSURE_LEVEL` | `2` (macOS) | Kernel VM pressure level that starts soft deferral (`2` warn, `4` critical). |
+| `CARGO_HAULER_HEAVY_MEM_AVAILABLE_GB` | `16` (Linux) | `MemAvailable` in GiB below which concurrent heavy leaders (release/perf/bench profiles, workspace-wide runs) are capped; `0` or `off` disables the cap. |
 | `CARGO_HAULER_HEAVY_MAX_CONCURRENT` | `1` | Heavy leaders admitted at once while the cap is active. |
 | `CARGO_HAULER_REPLAY_BUFFER_BYTES` | `4194304` | Leader output retained in memory for late-attacher replay. |
 | `CARGO_HAULER_KACHE_INDEX` | kache's configured store | kache index for per-crate timing priors; an empty string disables it. |
 | `CARGO_HAULER_BATCH` | Enabled | `0` disables the batch composer. |
-| `CARGO_HAULER_BATCH_WINDOW_MS` | `150` | Delay applied to a batchable lane head so nearby requests can fold; `0` disables the delay. |
+| `CARGO_HAULER_BATCH_WINDOW_MS` | `150` | Delay applied to a batchable lane head so nearby requests can fold; `0` disables. |
 | `CARGO_HAULER_KILL_GRACE_MS` | `8000` | Time between SIGTERM and SIGKILL when the daemon stops a Cargo process. |
 | `CARGO_HAULER_STOP_WAIT_MS` | `30000` | Maximum wait for one stop-hook invocation. |
 | `CARGO_HAULER_LOG_LEVEL` | `Info` | Daemon log level. |
 | `CARGO_HAULER_HOST`, `CARGO_HAULER_SESSION` | Unset | Default `--host` and `--session` attribution for `hauler exec`. |
 
-Each `CARGO_HAULER_*` setting takes precedence over its retained legacy
-`CARGO_CONDUCTOR_*` alias. Legacy aliases remain supported only for settings
-that cannot select persistent daemon identity: tuning values, the read-only
-kache index, and host/session attribution. The memory-pressure settings are
-new since the rename and have no alias. `CARGO_CONDUCTOR_STATE_DIR` is
-ignored, and hand-run commands print a one-line warning naming its
-replacement: on 2026-09-01, a stale login-session value recreated a migrated
-directory and split the daemon socket and ledger from the active cargo-hauler
-store (see
+Each `CARGO_HAULER_*` tuning value takes precedence over its retained legacy
+`CARGO_CONDUCTOR_*` alias; `CARGO_CONDUCTOR_STATE_DIR` is ignored and hand-run
+commands warn when it is still exported (see
 [docs/incidents/2026-09-01-state-identity-split-brain.md](docs/incidents/2026-09-01-state-identity-split-brain.md)).
-
-The state directory defaults to `$XDG_CACHE_HOME/cargo-hauler` when
-`XDG_CACHE_HOME` is set, otherwise `~/.cache/cargo-hauler` on Linux,
-`~/Library/Caches/cargo-hauler` on macOS, and
-`%LOCALAPPDATA%\cargo-hauler` on Windows.
-
-When `CARGO_HAULER_KACHE_INDEX` is unset, the daemon reads kache's configured
-local store from `$XDG_CONFIG_HOME/kache/config.toml` or
-`~/.config/kache/config.toml`, then appends `index.db`. If no kache config
-exists, it uses `<user cache>/kache/index.db`. The file is opened read-only.
+The state directory defaults to `$XDG_CACHE_HOME/cargo-hauler`, otherwise
+`~/.cache/cargo-hauler` on Linux, `~/Library/Caches/cargo-hauler` on macOS, and
+`%LOCALAPPDATA%\cargo-hauler` on Windows. When `CARGO_HAULER_KACHE_INDEX` is
+unset, the daemon reads kache's configured local store from
+`$XDG_CONFIG_HOME/kache/config.toml` or `~/.config/kache/config.toml` and opens
+`<local_store>/index.db` read-only.
 
 ## Runtime behavior and caveats
 
-- Hook and client transport failures fail open. A hook passes the original
-  command through. If the client cannot reach the daemon, it makes one
+- Hook and client transport failures fail open: a hook passes the original
+  command through, and a client that cannot reach the daemon makes one
   auto-start attempt and then invokes Cargo directly. A daemon that is alive
-  but too loaded to accept a connection within 2 seconds is not treated as
-  absent: `exec` retries the connection for up to 60 seconds before falling
-  back to a direct run.
-- Missing kache data and topology analysis failures use the scheduler's
-  fallback estimates. They do not reject Cargo requests.
+  but too loaded to accept within 2 seconds is not treated as absent: `exec`
+  retries for up to 60 seconds before falling back to a direct run.
+- The plugin's own documents never fail open: `hauler_result` and
+  `hauler_await` fail loudly when the daemon is unreachable instead of
+  reporting a ticket as not found; `hauler_status`, `hauler_log`, and
+  `hauler_last` read the ledger with the daemon marked `stopped` or
+  `unresponsive`.
 - Test sharing uses identity attachment or batch folding, never coverage.
   Folded `test` and `nextest` requests receive the composite output and exit
   code, so a failure may come from another package in the batch.
-- A failed or killed stronger compile run requeues coverage and compile-batch
-  attachments. If JSON diagnostics show that an attachment's required units
-  completed before an unrelated unit failed, that attachment can complete
-  without requeueing.
 - Hook rewrites, policy denials such as `cargo clean` during an active build,
-  and malformed requests are recorded. Hook events go to `hook-events.jsonl`;
-  malformed requests receive a failed ledger row.
+  and malformed requests are recorded (`hook-events.jsonl`; a failed ledger
+  row).
 - Linux and macOS are supported. Windows named-pipe transport is experimental;
   the POSIX PATH shim is unavailable and jobserver integration is disabled.
-- Host integration is generated with
-  [agent-bundle](https://github.com/ScriptedAlchemy/agent-bundle). The plugin
-  artifact is the installation boundary for Claude Code, Codex, and Cursor.
-- The project is licensed under MIT.
+- Licensed under MIT.
 
 ## Development
 
 ```sh
-pnpm run dev     # agent-bundle workbench with live rebuilds (portable target)
-pnpm run build   # artifact/plugin, artifact/portable, and dist/bin
-pnpm run check   # validate + build + typecheck + Effect diagnostics + rstest + route tests
+pnpm run dev       # agent-bundle workbench with live rebuilds
+pnpm run build     # artifact/{claude,codex,cursor,portable} and dist/bin
+pnpm run inspect   # per-host component accounting
+pnpm run doctor    # installed copies versus the artifact
+pnpm run check     # the gate
+node scripts/preview-dashboard.mjs --port 4941   # dashboard outside an MCP host
 ```
 
-To preview the built dashboard outside an MCP host:
-
-```sh
-node scripts/preview-dashboard.mjs --port 4941
-```
-
-The preview server reads `artifact/plugin/mcp-apps/dashboard.html` and answers
-the dashboard's MCP App messages with `cargo-hauler status --json` output from
-`dist/bin/`. Run `pnpm run build` before starting it.
+agent-bundle does not yet have an npm release; this repository pins the
+[pkg.pr.new](https://pkg.pr.new) preview of main commit
+[`4edbd493b`](https://github.com/ScriptedAlchemy/agent-bundle/commit/4edbd493b)
+for both `agent-bundle` and `@agent-bundle/runtime`. `inspect` reports the
+`agent` component kind as unavailable on every host (agent-bundle G5
+deferral); this plugin defines no agents. Two framework limitations observed
+while building this app are tracked upstream: a rendered `SKILL.tsx` cannot
+import `agent-bundle/meta`
+([agent-bundle#440](https://github.com/ScriptedAlchemy/agent-bundle/issues/440)),
+and `inspectWorkbenchSurface` fails on a project with a rendered skill when
+run under the `react-server` condition of the route-unit pool
+([agent-bundle#441](https://github.com/ScriptedAlchemy/agent-bundle/issues/441);
+which is why `tests/workbench-surface.test.ts` lives in the plain pool).
 
 `repos/effect` is a read-only subtree containing the Effect v4 source pinned to
-`effect@4.0.0-rc.112`. It is reference material for development and is not a
-runtime dependency. See `AGENTS.md` before working with Effect code in this
+`effect@4.0.0-rc.112`; see `AGENTS.md` before working with Effect code in this
 repository.
-
-agent-bundle does not yet have an npm release. This repository pins a
-[pkg.pr.new](https://pkg.pr.new) preview of main commit
-[`4edbd493b`](https://github.com/ScriptedAlchemy/agent-bundle/commit/4edbd493b).
-The compile targets are `plugin`, which produces the multi-host artifact, and
-`portable`, which runs in the Workbench.
-
-The plugin surface is agent-bundle framework mode: filesystem routes, no
-hand-written server or CLI parser.
-
-| Path | Surface |
-| --- | --- |
-| `src/mcp/hauler/tools/*.tsx` | The six `hauler_*` MCP tools; each renders an Agent Document. |
-| `src/mcp/hauler/apps/dashboard.tsx` | The dashboard MCP App (`ui://cargo-hauler/dashboard.html`). |
-| `src/events/tool/{before,after}.tsx`, `src/events/stop.tsx` | Hook routes over the shared hook libraries; shipped for Claude, Codex, and Cursor. |
-| `src/cli/*` | The routed `cargo-hauler` CLI; the same documents as the MCP tools, printed as Markdown or `--json`. |
-| `src/scripts/hauler.ts` | The `hauler` process entry: `exec`, `install-shim`, `daemon`; everything else forwards to the routed CLI. |
-| `src/providers/daemon-config.ts` | Request-scoped daemon configuration for routes and tests. |
-| `src/components/` | Document components shared by the MCP and CLI surfaces. |
-| `src/skills/*/SKILL.md` | The `cargo-hauler` and `hauler-dashboard` agent skills shipped in the bundle. |
-| `src/daemon/`, `src/client/`, `src/hooks/`, `src/shim/`, `src/lib/` | The broker, the `exec` client, the shared hook libraries, the PATH shim installer, and shared utilities. |
-
-`pnpm test:routes` renders the routes through the framework compiler without an
-artifact build (`tests/route-unit/`).

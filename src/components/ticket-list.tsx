@@ -1,4 +1,3 @@
-import { Agent } from '@agent-bundle/runtime';
 import React from 'react';
 
 import type { RequestRecord } from '../daemon/protocol.js';
@@ -6,12 +5,13 @@ import { formatMs, relativeTime, shortenPath } from '../lib/format.js';
 
 import { commandText, elapsedMs } from './headlines.js';
 import { Heading, Table } from './primitives.js';
+import { EmptyState } from './states.js';
 
-export interface RequestTableProps {
+export interface TicketListProps {
+  readonly empty?: string;
   readonly heading?: string;
   readonly nowMs: number;
   readonly records: readonly RequestRecord[];
-  readonly empty?: string;
 }
 
 const outcome = (record: RequestRecord, nowMs: number): string => {
@@ -19,9 +19,7 @@ const outcome = (record: RequestRecord, nowMs: number): string => {
   const timing = elapsed === null ? '' : ` ${formatMs(elapsed)}`;
   switch (record.status) {
     case 'queued':
-      return record.queue === undefined
-        ? `queued${timing}`
-        : `queued${timing} · ${record.queue.position} ahead`;
+      return record.queue === undefined ? `queued${timing}` : `queued${timing} · ${record.queue.position} ahead`;
     case 'running':
       return record.estimateMs === null ? `running${timing}` : `running${timing} / ~${formatMs(record.estimateMs)}`;
     case 'done':
@@ -43,11 +41,12 @@ const outcome = (record: RequestRecord, nowMs: number): string => {
 const where = (record: RequestRecord): string =>
   [record.host, record.session, shortenPath(record.cwd, 30)].filter((part) => part !== null).join(' · ');
 
-export const RequestTable = ({ empty, heading, nowMs, records }: RequestTableProps) => (
+/** A table of tickets — the in-flight and recent sections of status, and the whole of log. */
+export const TicketList = ({ empty, heading, nowMs, records }: TicketListProps) => (
   <>
     {heading === undefined ? null : <Heading>{heading}</Heading>}
     {records.length === 0 ? (
-      empty === undefined ? null : <Agent.Text>{empty}</Agent.Text>
+      empty === undefined ? null : <EmptyState>{empty}</EmptyState>
     ) : (
       <Table
         columns={['Ticket', 'Outcome', 'Command', 'Where', 'Age']}

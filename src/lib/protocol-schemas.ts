@@ -386,8 +386,28 @@ export const requestInputSchema = z
   })
   .strict();
 
+/** The conversation a ticket was requested from, when the host placed the call in one (`request.lineage`). */
+export const ticketLineageSchema = z
+  .object({
+    conversation: z.string(),
+    depth: z.number().int().nonnegative(),
+    parent: z.string().optional(),
+    resolution: z.enum(['native', 'registry', 'inferred']),
+    root: z.string(),
+  })
+  .strict();
+
+export const ticketAttributionSchema = z
+  .object({
+    host: z.string(),
+    lineage: ticketLineageSchema.nullable(),
+    session: z.string().nullable(),
+  })
+  .strict();
+
 export const requestResultSchema = z
   .object({
+    attribution: ticketAttributionSchema,
     operation: z.literal('request'),
     summary: z.string(),
     ticket: z.string().nullable(),
@@ -409,7 +429,11 @@ export interface ResultFetchResult {
   readonly ticket: string;
 }
 
+export type TicketLineage = z.infer<typeof ticketLineageSchema>;
+export type TicketAttribution = z.infer<typeof ticketAttributionSchema>;
+
 export interface RequestSubmitResult {
+  readonly attribution: TicketAttribution;
   readonly operation: 'request';
   readonly summary: string;
   readonly ticket: string | null;
