@@ -1,16 +1,9 @@
 import { defineOperation, type RscOperationContext } from '@agent-bundle/runtime/plugin';
 import * as React from 'react';
-import * as Effect from 'effect/Effect';
 
 import { APP_RESOURCE_URI } from '../constants.js';
 import type { RequestRecord } from '../daemon/protocol.js';
-import {
-  displayRequestRecord,
-  displayRequestRecords,
-  loadHaulerSnapshot,
-} from '../query.js';
-import { HaulerResult } from '../result.js';
-
+import { loadLastResult, loadLogResult, loadStatusResult } from '../lib/inspect.js';
 import {
   lastResultSchema,
   limitInputSchema,
@@ -22,7 +15,8 @@ import {
   type LogResult,
   type StatusResult,
   type StatusInput,
-} from './schemas.js';
+} from '../lib/protocol-schemas.js';
+import { HaulerResult } from '../result.js';
 
 export interface InspectOperations {
   readonly last: (input: LimitInput, context: RscOperationContext) => Promise<LastResult>;
@@ -101,101 +95,10 @@ const parseStatus = (args: readonly string[]): StatusInput => {
   return parsed.data;
 };
 
-const loadSnapshot = (limit: number | undefined) =>
-  loadHaulerSnapshot(limit === undefined ? {} : { recentLimit: limit });
-
-export const filterStatusRows = (
-  rows: readonly RequestRecord[],
-  input: StatusInput,
-): readonly RequestRecord[] => {
-  const tickets = input.tickets === undefined ? null : new Set(input.tickets);
-  const statuses = input.statuses === undefined ? null : new Set(input.statuses);
-  return rows.filter(
-    (row) =>
-      (input.cwd === undefined || row.cwd === input.cwd) &&
-      (input.session === undefined || row.session === input.session) &&
-      (input.laneKey === undefined || row.laneKey === input.laneKey) &&
-      (tickets === null || tickets.has(row.ticket)) &&
-      (statuses === null || statuses.has(row.status)) &&
-      (input.commandContains === undefined ||
-        row.argv.join(' ').includes(input.commandContains)),
-  );
-};
-
-export const statusSummary = (
-  daemon: 'running' | 'stopped',
-  active: readonly RequestRecord[],
-  recent: readonly RequestRecord[],
-): string => {
-  const commandLimit = 160;
-  const header =
-    daemon === 'running'
-      ? `cargo-hauler daemon is running; ${active.length} active, ${recent.length} recent`
-      : `cargo-hauler daemon is not running; ${active.length} active, ${recent.length} recent`;
-  if (active.length === 0) {
-    return header;
-  }
-  return [
-    header,
-    ...active.map((row) => {
-      const fullCommand = row.argv.join(' ');
-      const command =
-        fullCommand.length <= commandLimit
-          ? fullCommand
-          : `${fullCommand.slice(0, commandLimit - 1)}…`;
-      const location = row.session ?? row.cwd;
-      return `${row.ticket} ${row.status} ${command} (${location})`;
-    }),
-  ].join('\n');
-};
-
 export const defaultInspectOperations: InspectOperations = {
-  last: async (_input, context) => {
-    const snapshot = await Effect.runPromise(loadSnapshot(1), { signal: context.signal });
-    const request = snapshot.recent[0] ?? null;
-    return {
-      daemon: snapshot.daemon,
-      operation: 'last',
-      request: request === null ? null : displayRequestRecord(request),
-      summary: request === null ? 'no hauler requests recorded' : `${request.ticket} ${request.status}`,
-    };
-  },
-  log: async (input, context) => {
-    const snapshot = await Effect.runPromise(loadSnapshot(input.limit ?? 50), {
-      signal: context.signal,
-    });
-    return {
-      daemon: snapshot.daemon,
-      operation: 'log',
-      requests: displayRequestRecords(snapshot.recent),
-      summary:
-        snapshot.recent.length === 0
-          ? 'no hauler requests recorded'
-          : `${snapshot.recent.length} recent request${snapshot.recent.length === 1 ? '' : 's'}`,
-    };
-  },
-  status: async (input, context) => {
-    const limit = input.limit ?? 20;
-    const hasFilters =
-      input.cwd !== undefined ||
-      input.session !== undefined ||
-      input.laneKey !== undefined ||
-      input.tickets !== undefined ||
-      input.statuses !== undefined ||
-      input.commandContains !== undefined;
-    const snapshot = await Effect.runPromise(loadSnapshot(hasFilters ? 500 : limit), {
-      signal: context.signal,
-    });
-    const active = filterStatusRows(snapshot.active, input);
-    const recent = filterStatusRows(snapshot.recent, input).slice(0, limit);
-    return {
-      ...snapshot,
-      active: displayRequestRecords(active),
-      operation: 'status',
-      recent: displayRequestRecords(recent),
-      summary: statusSummary(snapshot.daemon, active, recent),
-    };
-  },
+  last: (_input, context) => loadLastResult({ signal: context.signal }),
+  log: (input, context) => loadLogResult(input, { signal: context.signal }),
+  status: (input, context) => loadStatusResult(input, { signal: context.signal }),
 };
 
 export const inspectOperations = (operations: InspectOperations) => [

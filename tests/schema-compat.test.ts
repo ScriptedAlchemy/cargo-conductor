@@ -9,7 +9,7 @@ import {
   statusResultSchema,
   statusInputSchema,
   ticketInputSchema,
-} from '../src/operations/schemas.js';
+} from '../src/lib/protocol-schemas.js';
 
 const baseRecord = {
   argv: ['cargo', 'check'],

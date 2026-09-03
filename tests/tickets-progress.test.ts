@@ -35,7 +35,7 @@ describe('awaitTicketWithProgress', () => {
         const waited = yield* awaitTicketWithProgress(
           ticket,
           30_000,
-          (line) => {
+          ({ line }) => {
             lines.push(line);
           },
           fixture.config,
@@ -74,7 +74,7 @@ describe('awaitTicketWithProgress', () => {
         const waited = yield* awaitTicketWithProgress(
           ticket,
           30_000,
-          (line) => {
+          ({ line }) => {
             lines.push(line);
           },
           fixture.config,

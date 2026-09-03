@@ -9,7 +9,7 @@ import {
   daemonResultSchema,
   type DaemonInput,
   type DaemonResult,
-} from './schemas.js';
+} from '../lib/protocol-schemas.js';
 
 export interface DaemonOperations {
   readonly daemon: (input: DaemonInput, context: RscOperationContext) => Promise<DaemonResult>;

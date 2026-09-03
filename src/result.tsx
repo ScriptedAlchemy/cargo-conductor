@@ -9,7 +9,7 @@ import type {
   RequestSubmitResult,
   ResultFetchResult,
   StatusResult,
-} from './operations/schemas.js';
+} from './lib/protocol-schemas.js';
 
 export type HaulerReceipt =
   | AwaitResult

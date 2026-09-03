@@ -6,7 +6,7 @@ rs.mock('@agent-bundle/runtime/plugin', () => ({
   agent: rs.fn(),
 }));
 
-import { enrichTicketRequest } from '../src/operations/tickets.js';
+import { enrichTicketRequest } from '../src/lib/attribution.js';
 
 const unavailable = {
   host: { reason: 'host-omitted', state: 'unavailable' },

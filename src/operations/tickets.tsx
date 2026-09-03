@@ -1,24 +1,5 @@
-import {
-  agent,
-  defineOperation,
-  type AgentRequestContext,
-  type RscOperationContext,
-} from '@agent-bundle/runtime/plugin';
+import { agent, defineOperation, type RscOperationContext } from '@agent-bundle/runtime/plugin';
 import * as React from 'react';
-import * as Cause from 'effect/Cause';
-import * as Effect from 'effect/Effect';
-import * as Exit from 'effect/Exit';
-import * as Option from 'effect/Option';
-
-import {
-  awaitTicketWithProgress,
-  fetchTicket,
-  submitBackground,
-  type TicketSocketError,
-} from '../client/tickets.js';
-import type { RequestRecord } from '../daemon/protocol.js';
-import { describeRequestRecord, displayRequestRecord } from '../query.js';
-import { HaulerResult } from '../result.js';
 
 import {
   awaitMaxWaitMs,
@@ -32,7 +13,9 @@ import {
   type RequestSubmitResult,
   type ResultFetchResult,
   type TicketInput,
-} from './schemas.js';
+} from '../lib/protocol-schemas.js';
+import { awaitTicketResult, fetchTicketResult, submitTicketRequest } from '../lib/tickets.js';
+import { HaulerResult } from '../result.js';
 
 export interface TicketOperations {
   readonly await: (input: TicketInput, context: RscOperationContext) => Promise<AwaitResult>;
@@ -79,123 +62,19 @@ const parseRequest = (args: readonly string[]): RequestInput => {
   };
 };
 
-const infraFailure = (error: TicketSocketError): Error => {
-  switch (error._tag) {
-    case 'DaemonUnreachable':
-      return new Error(
-        `hauler daemon unreachable at ${error.socketPath}; it starts on demand with any exec, or run: hauler daemon start`,
-      );
-    case 'ControlTimeout':
-      return new Error(
-        `hauler daemon did not answer within ${error.timeoutMs}ms (socket ${error.socketPath})`,
-      );
-    case 'ConnectionClosed':
-      return new Error(
-        `connection to the hauler daemon closed mid-request (socket ${error.socketPath})`,
-      );
-    default: {
-      const exhaustive: never = error;
-      return exhaustive;
-    }
-  }
-};
-
-/**
- * Boundary runner: MCP/CLI cancellation aborts the socket wait, and typed
- * infrastructure failures surface as clear tool errors instead of being
- * disguised as "not found" / "timed out".
- */
-const runTicketEffect = async <A,>(
-  effect: Effect.Effect<A, TicketSocketError>,
-  signal: AbortSignal,
-): Promise<A> => {
-  const exit = await Effect.runPromiseExit(effect, { signal });
-  if (Exit.isSuccess(exit)) {
-    return exit.value;
-  }
-  const failure = Cause.findErrorOption(exit.cause);
-  if (Option.isSome(failure)) {
-    throw infraFailure(failure.value);
-  }
-  throw Cause.squash(exit.cause);
-};
-
-/**
- * Records cross from storage (ANSI kept) to a structured result here. Both
- * transports serialize the result to JSON — the CLI prints it, the MCP
- * server ships it as structured content — so the projection always strips:
- * an inherited FORCE_COLOR/CLICOLOR_FORCE must not leave ESC bytes to become
- * literal `\u001b[…` in the JSON.
- */
-const requestForConsumer = (request: RequestRecord | null): RequestRecord | null =>
-  request === null ? null : displayRequestRecord(request);
-
-type TicketRequestContext = Pick<AgentRequestContext, 'host' | 'session'> & {
-  readonly invocation: Pick<AgentRequestContext['invocation'], 'kind'>;
-};
-
-export const enrichTicketRequest = (
-  input: RequestInput,
-  requestContext: TicketRequestContext,
-): RequestInput => {
-  const host = input.host
-    ?? (requestContext.host.state === 'available'
-      ? requestContext.host.value.name
-      : requestContext.invocation.kind === 'cli'
-        ? 'cli'
-        : 'mcp');
-  const session = input.session
-    ?? (requestContext.session.state === 'available'
-      ? requestContext.session.value.sessionId
-      : undefined);
-  return {
-    ...input,
-    host,
-    ...(session === undefined ? {} : { session }),
-  };
-};
-
 export const defaultTicketOperations: TicketOperations = {
-  await: async (input, context) => {
-    const waited = await runTicketEffect(
-      // Progress heartbeats go to stderr so a terminal `hauler await`
-      // shows phase/elapsed/estimate while stdout stays machine-readable.
-      awaitTicketWithProgress(input.ticket, input.maxWaitMs ?? 30_000, (line) => {
+  await: (input, context) =>
+    awaitTicketResult(input, {
+      // Heartbeats go to stderr so a terminal `hauler await` shows
+      // phase/elapsed/estimate while stdout stays machine-readable.
+      onProgress: ({ line }) => {
         process.stderr.write(line);
-      }),
-      context.signal,
-    );
-    return {
-      operation: 'await',
-      request: requestForConsumer(waited.request),
-      summary: waited.timedOut
-        ? `${input.ticket} still pending`
-        : describeRequestRecord(input.ticket, waited.request),
-      ticket: input.ticket,
-      timedOut: waited.timedOut,
-    };
-  },
-  request: async (input, context) => {
-    const requestContext = await agent();
-    const ticket = await runTicketEffect(
-      submitBackground(enrichTicketRequest(input, requestContext)),
-      context.signal,
-    );
-    return {
-      operation: 'request',
-      summary: ticket === null ? 'failed to submit background request' : `${ticket} submitted`,
-      ticket,
-    };
-  },
-  result: async (input, context) => {
-    const request = await runTicketEffect(fetchTicket(input.ticket), context.signal);
-    return {
-      operation: 'result',
-      request: requestForConsumer(request),
-      summary: describeRequestRecord(input.ticket, request),
-      ticket: input.ticket,
-    };
-  },
+      },
+      signal: context.signal,
+    }),
+  request: async (input, context) =>
+    submitTicketRequest(input, await agent(), { signal: context.signal }),
+  result: (input, context) => fetchTicketResult(input, { signal: context.signal }),
 };
 
 export const ticketOperations = (operations: TicketOperations) => [

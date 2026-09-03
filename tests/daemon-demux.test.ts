@@ -6,7 +6,7 @@ import * as Effect from 'effect/Effect';
 import * as Fiber from 'effect/Fiber';
 
 import { createLedgerApi, openLedgerDatabase } from '../src/daemon/ledger.js';
-import { defaultTicketOperations } from '../src/operations/tickets.js';
+import { fetchTicketResult } from '../src/lib/tickets.js';
 import { decodeOutput, execRequest, findExit, pollReport, withDaemon } from './harness.js';
 import type { Fixture } from './harness.js';
 
@@ -375,7 +375,7 @@ describe('json demux early release', () => {
           process.env.NO_COLOR = '1';
           delete process.env.FORCE_COLOR;
           const plain = yield* Effect.promise(() =>
-            defaultTicketOperations.result({ ticket: exit.ticket }, context),
+            fetchTicketResult({ ticket: exit.ticket }, context),
           );
           expect(plain.request?.diagnostics?.join('')).toContain('error[E0432]: unresolved import');
           expect(plain.request?.diagnostics?.join('')).not.toContain(esc);
@@ -385,7 +385,7 @@ describe('json demux early release', () => {
           delete process.env.NO_COLOR;
           process.env.FORCE_COLOR = '1';
           const forced = yield* Effect.promise(() =>
-            defaultTicketOperations.result({ ticket: exit.ticket }, context),
+            fetchTicketResult({ ticket: exit.ticket }, context),
           );
           expect(forced.request?.diagnostics?.join('')).toContain('error[E0432]: unresolved import');
           expect(forced.request?.diagnostics?.join('')).not.toContain(esc);

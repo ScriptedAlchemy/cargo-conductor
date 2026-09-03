@@ -97,9 +97,15 @@ type TicketStatusFetcher = (
   config: DaemonConfigShape,
 ) => Effect.Effect<RequestRecord | null, unknown>;
 
+/** One heartbeat: the human line plus the live record it was rendered from. */
+export interface AwaitProgress {
+  readonly line: string;
+  readonly record: RequestRecord | null;
+}
+
 /**
  * `awaitTicket` with a heartbeat: while the daemon-side wait blocks, the
- * ticket's live record is polled and rendered through `onProgress` so a
+ * ticket's live record is polled and reported through `onProgress` so a
  * terminal wait shows queue phase, elapsed time, and the cost estimate
  * instead of silence. Progress is best-effort — a failed poll never fails
  * the await.
@@ -107,7 +113,7 @@ type TicketStatusFetcher = (
 export const awaitTicketWithProgress = (
   ticket: string,
   maxWaitMs: number,
-  onProgress: (line: string) => void,
+  onProgress: (progress: AwaitProgress) => void,
   config: DaemonConfigShape = resolveDaemonConfig(),
   intervalMs = 5_000,
   fetchStatus: TicketStatusFetcher = fetchTicket,
@@ -127,19 +133,23 @@ export const awaitTicketWithProgress = (
       switch (poll._tag) {
         case 'Failed':
           if (!observed) {
-            onProgress(`[cargo-hauler] ${ticket} is not known to the daemon (yet)\n`);
+            onProgress({
+              line: `[cargo-hauler] ${ticket} is not known to the daemon (yet)\n`,
+              record: null,
+            });
           }
           break;
         case 'Observed':
           if (poll.record === null) {
-            onProgress(
-              observed
+            onProgress({
+              line: observed
                 ? `[cargo-hauler] ${ticket} status check failed, retrying\n`
                 : `[cargo-hauler] ${ticket} is not known to the daemon (yet)\n`,
-            );
+              record: null,
+            });
           } else {
             observed = true;
-            onProgress(formatAwaitedRecord(ticket, poll.record));
+            onProgress({ line: formatAwaitedRecord(ticket, poll.record), record: poll.record });
           }
           break;
         default: {

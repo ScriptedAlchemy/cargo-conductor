@@ -11,11 +11,8 @@ import { pingDaemon, requestOverSocket } from '../src/daemon/control.js';
 import { createLedgerApi, openLedgerDatabase } from '../src/daemon/ledger.js';
 import { runDaemon } from '../src/daemon/main.js';
 import type { RequestRecord } from '../src/daemon/protocol.js';
-import {
-  defaultInspectOperations,
-  filterStatusRows,
-  statusSummary,
-} from '../src/operations/inspect.js';
+import { loadLastResult, loadStatusResult } from '../src/lib/inspect.js';
+import { filterStatusRows, statusSummary } from '../src/lib/status-filter.js';
 import {
   describeRequestRecord,
   displayRequestRecord,
@@ -241,10 +238,10 @@ describe('loadHaulerSnapshot', () => {
       process.env.FORCE_COLOR = '1';
       process.env.CLICOLOR_FORCE = '1';
       const context = { signal: new AbortController().signal };
-      const last = await defaultInspectOperations.last({}, context);
+      const last = await loadLastResult(context);
       expect(last.request?.outputTail).toBe('error: it broke\n');
       expect(JSON.stringify(last)).not.toContain('\\u001b');
-      const status = await defaultInspectOperations.status({}, context);
+      const status = await loadStatusResult({}, context);
       expect(JSON.stringify(status)).not.toContain('\\u001b');
     } finally {
       for (const [name, value] of Object.entries(saved)) {
