@@ -143,7 +143,7 @@ codex plugin marketplace add ./artifact/plugin
 codex plugin add cargo-hauler@cargo-hauler-marketplace
 
 # Cursor
-./scripts/install-cursor.sh
+node ./artifact/plugin/install.mjs
 ```
 
 Restart Cursor after installation so new sessions load the hooks. The
@@ -332,6 +332,22 @@ repository.
 
 agent-bundle does not yet have an npm release. This repository pins a
 [pkg.pr.new](https://pkg.pr.new) preview of main commit
-[`b3c12f316`](https://github.com/ScriptedAlchemy/agent-bundle/commit/b3c12f316).
+[`105c65d8f`](https://github.com/ScriptedAlchemy/agent-bundle/commit/105c65d8f).
 The compile targets are `plugin`, which produces the multi-host artifact, and
 `portable`, which runs in the Workbench.
+
+The plugin surface is agent-bundle framework mode: filesystem routes, no
+hand-written server or CLI parser.
+
+| Path | Surface |
+| --- | --- |
+| `src/mcp/hauler/tools/*.tsx` | The six `hauler_*` MCP tools; each renders an Agent Document. |
+| `src/mcp/hauler/apps/dashboard.tsx` | The dashboard MCP App (`ui://cargo-hauler/dashboard.html`). |
+| `src/events/tool/{before,after}.tsx`, `src/events/stop.tsx` | Hook routes over the shared hook libraries; shipped for Claude, Codex, and Cursor. |
+| `src/cli/*.tsx` | The routed `cargo-hauler` CLI; the same documents as the MCP tools, printed as Markdown or `--json`. |
+| `src/scripts/hauler.ts` | The `hauler` process entry: `exec`, `install-shim`, `daemon`; everything else forwards to the routed CLI. |
+| `src/providers/daemon-config.ts` | Request-scoped daemon configuration for routes and tests. |
+| `src/components/` | Document components shared by the MCP and CLI surfaces. |
+
+`pnpm test:routes` renders the routes through the framework compiler without an
+artifact build (`tests/route-unit/`).

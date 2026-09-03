@@ -38,19 +38,18 @@ open the portable target in the workbench playground).
 
 ### Cursor
 
-- Install with the script (a bare symlink of the artifact does not work:
-  Cursor's local-plugin loader reads a root `plugin.json`/`mcp.json` and a
-  Cursor-format `hooks/hooks.json`, not the artifact's `.cursor-plugin/`
-  manifest — the script generates those and pins the plugin root):
+- Install with the bundle's own installer (Cursor has no non-interactive
+  plugin install command, and it rejects symlinks that resolve outside
+  `~/.cursor/plugins/local`, so the installer makes a physical copy):
 
   ```sh
-  ./scripts/install-cursor.sh
+  node ./artifact/plugin/install.mjs
   ```
 
-  It installs into `~/.cursor/plugins/local/cargo-hauler`
-  (`CURSOR_PLUGINS_DIR` overrides the base). Restart or reload Cursor so new
-  agent sessions pick up the hooks. Re-run the script after every
-  `pnpm run build` — hook wrapper filenames are content-hashed.
+  It installs into `~/.cursor/plugins/local/cargo-hauler` and refuses to
+  overwrite a different version or different content — remove that directory
+  first when refreshing after a rebuild. Restart or reload Cursor so new agent
+  sessions pick up the hooks.
 
 - Hook events: `preToolUse`, `postToolUse`. Cursor drops `beforeTool`
   additionalContext but honors `afterTool` context injection.

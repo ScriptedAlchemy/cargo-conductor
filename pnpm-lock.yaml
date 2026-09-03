@@ -46,8 +46,8 @@ importers:
         specifier: 0.38.0
         version: 0.38.0
       '@rstest/core':
-        specifier: 0.11.10
-        version: 0.11.10
+        specifier: 0.11.11
+        version: 0.11.11
       '@types/node':
         specifier: ^22.18.0
         version: 22.20.1
@@ -65,7 +65,10 @@ importers:
         version: 7.0.0-dev.20260707.2
       agent-bundle:
         specifier: https://pkg.pr.new/ScriptedAlchemy/agent-bundle/agent-bundle@105c65d8f
-        version: https://pkg.pr.new/ScriptedAlchemy/agent-bundle/agent-bundle@105c65d8f(@agent-bundle/runtime@https://pkg.pr.new/ScriptedAlchemy/agent-bundle/@agent-bundle/runtime@105c65d8f(@rspack/core@2.2.2(@swc/helpers@0.5.23))(react-dom@19.2.8(react@19.2.8))(react@19.2.8))(@rspack/core@2.2.2(@swc/helpers@0.5.23))(@rstest/core@0.11.10)(@typescript/native-preview@7.0.0-dev.20260707.2)(hono@4.13.5)(react@19.2.8)(typescript@5.6.1-rc)
+        version: https://pkg.pr.new/ScriptedAlchemy/agent-bundle/agent-bundle@105c65d8f(@agent-bundle/runtime@https://pkg.pr.new/ScriptedAlchemy/agent-bundle/@agent-bundle/runtime@105c65d8f(@rspack/core@2.2.2(@swc/helpers@0.5.23))(react-dom@19.2.8(react@19.2.8))(react@19.2.8))(@rspack/core@2.2.2(@swc/helpers@0.5.23))(@rstest/core@0.11.11)(@typescript/native-preview@7.0.0-dev.20260707.2)(hono@4.13.5)(react@19.2.8)(typescript@5.6.1-rc)
+      effect-rstest:
+        specifier: https://pkg.pr.new/ScriptedAlchemy/effect-rstest@e5f8d5f
+        version: https://pkg.pr.new/ScriptedAlchemy/effect-rstest@e5f8d5f(@rstest/core@0.11.11)(effect@4.0.0-rc.112)
       typescript:
         specifier: 7.0.2
         version: 7.0.2
@@ -644,8 +647,8 @@ packages:
       jiti:
         optional: true
 
-  '@rstest/core@0.11.10':
-    resolution: {integrity: sha512-x/PNGPdyKQWbiVhpoOQco8xXevh4P/QamuyJ0/YdTrdEiUcUglT6tGSnxaudwyrQr8e/5gwWuOt6zykZKWmSUg==}
+  '@rstest/core@0.11.11':
+    resolution: {integrity: sha512-7Ii2/2/ex1Oa0Kg5Qk5RKx2+e0I83BHLwH0/gn1B7IDwXCh5msFCF7yTyVGFuMltlm3E8Cf4QD7jadOEaBfXfw==}
     engines: {node: ^20.19.0 || >=22.12.0}
     hasBin: true
     peerDependencies:
@@ -1003,6 +1006,13 @@ packages:
 
   ee-first@1.1.1:
     resolution: {integrity: sha512-WMwm9LhRUo+WUaRN+vRuETqG89IgZphVSNkdFgeb6sS/E4OrDIN7t48CAewSHXc6C8lefD8KKfr5vY61brQlow==}
+
+  effect-rstest@https://pkg.pr.new/ScriptedAlchemy/effect-rstest@e5f8d5f:
+    resolution: {integrity: sha512-vAoaIALD1PEKZDHdX8RdFKzJQtV5FTTzmGt9+xSbjbCJyPX/yKXvL9kJlR9QjSXRxGwFcxy+v+QxEK2ja7JKpA==, tarball: https://pkg.pr.new/ScriptedAlchemy/effect-rstest@e5f8d5f}
+    version: 0.1.0
+    peerDependencies:
+      '@rstest/core': ^0.11.11
+      effect: ^4.0.0-rc.108
 
   effect@4.0.0-rc.112:
     resolution: {integrity: sha512-wXxwuh1Ywnv4cPRM3Wfa0vDwuOHnZ1TsTgHJkG9XgzND6inhBH9n1vBxhg3iIXOia/OrpmvVmd3lrD4vq6bF3A==}
@@ -1977,7 +1987,7 @@ snapshots:
     optionalDependencies:
       jiti: 2.7.0
 
-  '@rstest/core@0.11.10':
+  '@rstest/core@0.11.11':
     dependencies:
       '@rsbuild/core': 2.2.2
       '@types/chai': 5.2.3
@@ -2121,7 +2131,7 @@ snapshots:
 
   acorn@8.18.0: {}
 
-  agent-bundle@https://pkg.pr.new/ScriptedAlchemy/agent-bundle/agent-bundle@105c65d8f(@agent-bundle/runtime@https://pkg.pr.new/ScriptedAlchemy/agent-bundle/@agent-bundle/runtime@105c65d8f(@rspack/core@2.2.2(@swc/helpers@0.5.23))(react-dom@19.2.8(react@19.2.8))(react@19.2.8))(@rspack/core@2.2.2(@swc/helpers@0.5.23))(@rstest/core@0.11.10)(@typescript/native-preview@7.0.0-dev.20260707.2)(hono@4.13.5)(react@19.2.8)(typescript@5.6.1-rc):
+  agent-bundle@https://pkg.pr.new/ScriptedAlchemy/agent-bundle/agent-bundle@105c65d8f(@agent-bundle/runtime@https://pkg.pr.new/ScriptedAlchemy/agent-bundle/@agent-bundle/runtime@105c65d8f(@rspack/core@2.2.2(@swc/helpers@0.5.23))(react-dom@19.2.8(react@19.2.8))(react@19.2.8))(@rspack/core@2.2.2(@swc/helpers@0.5.23))(@rstest/core@0.11.11)(@typescript/native-preview@7.0.0-dev.20260707.2)(hono@4.13.5)(react@19.2.8)(typescript@5.6.1-rc):
     dependencies:
       '@modelcontextprotocol/client': 2.0.0
       '@modelcontextprotocol/node': 2.0.0(@modelcontextprotocol/server@2.0.0)(hono@4.13.5)
@@ -2147,7 +2157,7 @@ snapshots:
       yaml: 2.9.0
     optionalDependencies:
       '@agent-bundle/runtime': https://pkg.pr.new/ScriptedAlchemy/agent-bundle/@agent-bundle/runtime@105c65d8f(@rspack/core@2.2.2(@swc/helpers@0.5.23))(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
-      '@rstest/core': 0.11.10
+      '@rstest/core': 0.11.11
       react: 19.2.8
     transitivePeerDependencies:
       - '@microsoft/api-extractor'
@@ -2265,6 +2275,11 @@ snapshots:
       gopd: 1.2.0
 
   ee-first@1.1.1: {}
+
+  effect-rstest@https://pkg.pr.new/ScriptedAlchemy/effect-rstest@e5f8d5f(@rstest/core@0.11.11)(effect@4.0.0-rc.112):
+    dependencies:
+      '@rstest/core': 0.11.11
+      effect: 4.0.0-rc.112
 
   effect@4.0.0-rc.112:
     dependencies:

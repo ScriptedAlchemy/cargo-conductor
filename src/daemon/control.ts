@@ -39,14 +39,22 @@ const defaultTimeoutMs = 10_000;
 
 const snapshot = (received: readonly ServerMessage[]): readonly ServerMessage[] => received.slice();
 
+/** How long a client waits for the daemon to accept a connection. */
+export const openTimeoutMs = 2_000;
+
 export const mapSocketFailure = (
   error: Socket.SocketError,
   socketPath: string,
   received: readonly ServerMessage[] = [],
-): DaemonUnreachableError | ConnectionClosedError => {
+): DaemonUnreachableError | ControlTimeoutError | ConnectionClosedError => {
   switch (error.reason._tag) {
     case 'SocketOpenError':
-      return new DaemonUnreachableError({ socketPath, cause: error });
+      // A refused or absent socket is a stopped daemon; an accept that never
+      // arrives is a live daemon too busy to answer (observed under heavy
+      // machine load), and must not read as "not running".
+      return error.reason.kind === 'Timeout'
+        ? new ControlTimeoutError({ socketPath, timeoutMs: openTimeoutMs, received: snapshot(received) })
+        : new DaemonUnreachableError({ socketPath, cause: error });
     case 'SocketWriteError':
     case 'SocketReadError':
     case 'SocketCloseError':
@@ -90,10 +98,14 @@ const runRequest = (
 
     const afterPumpFailure = (
       error: Socket.SocketError,
-    ): Effect.Effect<readonly ServerMessage[], DaemonUnreachableError | ConnectionClosedError> => {
+    ): Effect.Effect<
+      readonly ServerMessage[],
+      DaemonUnreachableError | ControlTimeoutError | ConnectionClosedError
+    > => {
       const mapped = mapSocketFailure(error, options.socketPath, received);
       switch (mapped._tag) {
         case 'DaemonUnreachable':
+        case 'ControlTimeout':
           return Effect.fail(mapped);
         case 'ConnectionClosed':
           return finishAfterPeerGone();
@@ -108,14 +120,14 @@ const runRequest = (
     // `socket.run`, which routes them via mapSocketFailure below.
     const socket = yield* NodeSocket.makeNet({
       path: options.socketPath,
-      openTimeout: 2000,
+      openTimeout: openTimeoutMs,
     });
 
     const write = yield* socket.writer;
 
     const pump: Effect.Effect<
       readonly ServerMessage[],
-      DaemonUnreachableError | ConnectionClosedError
+      DaemonUnreachableError | ControlTimeoutError | ConnectionClosedError
     > = socket
       .run(
         (data) => {

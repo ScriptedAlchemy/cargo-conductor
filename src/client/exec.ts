@@ -17,8 +17,10 @@ import { resolveDaemonConfig } from '../daemon/config.js';
 import type { DaemonConfigShape } from '../daemon/config.js';
 import {
   ConnectionClosedError,
+  type ControlTimeoutError,
   DaemonUnreachableError,
   mapSocketFailure as mapOpenError,
+  openTimeoutMs,
 } from '../daemon/control.js';
 import {
   encodeClientMessage,
@@ -277,7 +279,11 @@ const handleServerMessage = (
 const streamBrokered = (
   options: RunExecOptions,
   config: DaemonConfigShape,
-): Effect.Effect<RunExecResult, DaemonUnreachableError | ConnectionClosedError, Scope> =>
+): Effect.Effect<
+  RunExecResult,
+  DaemonUnreachableError | ControlTimeoutError | ConnectionClosedError,
+  Scope
+> =>
   Effect.gen(function* () {
     const received: ServerMessage[] = [];
     const lines = new LineBuffer();
@@ -292,7 +298,7 @@ const streamBrokered = (
     // v4 sockets connect lazily: open failures surface through the pump's
     // `socket.run`, which routes them via mapOpenError below.
     const socket = yield* NodeSocket.makeNet({
-      openTimeout: 2_000,
+      openTimeout: openTimeoutMs,
       path: config.socketPath,
     });
 
@@ -348,10 +354,14 @@ const streamBrokered = (
         Effect.matchEffect({
           onFailure: (
             error,
-          ): Effect.Effect<RunExecResult, DaemonUnreachableError | ConnectionClosedError> => {
+          ): Effect.Effect<
+            RunExecResult,
+            DaemonUnreachableError | ControlTimeoutError | ConnectionClosedError
+          > => {
             const mapped = mapOpenError(error, config.socketPath);
             switch (mapped._tag) {
               case 'DaemonUnreachable':
+              case 'ControlTimeout':
                 return Effect.fail(mapped);
               case 'ConnectionClosed':
                 return afterDisconnect();
@@ -413,24 +423,51 @@ const streamBrokered = (
     return yield* Deferred.await(finished).pipe(Effect.raceFirst(Fiber.join(pumpFiber)));
   });
 
+/** How long exec keeps retrying a daemon that is up but slow to accept. */
+const slowAcceptBudget = '60 seconds';
+
 const brokeredOrUnreachable = (
   options: RunExecOptions,
   config: DaemonConfigShape,
 ): Effect.Effect<RunExecResult, DaemonUnreachableError> =>
   Effect.scoped(streamBrokered(options, config)).pipe(
-    Effect.catchTag('ConnectionClosed', (closed) => {
-      const exit = closed.received.find((message): message is ExitMessage => message.type === 'exit');
-      if (exit !== undefined) {
-        return Effect.succeed({
-          exitCode: exit.exitCode === null ? 1 : exit.exitCode,
-          mode: 'brokered' as const,
-          ticket: exit.ticket,
-        });
-      }
-      if (closed.received.length === 0) {
-        return Effect.fail(new DaemonUnreachableError({ cause: closed, socketPath: config.socketPath }));
-      }
-      return Effect.succeed({ exitCode: 1, mode: 'brokered' as const });
+    // The socket exists but nobody accepted within the open timeout: the
+    // daemon is alive and overloaded. Running cargo directly here would put an
+    // unbrokered build on an already saturated machine, so keep knocking.
+    Effect.retry({
+      schedule: Schedule.spaced('1 second').pipe(Schedule.upTo({ duration: slowAcceptBudget })),
+      while: (error) => error._tag === 'ControlTimeout',
+    }),
+    Effect.tapError((error) =>
+      error._tag === 'ControlTimeout'
+        ? Effect.sync(() => {
+            options.io.writeStderr(
+              `[cargo-hauler] daemon did not accept a connection for ${slowAcceptBudget}; trying cargo directly\n`,
+            );
+          })
+        : Effect.void,
+    ),
+    Effect.catchTags({
+      ConnectionClosed: (closed) => {
+        const exit = closed.received.find(
+          (message): message is ExitMessage => message.type === 'exit',
+        );
+        if (exit !== undefined) {
+          return Effect.succeed({
+            exitCode: exit.exitCode === null ? 1 : exit.exitCode,
+            mode: 'brokered' as const,
+            ticket: exit.ticket,
+          });
+        }
+        if (closed.received.length === 0) {
+          return Effect.fail(
+            new DaemonUnreachableError({ cause: closed, socketPath: config.socketPath }),
+          );
+        }
+        return Effect.succeed({ exitCode: 1, mode: 'brokered' as const });
+      },
+      ControlTimeout: (timeout) =>
+        Effect.fail(new DaemonUnreachableError({ cause: timeout, socketPath: config.socketPath })),
     }),
   );
 
