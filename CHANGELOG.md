@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.4.1
+
+### Patch Changes
+
+- 0861873: Align the plugin's remaining hand-synced surfaces with agent-bundle framework mode: the `hauler_status` tool and the dashboard MCP App route now read the widget URI from one imported `APP_RESOURCE_URI` const that the compiler resolves statically (no duplicated `ui://` literals), the App template is declared route-relative, and the unit-test pool takes its `agent-bundle/meta` alias from the framework's `agentBundleRstest` preset instead of a hand-written fixture. No runtime behavior changes.
+- 889b430: A ticket settles once its cargo process exits even when a surviving descendant (an orphaned helper or a daemonized child) keeps the output pipe open: the daemon drains for one more second, then stops reading instead of waiting for pipe EOF indefinitely.
+
 ## 0.4.0
 
 ### Minor Changes
