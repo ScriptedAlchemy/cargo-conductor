@@ -119,10 +119,11 @@ disk swap should reduce steady-state swap-in/swap-out stalls. That should keep
 memory PSI below the daemon's soft clamp more often and reduce hard-clamp
 frequency.
 
-The staged oomd threshold is a later, sustained-pressure backstop, not a
-replacement for admission control. If enabled, compare hauler clamp counts,
-`/proc/pressure/memory`, swap I/O, and oomd kill logs; do not infer equivalence
-between hauler's short admission thresholds and oomd's 60%/30-second policy.
+Should a userspace OOM handler ever be adopted, it would be a later,
+sustained-pressure backstop, not a replacement for admission control; a
+sustained-window kill policy and hauler's short admission thresholds are not
+equivalent and should be compared against `/proc/pressure/memory` and swap
+I/O before drawing conclusions.
 
 ## Verification performed
 
