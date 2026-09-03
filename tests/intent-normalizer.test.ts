@@ -254,6 +254,38 @@ describe('normalizeCargoIntent', () => {
     }
   });
 
+  it('spells a not-yet-created target dir canonically before and after creation', () => {
+    // Reproduces the darwin /var -> /private/var failure mode on any
+    // platform: the target dir lives behind a symlink and does not exist
+    // when the first request is normalized. Both submissions must agree on
+    // one canonical spelling or lane keys and sameCompileSurface diverge.
+    const directory = mkdtempSync(join(tmpdir(), 'cargo-hauler-intent-'));
+    try {
+      const real = join(directory, 'real');
+      const linked = join(directory, 'linked');
+      const workspace = join(real, 'workspace');
+      mkdirSync(workspace, { recursive: true });
+      symlinkSync(real, linked, 'dir');
+
+      const options = {
+        argv: ['cargo', 'check'],
+        cwd: join(linked, 'workspace'),
+        env: { CARGO_TARGET_DIR: join(linked, 'targets', 'shared') },
+        workspaceRoot: join(linked, 'workspace'),
+      } as const;
+
+      const beforeCreation = normalizeCargoIntent(options);
+      mkdirSync(join(real, 'targets', 'shared'), { recursive: true });
+      const afterCreation = normalizeCargoIntent(options);
+
+      expect(beforeCreation.targetDir).toBe(join(realpathSync(real), 'targets', 'shared'));
+      expect(afterCreation.targetDir).toBe(beforeCreation.targetDir);
+      expect(afterCreation.key).toBe(beforeCreation.key);
+    } finally {
+      rmSync(directory, { force: true, recursive: true });
+    }
+  });
+
   it('uses CLI, environment, configured, then default target-dir precedence', () => {
     const base = {
       argv: ['cargo', 'check'],
