@@ -24,4 +24,4 @@ export const resolveHookStateDir = (
 export const resolveHookSocketPath = (
   env: Readonly<Record<string, string | undefined>> = process.env,
   platform: NodeJS.Platform = process.platform,
-): string => daemonSocketPath(resolveHookStateDir(env), platform);
+): string => daemonSocketPath(resolveHookStateDir(env), platform, env);
