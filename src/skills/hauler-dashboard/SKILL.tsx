@@ -34,10 +34,10 @@ export default () => (
         badge, admission meter, lane board, in-flight and recent tickets, and kache summary.
       </li>
       <li>
-        <strong>Plain browser:</strong> build the artifact, then start the live preview:
-        <pre>{'pnpm build\nnode scripts/preview-dashboard.mjs --port 4941'}</pre>
-        Open <code>http://127.0.0.1:4941</code>. The preview uses the production daemon and polls every five
-        seconds.
+        <strong>Plain browser:</strong> from the plugin checkout run <code>pnpm run dev</code> and open the
+        Workbench's MCP page. It binds a session to the generated <code>hauler</code> server and previews{' '}
+        <code>{APP_RESOURCE_URI}</code> over that session, so the panels show the daemon's own data and poll
+        every five seconds.
       </li>
     </ul>
     <h2>Read the panels</h2>

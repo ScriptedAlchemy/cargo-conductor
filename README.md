@@ -467,12 +467,16 @@ pnpm run build     # artifact/{claude,codex,cursor,portable} and dist/bin
 pnpm run inspect   # per-host component accounting
 pnpm run doctor    # installed copies versus the artifact
 pnpm run check     # the gate
-node scripts/preview-dashboard.mjs --port 4941   # dashboard outside an MCP host
 ```
+
+To see the dashboard outside an MCP host, run `pnpm run dev` and open the
+Workbench's MCP page: it binds a session to the generated `hauler` server and
+previews the `ui://cargo-hauler/dashboard.html` App over that session, so the
+data is the daemon's own. The repository ships no preview harness of its own.
 
 agent-bundle does not yet have an npm release; this repository pins the
 [pkg.pr.new](https://pkg.pr.new) preview of main commit
-[`4edbd493b`](https://github.com/ScriptedAlchemy/agent-bundle/commit/4edbd493b)
+[`886b1921f`](https://github.com/ScriptedAlchemy/agent-bundle/commit/886b1921f64f7b857528acda32d94c4d0df9bba7)
 for both `agent-bundle` and `@agent-bundle/runtime`. `inspect` reports the
 `agent` component kind as unavailable on every host (agent-bundle G5
 deferral); this plugin defines no agents. Two framework limitations observed
