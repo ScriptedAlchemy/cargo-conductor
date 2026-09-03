@@ -109,8 +109,10 @@ describe('daemon start without a machine-specific mount', () => {
       const pong = yield* Effect.scoped(
         Effect.gen(function* () {
           yield* Effect.forkScoped(runDaemon(config));
+          // A cold in-process daemon on a slow CI runner (macOS) can take
+          // longer than the 5 s default to open its socket.
           const reply = yield* pingDaemon(config.socketPath, 500).pipe(
-            Effect.retry(Schedule.spaced('50 millis').pipe(Schedule.upTo({ times: 100 }))),
+            Effect.retry(Schedule.spaced('50 millis').pipe(Schedule.upTo({ times: 400 }))),
           );
           // Assert while the daemon is still up; scope close removes it.
           expect(existsSync(config.socketPath)).toBe(true);
@@ -120,7 +122,7 @@ describe('daemon start without a machine-specific mount', () => {
       );
       expect(pong.type).toBe('pong');
       expect(existsSync(config.lockTargetPath)).toBe(false);
-    }));
+    }), 30_000);
 
   it.live('rewrites a stale pid record while holding the lock and removes it on shutdown', () =>
     Effect.gen(function* () {

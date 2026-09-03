@@ -123,7 +123,8 @@ valueless `Agent.Result` container around one `Suspense` boundary:
 used; and when the transport publishes no session id (bare stdio MCP), the
 conversation from `request.lineage` becomes the session of record. That is
 what makes parallel agents' builds attributable in the ledger, the dashboard,
-and `hauler_status --session <conversation>`. Results carry
+and `hauler status --session <conversation>` (the `hauler_status` tool takes
+the same filter as its `session` field). Results carry
 `attribution: { host, session, lineage }`.
 
 ### Routes
@@ -218,7 +219,7 @@ executable beside it (`dist/bin/cargo-hauler.js` in the package,
 | `hauler status [--limit N] [--cwd DIR] [--session ID] [--lane KEY] [--ticket ID …] [--status S …] [--command-contains TEXT]` | Queue, active runs, lanes, admission, kache, optionally filtered. |
 | `hauler log [--limit N]` | Recent requests from the ledger. |
 | `hauler last` | The most recent request. |
-| `hauler await <ticket> [--max-wait-ms N]` | Long-poll until the ticket finishes or the wait expires (default 30 s, ceiling two hours). |
+| `hauler await <ticket> [--max-wait-ms N]` | Long-poll until the ticket finishes or the wait expires (default 30 s, ceiling 55 s per call — the rendered-route budget; call again to keep waiting). |
 | `hauler result <ticket>` | A stored ticket; running tickets include a live output tail. |
 | `hauler request [--session ID] [--host HOST] [--cwd DIR] -- <cargo …>` | Submit a background request and return its ticket. |
 | `hauler daemon <run\|start\|stop\|status>` | Manage the daemon lifecycle. |
@@ -288,6 +289,14 @@ attached request returns to its lane unless its required compilation units were
 already observed as successful. Folded tests share the composite process,
 output, and exit code.
 
+Brokered output keeps cargo's stdout and stderr as separate channels. When the
+caller's own stdout and stderr are the same open file (`cargo run 2>&1`, a
+shared terminal, `| tee`), the client asks the daemon to run the child with
+stderr on the stdout pipe, so the program's write order across the two streams
+is preserved exactly as direct cargo would have. Demultiplexed `build`,
+`check`, and `clippy` runs keep separate channels because the JSON stream owns
+stdout.
+
 ![cargo-hauler request normalization, lane-local serialization, scheduling, admission, and concurrent Cargo processes](docs/media/how-it-works.png)
 
 The scheduler estimates run cost from per-intent EWMA history. It can also use
@@ -336,9 +345,15 @@ acquires the singleton lock and passes it to every Cargo it spawns through
 Every request has a durable ticket (`cc-<n>`). Its status, exit code, output
 tail, estimate, and timestamps are stored in SQLite and can be read from later
 sessions. `hauler exec --bg -- cargo …` and `hauler_request` return the ticket
-immediately; a synchronous request also switches to background mode when its
-estimate exceeds the configured host threshold (nine minutes for Claude, ten
-for Codex, fourteen for Cursor).
+immediately. A synchronous request also switches to background mode when a
+*measured* estimate — EWMA history or kache priors, never the cold-start
+default — exceeds the host's shell-tool cap (nine minutes for Claude, ten for
+Codex, fourteen for Cursor; the PATH shim uses `CARGO_HAULER_HOST` when it is
+exported, otherwise the Claude cap). That conversion exits `75`
+(`EX_TEMPFAIL`) with the ticket on stderr, so `cargo build && …` chains and
+scripts cannot mistake "submitted" for "built"; explicit `--bg` keeps exit
+`0`. Failed runs feed the estimate history too, so a broken build is not
+re-estimated cold on every retry.
 
 The `tool/after` route checks session tickets and, on the first tool call
 after a ticket finishes, adds its result to the agent context. For foreground
@@ -409,7 +424,7 @@ is reported as unavailable and never rejects a request.
 | `CARGO_HAULER_KILL_GRACE_MS` | `8000` | Time between SIGTERM and SIGKILL when the daemon stops a Cargo process. |
 | `CARGO_HAULER_STOP_WAIT_MS` | `30000` | Maximum wait for one stop-hook invocation. |
 | `CARGO_HAULER_LOG_LEVEL` | `Info` | Daemon log level. |
-| `CARGO_HAULER_HOST`, `CARGO_HAULER_SESSION` | Unset | Default `--host` and `--session` attribution for `hauler exec`. |
+| `CARGO_HAULER_HOST`, `CARGO_HAULER_SESSION` | Unset | Default `--host` and `--session` attribution for `hauler exec`; the PATH shim also borrows `CARGO_HAULER_HOST`'s shell cap for auto-background. |
 
 Each `CARGO_HAULER_*` tuning value takes precedence over its retained legacy
 `CARGO_CONDUCTOR_*` alias; `CARGO_CONDUCTOR_STATE_DIR` is ignored and hand-run

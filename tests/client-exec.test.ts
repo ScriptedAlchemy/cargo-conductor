@@ -1,19 +1,91 @@
-import { readFileSync } from 'node:fs';
+import { mkdirSync, readFileSync } from 'node:fs';
+import { createServer, type Server, type Socket } from 'node:net';
 import { join } from 'node:path';
 
 import { describe, expect, it } from 'effect-rstest';
 import * as Effect from 'effect/Effect';
 import * as Schedule from 'effect/Schedule';
+import type * as Scope from 'effect/Scope';
 
 import { runExecClient } from '../src/client/exec.js';
 import { pingDaemon, requestOverSocket } from '../src/daemon/control.js';
 import { runDaemon } from '../src/daemon/main.js';
 import {
+  encodeServerMessage,
   passthroughSpoolFileName,
+  type AckMessage,
+  type ClientMessage,
+  type EstimateSource,
+  type ServerMessage,
   type StatusResultMessage,
 } from '../src/daemon/protocol.js';
+import { LineBuffer } from '../src/lib/ndjson.js';
 
 import { fakeCargoEnv, scopedDaemon, scopedFixture } from './harness.js';
+
+/**
+ * A stand-in daemon that acks every exec with a fixed estimate, so the
+ * client's auto-background decision can be driven without teaching the real
+ * cost model a nine-minute prior. Records what the client sent and answers a
+ * detach like the real daemon does.
+ */
+const scriptedDaemon = (
+  socketPath: string,
+  ack: { readonly etaMs: number; readonly etaSource: EstimateSource },
+  after: readonly ServerMessage[],
+): Effect.Effect<{ readonly sent: () => readonly ClientMessage[] }, never, Scope.Scope> =>
+  Effect.gen(function* () {
+    const sent: ClientMessage[] = [];
+    const sockets = new Set<Socket>();
+    yield* Effect.acquireRelease(
+      Effect.callback<Server>((resume) => {
+        const server = createServer((socket) => {
+          sockets.add(socket);
+          const lines = new LineBuffer();
+          socket.on('data', (data) => {
+            for (const line of lines.push(data)) {
+              const message = JSON.parse(line) as ClientMessage;
+              sent.push(message);
+              if (message.type === 'exec') {
+                const reply: AckMessage = {
+                  etaMs: ack.etaMs,
+                  etaSource: ack.etaSource,
+                  id: message.id,
+                  laneKey: 'lane',
+                  position: 0,
+                  ticket: 'cc-1',
+                  type: 'ack',
+                };
+                socket.write(encodeServerMessage(reply));
+                for (const next of after) {
+                  socket.write(encodeServerMessage(next));
+                }
+              }
+              if (message.type === 'detach') {
+                socket.write(
+                  encodeServerMessage({
+                    detached: true,
+                    id: message.id,
+                    ticket: message.ticket,
+                    type: 'detach-result',
+                  }),
+                );
+              }
+            }
+          });
+        });
+        server.listen(socketPath, () => resume(Effect.succeed(server)));
+      }),
+      (server) =>
+        Effect.callback<void>((resume) => {
+          for (const socket of sockets) {
+            socket.destroy();
+          }
+          server.close(() => resume(Effect.void));
+        }),
+    );
+    return { sent: () => sent };
+  });
 
 const collectIo = (): {
   readonly io: {
@@ -62,6 +134,160 @@ describe('runExecClient', () => {
       expect(collected.stderr()).toContain('fake-err:check');
       expect(collected.stderr()).toMatch(/ticket cc-\d+ queued \(0 ahead/u);
       expect(collected.stderr()).toMatch(/ticket cc-\d+ started \(waited \d+ms\)/u);
+    }));
+
+  it.live('stays foreground on a cold-start default estimate, however large', () =>
+    Effect.gen(function* () {
+      const fixture = yield* scopedFixture(5);
+      mkdirSync(fixture.config.stateDir, { recursive: true });
+      const exit: ServerMessage = {
+        error: null,
+        exitCode: 101,
+        id: 'x',
+        runMs: 500,
+        signal: null,
+        status: 'failed',
+        ticket: 'cc-1',
+        type: 'exit',
+        waitMs: 1,
+      };
+      const daemon = yield* scriptedDaemon(
+        fixture.config.socketPath,
+        { etaMs: 60 * 60_000, etaSource: 'default' },
+        [{ id: 'x', ticket: 'cc-1', type: 'started', waitMs: 1 }, exit],
+      );
+      const collected = collectIo();
+      const result = yield* runExecClient({
+        argv: ['cargo', 'build'],
+        autoSpawn: false,
+        config: fixture.config,
+        cwd: fixture.ws1,
+        host: 'claude',
+        io: collected.io,
+      });
+
+      // The compile error reaches the caller instead of a fabricated success (#37).
+      expect(result).toEqual({ exitCode: 101, mode: 'brokered', ticket: 'cc-1' });
+      expect(daemon.sent().map((message) => message.type)).toEqual(['exec']);
+      expect(collected.stderr()).not.toContain('submitted in background');
+    }));
+
+  it.live('auto-backgrounds on a measured estimate over the host cap and exits 75', () =>
+    Effect.gen(function* () {
+      const fixture = yield* scopedFixture(5);
+      mkdirSync(fixture.config.stateDir, { recursive: true });
+      const daemon = yield* scriptedDaemon(
+        fixture.config.socketPath,
+        { etaMs: 10 * 60_000, etaSource: 'ewma' },
+        [],
+      );
+      const collected = collectIo();
+      const result = yield* runExecClient({
+        argv: ['cargo', 'build'],
+        autoSpawn: false,
+        config: fixture.config,
+        cwd: fixture.ws1,
+        host: 'claude',
+        io: collected.io,
+      });
+
+      // EX_TEMPFAIL: `cargo build && ./target/debug/x` must not run the binary.
+      expect(result).toEqual({ exitCode: 75, mode: 'brokered', ticket: 'cc-1' });
+      // The daemon must have seen the detach before the client hung up;
+      // otherwise a still-queued ticket is killed as abandoned on disconnect.
+      expect(daemon.sent().map((message) => message.type)).toEqual(['exec', 'detach']);
+      expect(collected.stderr()).toContain('exceeds the claude shell cap');
+      expect(collected.stderr()).toContain('exit 75');
+    }));
+
+  it.live('keeps exit 0 for an explicit --bg request', () =>
+    Effect.gen(function* () {
+      const fixture = yield* scopedFixture(5);
+      mkdirSync(fixture.config.stateDir, { recursive: true });
+      yield* scriptedDaemon(
+        fixture.config.socketPath,
+        { etaMs: 1_000, etaSource: 'default' },
+        [],
+      );
+      const collected = collectIo();
+      const result = yield* runExecClient({
+        argv: ['cargo', 'build'],
+        autoSpawn: false,
+        background: true,
+        config: fixture.config,
+        cwd: fixture.ws1,
+        io: collected.io,
+      });
+      expect(result).toEqual({ exitCode: 0, mode: 'brokered', ticket: 'cc-1' });
+    }));
+
+  it.live('learns a build time from a failed run so a retry is not re-estimated cold', () =>
+    Effect.gen(function* () {
+      const fixture = yield* scopedDaemon(5);
+      const collected = collectIo();
+      const failed = yield* runExecClient({
+        argv: ['cargo', 'build'],
+        autoSpawn: false,
+        config: fixture.config,
+        cwd: fixture.ws1,
+        env: fakeCargoEnv(fixture, { FAKE_EXIT: '101' }),
+        io: collected.io,
+      });
+      expect(failed.exitCode).toBe(101);
+
+      const messages = yield* requestOverSocket({
+        isTerminal: (message) => message.type === 'exit',
+        message: {
+          argv: ['cargo', 'build'],
+          cwd: fixture.ws1,
+          env: fakeCargoEnv(fixture),
+          id: 'retry',
+          type: 'exec',
+        },
+        socketPath: fixture.config.socketPath,
+        timeoutMs: 20_000,
+      });
+      const ack = messages.find((message): message is AckMessage => message.type === 'ack');
+      expect(ack?.etaSource).toBe('ewma');
+    }));
+
+  it.live('merges the program’s stderr into stdout in write order when the caller shares one fd', () =>
+    Effect.gen(function* () {
+      const fixture = yield* scopedDaemon(5);
+      const collected = collectIo();
+      const result = yield* runExecClient({
+        argv: ['cargo', 'run'],
+        autoSpawn: false,
+        config: fixture.config,
+        cwd: fixture.ws1,
+        env: fakeCargoEnv(fixture),
+        io: collected.io,
+        mergeStderr: true,
+      });
+
+      expect(result.exitCode).toBe(0);
+      // `2>&1` on the caller's side: what cargo wrote, in the order it wrote it (#38).
+      expect(collected.stdout()).toMatch(/^fake-out:run\nfake-err:run\nfake-jobs:\S+\n$/u);
+      expect(collected.stderr()).not.toContain('fake-err');
+    }));
+
+  it.live('keeps channels separate for a demultiplexed build even when the caller shares one fd', () =>
+    Effect.gen(function* () {
+      const fixture = yield* scopedDaemon(5);
+      const collected = collectIo();
+      const result = yield* runExecClient({
+        argv: ['cargo', 'check'],
+        autoSpawn: false,
+        config: fixture.config,
+        cwd: fixture.ws1,
+        env: fakeCargoEnv(fixture),
+        io: collected.io,
+        mergeStderr: true,
+      });
+
+      expect(result.exitCode).toBe(0);
+      // The JSON demux owns stdout; program stderr must not be spliced into it.
+      expect(collected.stderr()).toContain('fake-err:check');
     }));
 
   it.live('preserves a non-zero cargo exit code from the daemon', () =>

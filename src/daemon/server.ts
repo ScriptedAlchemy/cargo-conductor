@@ -302,6 +302,7 @@ export const makeConnectionHandler =
                   host: message.host,
                   background: message.background,
                   holdStop: message.holdStop,
+                  mergeStderr: message.mergeStderr,
                 },
                 {
                   onRegistered: (ticket) =>
@@ -372,6 +373,9 @@ export const makeConnectionHandler =
                 ? {}
                 : { attachMode: submitted.success.attachMode }),
               ...(submitted.success.etaMs === undefined ? {} : { etaMs: submitted.success.etaMs }),
+              ...(submitted.success.etaSource === undefined
+                ? {}
+                : { etaSource: submitted.success.etaSource }),
             });
           });
 

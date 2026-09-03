@@ -16,5 +16,9 @@ export const LineageFooter = () => {
   if (lineage === null) {
     return null;
   }
-  return <Agent.Context>{`Requested by ${lineageLine(lineage)}. Tickets submitted here are attributed to it.`}</Agent.Context>;
+  // Attribution precedence belongs to `ticketAttribution`: an explicit or
+  // native session wins over the lineage conversation, so this footer only
+  // places the request. The RequestDocument's `attribution` says what a
+  // ticket was actually recorded under.
+  return <Agent.Context>{`Requested by ${lineageLine(lineage)}.`}</Agent.Context>;
 };

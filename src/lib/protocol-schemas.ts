@@ -348,8 +348,17 @@ export const daemonResultSchema = z
   })
   .strict() satisfies z.ZodType<DaemonResult>;
 
-/** Await ceiling (2h): agent build queues here routinely exceed 15 minutes. */
-export const awaitMaxWaitMs = awaitCeilingMs;
+/**
+ * Ceiling for one rendered `await` call (CLI or MCP tool). Every rendered
+ * route runs inside the framework's 60 s render session
+ * (`DEFAULT_AGENT_RENDER_LIMITS.maxElapsedMs`); a longer wait throws
+ * `elapsed-time-exceeded` at emit and the caller loses the result it waited
+ * for (#32). The margin covers the snapshot fetch before the wait and the
+ * final emit after it. Callers wanting longer wait in a loop of calls; the
+ * daemon-side `awaitCeilingMs` (2 h) still governs the wire and the hook
+ * stop-hold, which do not render.
+ */
+export const awaitMaxWaitMs = 55_000;
 
 export const ticketInputSchema = z
   .object({

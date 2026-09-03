@@ -12,7 +12,7 @@ export type TicketRequestContext = Pick<AgentRequestContext, 'host' | 'lineage' 
  * session id, so `request.lineage` — the conversation the host placed this
  * call in — is the session of record there, which is what makes parallel
  * agents' builds attributable in the ledger, the dashboard, and
- * `hauler_status --session`. The transport kind is the last fallback so a
+ * `hauler status --session`. The transport kind is the last fallback so a
  * ticket is never recorded as anonymous.
  */
 export const ticketAttribution = (

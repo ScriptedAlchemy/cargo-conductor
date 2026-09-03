@@ -5,7 +5,7 @@ import { z } from 'zod';
 
 import { AwaitStream } from '../components/streaming.js';
 import { cliSurface } from '../components/surface.js';
-import { awaitResultSchema } from '../lib/protocol-schemas.js';
+import { awaitMaxWaitMs, awaitResultSchema } from '../lib/protocol-schemas.js';
 import { requestDaemonConfig } from '../lib/request-config.js';
 import { awaitTicketResult, defaultAwaitMs, fetchTicketResult, progressMessage } from '../lib/tickets.js';
 
@@ -20,9 +20,11 @@ export const inputSchema = z.object({
     .number()
     .int()
     .min(0)
-    .max(7_200_000)
+    .max(awaitMaxWaitMs)
     .optional()
-    .describe('Give up after this many milliseconds (default 30000, ceiling two hours)'),
+    .describe(
+      'Give up after this many milliseconds (default 30000, ceiling 55000 — one rendered call); call again to keep waiting',
+    ),
 });
 
 export const resultSchema = awaitResultSchema;

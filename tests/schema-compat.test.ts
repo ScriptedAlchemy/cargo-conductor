@@ -1,5 +1,7 @@
+import { DEFAULT_AGENT_RENDER_LIMITS } from '@agent-bundle/runtime';
 import { describe, expect, it } from 'effect-rstest';
 
+import { inputSchema as cliAwaitInputSchema } from '../src/cli/await.js';
 import {
   awaitMaxWaitMs,
   awaitResultSchema,
@@ -518,11 +520,23 @@ describe('schema forward compatibility (issue #4)', () => {
   });
 });
 
-describe('await wait ceiling (issue #3)', () => {
-  it('accepts waits beyond the old 15-minute cap up to two hours', () => {
-    expect(ticketInputSchema.parse({ maxWaitMs: 3_600_000, ticket: 'cc-1' }).maxWaitMs).toBe(
-      3_600_000,
+describe('await wait ceiling (issues #3, #32)', () => {
+  it('bounds one rendered await under the framework render session budget', () => {
+    // Every rendered route (CLI and MCP) runs inside a 60 s render session;
+    // a wait past it throws `elapsed-time-exceeded` at emit and the caller
+    // loses the result it waited for (#32). Leave margin for the snapshot
+    // fetch and the final emit.
+    expect(awaitMaxWaitMs).toBeLessThanOrEqual(DEFAULT_AGENT_RENDER_LIMITS.maxElapsedMs - 5_000);
+    expect(ticketInputSchema.parse({ maxWaitMs: awaitMaxWaitMs, ticket: 'cc-1' }).maxWaitMs).toBe(
+      awaitMaxWaitMs,
     );
     expect(() => ticketInputSchema.parse({ maxWaitMs: awaitMaxWaitMs + 1, ticket: 'cc-1' })).toThrow();
+  });
+
+  it('applies the same ceiling to the CLI await route', () => {
+    expect(cliAwaitInputSchema.parse({ maxWaitMs: awaitMaxWaitMs, ticket: 'cc-1' }).maxWaitMs).toBe(
+      awaitMaxWaitMs,
+    );
+    expect(() => cliAwaitInputSchema.parse({ maxWaitMs: 90_000, ticket: 'cc-1' })).toThrow();
   });
 });

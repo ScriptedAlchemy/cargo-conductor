@@ -8,7 +8,7 @@ import { cargoJsonDemuxFlag } from '../lib/argv.js';
 import { hasLibKind } from './cargo-json.js';
 import type { TailBuffer } from './executor.js';
 import type { NormalizedCargoIntent } from './intent-normalizer.js';
-import type { AdmissionHold, AttachMode, FinishedStatus } from './protocol.js';
+import type { AdmissionHold, AttachMode, EstimateSource, FinishedStatus } from './protocol.js';
 import type { ReplayAudience, ReplayBuffer, ReplayChunk } from './replay.js';
 
 /**
@@ -25,6 +25,8 @@ export interface SubmitInput {
   readonly host?: string | undefined;
   readonly background?: boolean | undefined;
   readonly holdStop?: boolean | undefined;
+  /** The caller's stdout and stderr are one file; merge the child's channels to keep its write order. */
+  readonly mergeStderr?: boolean | undefined;
 }
 
 export interface StartedInfo {
@@ -82,6 +84,7 @@ export interface Attachment {
   readonly callbacks: SubmitCallbacks;
   readonly createdAtMs: number;
   readonly estimateMs: number;
+  readonly estimateSource: EstimateSource;
   readonly tail: TailBuffer;
   attachedAtMs: number;
   /** True once the replay backlog is flushed; live output then flows directly. */
@@ -104,6 +107,7 @@ export const makeAttachment = (
     | 'callbacks'
     | 'createdAtMs'
     | 'estimateMs'
+    | 'estimateSource'
     | 'tail'
     | 'attachedAtMs'
   >,
@@ -161,6 +165,8 @@ export interface Job {
   readonly tail: TailBuffer;
   /** Cost-model estimate at submission; feeds lane scheduling. */
   readonly estimateMs: number;
+  /** Provenance of `estimateMs`; a `default` prior must never trip a client's auto-background. */
+  readonly estimateSource: EstimateSource;
   /** Real start of the cargo process, shared by attached ledger rows. */
   startedAtMs: number | null;
   /** Start time or most recent brokered output, for output-silence visibility. */
