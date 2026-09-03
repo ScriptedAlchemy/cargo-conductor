@@ -1,4 +1,5 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { createServer, type Server, type Socket } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -110,6 +111,19 @@ describe('status scoping', () => {
     );
   });
 
+  it('shows the program by basename when the PATH shim passed the real cargo path', () => {
+    expect(
+      statusSummary('running', [{ ...running, argv: ['/home/me/.cargo/bin/cargo', 'check'] }], []),
+    ).toContain('cc-2 running cargo check (session-1)');
+  });
+
+  it('distinguishes an unresponsive daemon from a stopped one in the header', () => {
+    expect(statusSummary('unresponsive', [running], [])).toContain(
+      'daemon is up but did not answer in time',
+    );
+    expect(statusSummary('stopped', [], [])).toContain('daemon is not running');
+  });
+
   it('bounds active commands in MCP text while preserving ticket, status, and location', () => {
     const longCommand = ['cargo', 'nextest', 'run', '-E', 'x'.repeat(220)].join(' ');
     const summary = statusSummary(
@@ -191,6 +205,36 @@ describe('loadHaulerSnapshot', () => {
       expect(snapshot.socketPath).toBe(config.socketPath);
       expect(snapshot.report).toBeNull();
     }));
+
+  it.live(
+    'reports an unresponsive daemon, not a stopped one, when the socket accepts but never answers',
+    () =>
+      Effect.gen(function* () {
+        const config = yield* isolatedConfig;
+        mkdirSync(config.stateDir, { recursive: true });
+        const accepted = new Set<Socket>();
+        yield* Effect.acquireRelease(
+          Effect.callback<Server>((resume) => {
+            const server = createServer((socket) => {
+              accepted.add(socket);
+            });
+            server.listen(config.socketPath, () => resume(Effect.succeed(server)));
+          }),
+          (server) =>
+            Effect.callback<void>((resume) => {
+              for (const socket of accepted) {
+                socket.destroy();
+              }
+              server.close(() => resume(Effect.void));
+            }),
+        );
+        const snapshot = yield* loadHaulerSnapshot({ config });
+        expect(snapshot.daemon).toBe('unresponsive');
+        expect(snapshot.summary).toContain('did not answer within');
+        expect(snapshot.summary).not.toContain('not running');
+      }),
+    15_000,
+  );
 
   it.live('reads the ledger when the daemon is down', () =>
     Effect.gen(function* () {

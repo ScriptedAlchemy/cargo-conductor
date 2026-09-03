@@ -1,7 +1,7 @@
 import { Effect, Schedule, Stream, type Duration } from 'effect';
 
 import { cargoJsonDemuxFlag, namedPackagesInArgv } from '../lib/argv.js';
-import { formatBytes, formatMs, pathBasename, relativeTime, shortenPath } from '../lib/format.js';
+import { commandDisplay, formatBytes, formatMs, pathBasename, relativeTime, shortenPath } from '../lib/format.js';
 
 export { formatBytes, formatMs, pathBasename, relativeTime, shortenPath };
 
@@ -404,15 +404,7 @@ export const resolveTicketDetail = async (
   return fetched ?? fromRow;
 };
 
-const displayProgram = (part: string): string => {
-  const slash = part.lastIndexOf('/');
-  return slash === -1 ? part : part.slice(slash + 1);
-};
-
-const displayJoin = (parts: readonly string[]): string => {
-  const [program, ...args] = parts;
-  return program === undefined ? '' : [displayProgram(program), ...args].join(' ');
-};
+const displayJoin = commandDisplay;
 
 const filterCompactionThreshold = 120;
 const filterExpressionFlags = new Set(['-E', '--filterset', '--filter-expr']);

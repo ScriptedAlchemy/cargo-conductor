@@ -24,7 +24,9 @@ const requestStatusSchema = z.enum([
 
 const attachModeSchema = z.enum(['identity', 'coverage', 'batch']);
 const savedComputeSourceSchema = z.enum(['exact', 'estimate']);
-const daemonStatusSchema = z.enum(['running', 'stopped']);
+/** `unresponsive`: the socket exists and a process holds it, but it did not answer in time. */
+const daemonStatusSchema = z.enum(['running', 'stopped', 'unresponsive']);
+export type DaemonStatus = z.infer<typeof daemonStatusSchema>;
 
 const queueContextSchema = z.object({
   aheadTickets: z.array(z.string()),
@@ -234,7 +236,7 @@ export const statusInputSchema = z
 
 export interface StatusResult {
   readonly active: readonly RequestRecord[];
-  readonly daemon: 'running' | 'stopped';
+  readonly daemon: DaemonStatus;
   readonly kache?: KacheStatusReport | null;
   readonly savings?: AttachmentSavingsReport;
   readonly system?: SystemLoadReport;
@@ -251,14 +253,14 @@ export interface StatusResult {
 }
 
 export interface LogResult {
-  readonly daemon: 'running' | 'stopped';
+  readonly daemon: DaemonStatus;
   readonly operation: 'log';
   readonly requests: readonly RequestRecord[];
   readonly summary: string;
 }
 
 export interface LastResult {
-  readonly daemon: 'running' | 'stopped';
+  readonly daemon: DaemonStatus;
   readonly operation: 'last';
   readonly request: RequestRecord | null;
   readonly summary: string;

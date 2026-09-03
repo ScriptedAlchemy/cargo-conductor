@@ -72,3 +72,13 @@ export const shortenPath = (path: string, maxLength = 38): string => {
   }
   return `…/${segments.slice(-2).join('/')}`;
 };
+
+/**
+ * A command line for display: the program is shown by basename so a request
+ * that arrived as `/home/me/.cargo/bin/cargo check` (the PATH shim passes the
+ * real binary to avoid re-entering itself) reads as `cargo check`.
+ */
+export const commandDisplay = (argv: readonly string[]): string => {
+  const [program, ...args] = argv;
+  return program === undefined ? '' : [pathBasename(program), ...args].join(' ');
+};

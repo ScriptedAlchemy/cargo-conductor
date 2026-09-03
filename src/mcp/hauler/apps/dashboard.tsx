@@ -1312,7 +1312,8 @@ const DashboardContent = ({ structured }: { readonly structured: StructuredConte
     activeLanes.length === lanes.length
       ? String(lanes.length)
       : `${activeLanes.length} active · ${lanes.length} seen`;
-  const daemonUp = structured?.daemon === 'running';
+  const daemonState = structured?.daemon;
+  const daemonUp = daemonState === 'running';
 
   const closeDrawer = (): void => {
     drawerSeq.current += 1;
@@ -1378,6 +1379,11 @@ const DashboardContent = ({ structured }: { readonly structured: StructuredConte
                   maxConcurrent={maxConcurrent}
                 />
               </div>
+            ) : daemonState === 'unresponsive' ? (
+              <p className="down-cue">
+                Daemon is up but did not answer in time — the machine is saturated. Rows below
+                come from the ledger and in-flight runs are still live; this refreshes on the next poll.
+              </p>
             ) : (
               <p className="down-cue">
                 Daemon is not running — it starts on demand with any cargo exec, or run{' '}

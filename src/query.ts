@@ -20,11 +20,12 @@ import type {
 } from './daemon/protocol.js';
 import { stripAnsi } from './lib/ansi.js';
 import { shortId } from './lib/id.js';
+import type { DaemonStatus } from './lib/protocol-schemas.js';
 import { countWord } from './lib/text.js';
 
 export interface HaulerSnapshot {
   readonly active: readonly RequestRecord[];
-  readonly daemon: 'running' | 'stopped';
+  readonly daemon: DaemonStatus;
   readonly kache?: KacheStatusReport | null;
   readonly lanes: readonly LaneStatus[];
   readonly maxConcurrent: number | null;
@@ -46,6 +47,13 @@ export interface LoadSnapshotOptions {
 }
 
 const defaultRecentLimit = 50;
+
+/**
+ * Status is a read on a daemon that may be fanning out several builds' output
+ * on a saturated machine; the exec client tolerates a minute of slow accepts,
+ * so a status read gets more than the 2s socket-open budget too.
+ */
+const statusTimeoutMs = 5_000;
 
 export const describeRequestRecord = (
   ticket: string,
@@ -201,7 +209,7 @@ export const loadHaulerSnapshot = (
     {
       message: { id: shortId(), limit: recentLimit, type: 'status' },
       socketPath: config.socketPath,
-      timeoutMs: 2_000,
+      timeoutMs: statusTimeoutMs,
     },
     (message): message is StatusResultMessage => message.type === 'status-result',
   ).pipe(
@@ -213,7 +221,8 @@ export const loadHaulerSnapshot = (
     // Unreachable means stopped; a timeout or dropped connection means a
     // daemon that exists but did not answer — say so instead of "stopped".
     Effect.catchTags({
-      ControlTimeout: () => unresponsiveSnapshot(config, recentLimit, 'did not answer within 2s'),
+      ControlTimeout: () =>
+        unresponsiveSnapshot(config, recentLimit, `did not answer within ${statusTimeoutMs / 1000}s`),
       ConnectionClosed: () => unresponsiveSnapshot(config, recentLimit, 'closed the connection mid-status'),
       DaemonUnreachable: () => fromLedger(config, recentLimit),
     }),
@@ -230,6 +239,7 @@ const unresponsiveSnapshot = (
       withReport(
         {
           ...snapshot,
+          daemon: 'unresponsive',
           summary: `cargo-hauler daemon ${what}; showing ledger data (${snapshot.recent.length} recorded)`,
         },
         snapshot.report,

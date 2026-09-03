@@ -48,6 +48,21 @@ const kacheText = (status: StatusResult): string | null => {
   return `${countWord(kache.entryCount, 'entry', 'entries')} across ${countWord(kache.distinctCrates, 'crate')} (${formatBytes(kache.indexSizeBytes)})${fresh}`;
 };
 
+const daemonText = (status: StatusResult, nowMs: number): string => {
+  switch (status.daemon) {
+    case 'running':
+      return `running (pid ${status.pid ?? '?'}${status.startedAtMs === null ? '' : `, up since ${relativeTime(status.startedAtMs, nowMs)}`})`;
+    case 'stopped':
+      return 'stopped — showing ledger history; it starts on demand with the next cargo request';
+    case 'unresponsive':
+      return 'up but did not answer in time (machine saturated) — showing ledger history; in-flight rows are still live';
+    default: {
+      const exhaustive: never = status.daemon;
+      return exhaustive;
+    }
+  }
+};
+
 export const StatusOverview = ({ nowMs, status }: StatusOverviewProps) => {
   const running = status.active.filter((record) => record.status === 'running');
   const queued = status.active.filter((record) => record.status === 'queued');
@@ -62,10 +77,7 @@ export const StatusOverview = ({ nowMs, status }: StatusOverviewProps) => {
         fields={[
           {
             label: 'Daemon',
-            value:
-              status.daemon === 'running'
-                ? `running (pid ${status.pid ?? '?'}${status.startedAtMs === null ? '' : `, up since ${relativeTime(status.startedAtMs, nowMs)}`})`
-                : 'stopped — showing ledger history; it starts on demand with the next cargo request',
+            value: daemonText(status, nowMs),
           },
           { label: 'Admission', value: admission },
           { label: 'System', value: loadText(status) },

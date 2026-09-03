@@ -1,8 +1,8 @@
 import type { RequestRecord } from '../daemon/protocol.js';
-import { formatMs } from '../lib/format.js';
+import { commandDisplay, formatMs } from '../lib/format.js';
 import { countWord } from '../lib/text.js';
 
-export const commandText = (record: Pick<RequestRecord, 'argv'>): string => record.argv.join(' ');
+export const commandText = (record: Pick<RequestRecord, 'argv'>): string => commandDisplay(record.argv);
 
 export const elapsedMs = (record: RequestRecord, nowMs: number): number | null => {
   switch (record.status) {
