@@ -1,4 +1,4 @@
-import { describe, expect, it } from '@rstest/core';
+import { describe, expect, it } from 'effect-rstest';
 
 import { attachModeFor } from '../src/daemon/coverage.js';
 import { normalizeCargoIntent } from '../src/daemon/intent-normalizer.js';

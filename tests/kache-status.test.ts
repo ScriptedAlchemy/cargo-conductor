@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 
-import { describe, expect, it } from '@rstest/core';
+import { describe, expect, it } from 'effect-rstest';
 import * as Effect from 'effect/Effect';
 
 import { createKacheStatus, readKacheStatusSnapshot } from '../src/daemon/kache-status.js';
@@ -160,20 +160,24 @@ describe('readKacheStatusSnapshot', () => {
 });
 
 describe('createKacheStatus', () => {
-  it('serves null status and empty priors when disabled via an empty path', async () => {
-    const service = createKacheStatus({ indexPath: '' });
-    await Effect.runPromise(service.prewarm);
-    const status = await Effect.runPromise(service.current);
-    const priors = await Effect.runPromise(service.priors);
-    expect(status).toBeNull();
-    expect(priors.indexPriors.compileTimeMs('alpha', ['dev'])).toBeNull();
-    expect(priors.eventPriors.sampleCount).toBe(0);
-  });
+  it.effect('serves null status and empty priors when disabled via an empty path', () =>
+    Effect.gen(function* () {
+      const service = createKacheStatus({ indexPath: '' });
+      yield* service.prewarm;
+      const status = yield* service.current;
+      const priors = yield* service.priors;
+      expect(status).toBeNull();
+      expect(priors.indexPriors.compileTimeMs('alpha', ['dev'])).toBeNull();
+      expect(priors.eventPriors.sampleCount).toBe(0);
+    }));
 
-  it('degrades to unavailable when the index disappears after daemon start', async () => {
-    const root = mkdtempSync(join(tmpdir(), 'cc-kache-status-midrun-'));
-    const indexPath = join(root, 'index.db');
-    try {
+  it.live('degrades to unavailable when the index disappears after daemon start', () =>
+    Effect.gen(function* () {
+      const root = yield* Effect.acquireRelease(
+        Effect.sync(() => mkdtempSync(join(tmpdir(), 'cc-kache-status-midrun-'))),
+        (directory) => Effect.sync(() => rmSync(directory, { recursive: true, force: true })),
+      );
+      const indexPath = join(root, 'index.db');
       const database = new DatabaseSync(indexPath);
       database.exec(
         'CREATE TABLE entries (crate_name TEXT, profile TEXT, compile_time_ms INTEGER)',
@@ -189,24 +193,24 @@ describe('createKacheStatus', () => {
         now: () => nowMs,
         ttlMs: 100,
       });
-      await Effect.runPromise(service.prewarm);
-      const healthy = await Effect.runPromise(service.current);
+      yield* service.prewarm;
+      const healthy = yield* service.current;
       expect(healthy?.available).toBe(true);
 
       rmSync(root, { recursive: true, force: true });
       nowMs = 200;
       // The first stale read serves the cached snapshot and forks a refresh.
-      await Effect.runPromise(service.current);
-      await new Promise<void>((resolve) => {
-        setImmediate(resolve);
-      });
+      yield* service.current;
+      yield* Effect.promise(
+        () =>
+          new Promise<void>((resolve) => {
+            setImmediate(resolve);
+          }),
+      );
 
-      const degraded = await Effect.runPromise(service.current);
+      const degraded = yield* service.current;
       expect(degraded?.available).toBe(false);
-      const priors = await Effect.runPromise(service.priors);
+      const priors = yield* service.priors;
       expect(priors.indexPriors.compileTimeMs('alpha', ['dev'])).toBeNull();
-    } finally {
-      rmSync(root, { recursive: true, force: true });
-    }
-  });
+    }));
 });

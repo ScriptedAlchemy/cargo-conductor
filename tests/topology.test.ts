@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from 'node:
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { describe, expect, it } from '@rstest/core';
+import { describe, expect, it } from 'effect-rstest';
 import * as Data from 'effect/Data';
 import * as Deferred from 'effect/Deferred';
 import * as Effect from 'effect/Effect';
@@ -120,97 +120,87 @@ const awaitSettled = <A, E>(deferred: Deferred.Deferred<A, E>): Effect.Effect<A,
   Deferred.await(deferred).pipe(Effect.tap(() => Effect.yieldNow));
 
 describe('makeTopology', () => {
-  it('returns edit data immediately, refreshes in the background, and retries after failure', async () => {
-    const packageDir = '/workspace/alpha';
-    const metadataLoaded = Deferred.makeUnsafe<void>();
-    const firstScanStarted = Deferred.makeUnsafe<void>();
-    const releaseFirstScan = Deferred.makeUnsafe<void>();
-    const firstScanFinished = Deferred.makeUnsafe<void>();
-    const secondScanFinished = Deferred.makeUnsafe<void>();
-    let scans = 0;
-    const metadata = {
-      packageDirs: new Map([['alpha', packageDir]]),
-      directDeps: new Map<string, ReadonlySet<string>>([['alpha', new Set()]]),
-    };
+  it.effect('returns edit data immediately, refreshes in the background, and retries after failure', () =>
+    Effect.gen(function* () {
+      const packageDir = '/workspace/alpha';
+      const metadataLoaded = Deferred.makeUnsafe<void>();
+      const firstScanStarted = Deferred.makeUnsafe<void>();
+      const releaseFirstScan = Deferred.makeUnsafe<void>();
+      const firstScanFinished = Deferred.makeUnsafe<void>();
+      const secondScanFinished = Deferred.makeUnsafe<void>();
+      let scans = 0;
+      const metadata = {
+        packageDirs: new Map([['alpha', packageDir]]),
+        directDeps: new Map<string, ReadonlySet<string>>([['alpha', new Set()]]),
+      };
 
-    await Effect.runPromise(
-      Effect.scoped(
-        Effect.gen(function* () {
-          const topology = yield* makeTopology({
-            loadMetadata: () =>
-              Deferred.succeed(metadataLoaded, undefined).pipe(Effect.as(metadata)),
-            scanNewestMtime: () =>
-              Effect.suspend(() => {
-                scans += 1;
-                if (scans === 1) {
-                  return Deferred.succeed(firstScanStarted, undefined).pipe(
-                    Effect.andThen(Deferred.await(releaseFirstScan)),
-                    Effect.andThen(Effect.fail(new FixtureError({ reason: 'stat failed' }))),
-                    Effect.ensuring(Deferred.succeed(firstScanFinished, undefined)),
-                  );
-                }
-                return Deferred.succeed(secondScanFinished, undefined).pipe(
-                  Effect.as(Date.now()),
-                );
-              }),
-          });
+      const topology = yield* makeTopology({
+        loadMetadata: () =>
+          Deferred.succeed(metadataLoaded, undefined).pipe(Effect.as(metadata)),
+        scanNewestMtime: () =>
+          Effect.suspend(() => {
+            scans += 1;
+            if (scans === 1) {
+              return Deferred.succeed(firstScanStarted, undefined).pipe(
+                Effect.andThen(Deferred.await(releaseFirstScan)),
+                Effect.andThen(Effect.fail(new FixtureError({ reason: 'stat failed' }))),
+                Effect.ensuring(Deferred.succeed(firstScanFinished, undefined)),
+              );
+            }
+            return Deferred.succeed(secondScanFinished, undefined).pipe(
+              Effect.as(Date.now()),
+            );
+          }),
+      });
 
-          expect(yield* topology.editedRecently('/workspace', ['alpha'])).toBe(false);
-          yield* awaitSettled(metadataLoaded);
+      expect(yield* topology.editedRecently('/workspace', ['alpha'])).toBe(false);
+      yield* awaitSettled(metadataLoaded);
 
-          expect(yield* topology.editedRecently('/workspace', ['alpha'])).toBe(false);
-          yield* awaitSettled(firstScanStarted);
-          yield* Deferred.succeed(releaseFirstScan, undefined);
-          yield* awaitSettled(firstScanFinished);
+      expect(yield* topology.editedRecently('/workspace', ['alpha'])).toBe(false);
+      yield* awaitSettled(firstScanStarted);
+      yield* Deferred.succeed(releaseFirstScan, undefined);
+      yield* awaitSettled(firstScanFinished);
 
-          expect(yield* topology.editedRecently('/workspace', ['alpha'])).toBe(false);
-          yield* awaitSettled(secondScanFinished);
+      expect(yield* topology.editedRecently('/workspace', ['alpha'])).toBe(false);
+      yield* awaitSettled(secondScanFinished);
 
-          expect(yield* topology.editedRecently('/workspace', ['alpha'])).toBe(true);
-          expect(scans).toBe(2);
-        }),
-      ),
-    );
-  });
+      expect(yield* topology.editedRecently('/workspace', ['alpha'])).toBe(true);
+      expect(scans).toBe(2);
+    }));
 
-  it('clears metadata refresh bookkeeping after failure and caches only success', async () => {
-    const firstLoadFinished = Deferred.makeUnsafe<void>();
-    const secondLoadFinished = Deferred.makeUnsafe<void>();
-    let loads = 0;
-    const metadata = parseWorkspaceMetadata(metadataJson);
+  it.effect('clears metadata refresh bookkeeping after failure and caches only success', () =>
+    Effect.gen(function* () {
+      const firstLoadFinished = Deferred.makeUnsafe<void>();
+      const secondLoadFinished = Deferred.makeUnsafe<void>();
+      let loads = 0;
+      const metadata = parseWorkspaceMetadata(metadataJson);
 
-    await Effect.runPromise(
-      Effect.scoped(
-        Effect.gen(function* () {
-          const topology = yield* makeTopology({
-            loadMetadata: () =>
-              Effect.suspend(() => {
-                loads += 1;
-                if (loads === 1) {
-                  return Effect.fail(new FixtureError({ reason: 'metadata failed' })).pipe(
-                    Effect.ensuring(Deferred.succeed(firstLoadFinished, undefined)),
-                  );
-                }
-                return Deferred.succeed(secondLoadFinished, undefined).pipe(
-                  Effect.as(metadata),
-                );
-              }),
-            scanNewestMtime: () => Effect.succeed(null),
-          });
+      const topology = yield* makeTopology({
+        loadMetadata: () =>
+          Effect.suspend(() => {
+            loads += 1;
+            if (loads === 1) {
+              return Effect.fail(new FixtureError({ reason: 'metadata failed' })).pipe(
+                Effect.ensuring(Deferred.succeed(firstLoadFinished, undefined)),
+              );
+            }
+            return Deferred.succeed(secondLoadFinished, undefined).pipe(
+              Effect.as(metadata),
+            );
+          }),
+        scanNewestMtime: () => Effect.succeed(null),
+      });
 
-          expect((yield* topology.dependencyClosure('/ws', ['top'])).size).toBe(0);
-          yield* awaitSettled(firstLoadFinished);
+      expect((yield* topology.dependencyClosure('/ws', ['top'])).size).toBe(0);
+      yield* awaitSettled(firstLoadFinished);
 
-          expect((yield* topology.dependencyClosure('/ws', ['top'])).size).toBe(0);
-          yield* awaitSettled(secondLoadFinished);
+      expect((yield* topology.dependencyClosure('/ws', ['top'])).size).toBe(0);
+      yield* awaitSettled(secondLoadFinished);
 
-          expect([...(yield* topology.dependencyClosure('/ws', ['top']))].sort()).toEqual([
-            'leaf',
-            'mid',
-          ]);
-          expect(loads).toBe(2);
-        }),
-      ),
-    );
-  });
+      expect([...(yield* topology.dependencyClosure('/ws', ['top']))].sort()).toEqual([
+        'leaf',
+        'mid',
+      ]);
+      expect(loads).toBe(2);
+    }));
 });

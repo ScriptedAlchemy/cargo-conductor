@@ -1,4 +1,4 @@
-import { describe, expect, it, rs } from '@rstest/core';
+import { describe, expect, it, rs } from 'effect-rstest';
 import * as rscPlugin from '@agent-bundle/runtime/plugin' with { rstest: 'importActual' };
 
 rs.mock('@agent-bundle/runtime/plugin', () => ({

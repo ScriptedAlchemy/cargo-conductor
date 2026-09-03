@@ -10,9 +10,10 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { describe, expect, it } from '@rstest/core';
+import { describe, expect, it } from 'effect-rstest';
 import * as Effect from 'effect/Effect';
 import * as Schedule from 'effect/Schedule';
+import type * as Scope from 'effect/Scope';
 
 import { resolveDaemonConfig, type DaemonConfigShape } from '../src/daemon/config.js';
 import {
@@ -45,134 +46,122 @@ const configAt = (stateDir: string): DaemonConfigShape => ({
   memPressureLevelThreshold: null,
 });
 
+/** A fresh temp directory, removed when the scope closes. */
+const scopedTempDir = (prefix: string): Effect.Effect<string, never, Scope.Scope> =>
+  Effect.acquireRelease(
+    Effect.sync(() => mkdtempSync(join(tmpdir(), prefix))),
+    (directory) => Effect.sync(() => rmSync(directory, { recursive: true, force: true })),
+  );
+
 describe('spawnDetachedDaemon', () => {
-  it('closes the log descriptor and returns a typed failure when spawn throws', async () => {
-    const stateDir = mkdtempSync(join(tmpdir(), 'cc-ensure-daemon-'));
-    let logFd = -1;
-    try {
-      const error = await Effect.runPromise(
-        Effect.flip(
-          spawnDetachedDaemon(configAt(stateDir), '/missing/entry.js', {
-            spawnProcess: (_command, _args, options) => {
-              const stdio = options.stdio;
-              if (!Array.isArray(stdio) || typeof stdio[1] !== 'number') {
-                throw new Error('test expected the log descriptor in stdio');
-              }
-              logFd = stdio[1];
-              throw new Error('spawn exploded');
-            },
-          }),
-        ),
+  it.live('closes the log descriptor and returns a typed failure when spawn throws', () =>
+    Effect.gen(function* () {
+      const stateDir = yield* scopedTempDir('cc-ensure-daemon-');
+      let logFd = -1;
+      const error = yield* Effect.flip(
+        spawnDetachedDaemon(configAt(stateDir), '/missing/entry.js', {
+          spawnProcess: (_command, _args, options) => {
+            const stdio = options.stdio;
+            if (!Array.isArray(stdio) || typeof stdio[1] !== 'number') {
+              throw new Error('test expected the log descriptor in stdio');
+            }
+            logFd = stdio[1];
+            throw new Error('spawn exploded');
+          },
+        }),
       );
 
       expect(error._tag).toBe('SpawnDaemonError');
       expect(error.cause).toBeInstanceOf(Error);
       expect(() => fstatSync(logFd)).toThrow();
-    } finally {
-      rmSync(stateDir, { recursive: true, force: true });
-    }
-  });
+    }));
 });
 
 describe('ensureDaemonRunning', () => {
-  it('refuses to spawn when a live daemon already answers the socket', async () => {
-    const expected = {
-      type: 'pong' as const,
-      id: 'existing',
-      pid: 777,
-      startedAtMs: 1,
-      version: 'test',
-    };
-    let spawned = 0;
-    const actual = await Effect.runPromise(
-      ensureDaemonRunning(configAt('/tmp/cargo-hauler-existing-daemon'), {
+  it.effect('refuses to spawn when a live daemon already answers the socket', () =>
+    Effect.gen(function* () {
+      const expected = {
+        type: 'pong' as const,
+        id: 'existing',
+        pid: 777,
+        startedAtMs: 1,
+        version: 'test',
+      };
+      let spawned = 0;
+      const actual = yield* ensureDaemonRunning(configAt('/tmp/cargo-hauler-existing-daemon'), {
         pingDaemon: () => Effect.succeed(expected),
         spawnDetachedDaemon: () =>
           Effect.sync(() => {
             spawned += 1;
           }),
         waitForDaemon: () => Effect.die(new Error('wait should not run')),
-      }),
-    );
+      });
 
-    expect(actual).toBe(expected);
-    expect(spawned).toBe(0);
-  });
+      expect(actual).toBe(expected);
+      expect(spawned).toBe(0);
+    }));
 });
 
 describe('daemon start without a machine-specific mount', () => {
-  it('starts in a fresh temp state dir that does not exist yet (no /fast anywhere)', async () => {
-    const root = mkdtempSync(join(tmpdir(), 'cc-portable-state-'));
-    // Deliberately not pre-created: the daemon must build its own state dir.
-    const stateDir = join(root, 'nested', 'state');
-    const config = resolveDaemonConfig({
-      CARGO_HAULER_STATE_DIR: stateDir,
-      CARGO_HAULER_KACHE_INDEX: '',
-    });
-    try {
-      const pong = await Effect.runPromise(
-        Effect.scoped(
-          Effect.gen(function* () {
-            yield* Effect.forkScoped(runDaemon(config));
-            const reply = yield* pingDaemon(config.socketPath, 500).pipe(
-              Effect.retry(Schedule.spaced('50 millis').pipe(Schedule.upTo({ times: 100 }))),
-            );
-            // Assert while the daemon is still up; scope close removes it.
-            expect(existsSync(config.socketPath)).toBe(true);
-            expect(readFileSync(config.lockTargetPath, 'utf8')).toBe(`${process.pid}\n`);
-            return reply;
-          }),
-        ),
+  it.live('starts in a fresh temp state dir that does not exist yet (no /fast anywhere)', () =>
+    Effect.gen(function* () {
+      const root = yield* scopedTempDir('cc-portable-state-');
+      // Deliberately not pre-created: the daemon must build its own state dir.
+      const stateDir = join(root, 'nested', 'state');
+      const config = resolveDaemonConfig({
+        CARGO_HAULER_STATE_DIR: stateDir,
+        CARGO_HAULER_KACHE_INDEX: '',
+      });
+      // The daemon lives in an inner scope: the assertions after it check
+      // what shutdown leaves behind.
+      const pong = yield* Effect.scoped(
+        Effect.gen(function* () {
+          yield* Effect.forkScoped(runDaemon(config));
+          const reply = yield* pingDaemon(config.socketPath, 500).pipe(
+            Effect.retry(Schedule.spaced('50 millis').pipe(Schedule.upTo({ times: 100 }))),
+          );
+          // Assert while the daemon is still up; scope close removes it.
+          expect(existsSync(config.socketPath)).toBe(true);
+          expect(readFileSync(config.lockTargetPath, 'utf8')).toBe(`${process.pid}\n`);
+          return reply;
+        }),
       );
       expect(pong.type).toBe('pong');
       expect(existsSync(config.lockTargetPath)).toBe(false);
-    } finally {
-      rmSync(root, { recursive: true, force: true });
-    }
-  });
+    }));
 
-  it('rewrites a stale pid record while holding the lock and removes it on shutdown', async () => {
-    const root = mkdtempSync(join(tmpdir(), 'cc-stale-pid-'));
-    const config = resolveDaemonConfig({
-      CARGO_HAULER_STATE_DIR: join(root, 'state'),
-      CARGO_HAULER_KACHE_INDEX: '',
-    });
-    mkdirSync(config.stateDir, { recursive: true });
-    writeFileSync(config.lockTargetPath, '4184464\n');
-    try {
-      await Effect.runPromise(
-        Effect.scoped(
-          Effect.gen(function* () {
-            yield* Effect.forkScoped(runDaemon(config));
-            yield* pingDaemon(config.socketPath, 500).pipe(
-              Effect.retry(Schedule.spaced('50 millis').pipe(Schedule.upTo({ times: 100 }))),
-            );
-            expect(readFileSync(config.lockTargetPath, 'utf8')).toBe(`${process.pid}\n`);
-          }),
-        ),
+  it.live('rewrites a stale pid record while holding the lock and removes it on shutdown', () =>
+    Effect.gen(function* () {
+      const root = yield* scopedTempDir('cc-stale-pid-');
+      const config = resolveDaemonConfig({
+        CARGO_HAULER_STATE_DIR: join(root, 'state'),
+        CARGO_HAULER_KACHE_INDEX: '',
+      });
+      mkdirSync(config.stateDir, { recursive: true });
+      writeFileSync(config.lockTargetPath, '4184464\n');
+      yield* Effect.scoped(
+        Effect.gen(function* () {
+          yield* Effect.forkScoped(runDaemon(config));
+          yield* pingDaemon(config.socketPath, 500).pipe(
+            Effect.retry(Schedule.spaced('50 millis').pipe(Schedule.upTo({ times: 100 }))),
+          );
+          expect(readFileSync(config.lockTargetPath, 'utf8')).toBe(`${process.pid}\n`);
+        }),
       );
       expect(existsSync(config.lockTargetPath)).toBe(false);
       expect(existsSync(config.socketPath)).toBe(false);
-    } finally {
-      rmSync(root, { recursive: true, force: true });
-    }
-  });
+    }));
 });
 
 describe('daemonIsAbsent', () => {
-  it('classifies a real dead-socket ping failure as absent (v4 nests the code under reason)', async () => {
-    const stateDir = mkdtempSync(join(tmpdir(), 'cc-absent-'));
-    try {
-      const error = await Effect.runPromise(
-        Effect.flip(pingDaemon(join(stateDir, 'missing.sock'), 300)),
-      );
+  it.live('classifies a real dead-socket ping failure as absent (v4 nests the code under reason)', () =>
+    Effect.gen(function* () {
+      const stateDir = yield* scopedTempDir('cc-absent-');
+      const error = yield* Effect.flip(pingDaemon(join(stateDir, 'missing.sock'), 300));
       expect(error._tag).toBe('DaemonUnreachable');
       // The regression: v4 Socket errors wrap the syscall error under
       // `.reason`; a walk that only follows `.cause` never finds the code,
       // classifies the daemon as non-absent, and clients never spawn it.
       expect(daemonIsAbsent(error.cause)).toBe(true);
-    } finally {
-      rmSync(stateDir, { recursive: true, force: true });
-    }
-  });
+    }));
 });

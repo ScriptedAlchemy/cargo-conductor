@@ -1,4 +1,4 @@
-import { describe, expect, it } from '@rstest/core';
+import { describe, expect, it } from 'effect-rstest';
 
 import { handleAfterShell, type AfterShellEvent } from '../src/hooks/after-shell.js';
 import {

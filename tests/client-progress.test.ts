@@ -1,4 +1,4 @@
-import { describe, expect, it } from '@rstest/core';
+import { describe, expect, it } from 'effect-rstest';
 
 import { formatProgressLine } from '../src/client/progress.js';
 

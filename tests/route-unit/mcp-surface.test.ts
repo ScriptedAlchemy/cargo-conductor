@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { expect, it } from '@rstest/core';
+import { expect, it } from 'effect-rstest';
 import { invokeMcpTool, listMcpSurface, openInMemoryMcpServer } from 'agent-bundle/test';
 
 import { APP_RESOURCE_URI } from '../../src/constants.js';

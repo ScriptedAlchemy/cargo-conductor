@@ -5,6 +5,7 @@ import { join } from 'node:path';
 
 import * as Effect from 'effect/Effect';
 import * as Schedule from 'effect/Schedule';
+import type * as Scope from 'effect/Scope';
 
 import { resolveDaemonConfig } from '../src/daemon/config.js';
 import type { DaemonConfigShape } from '../src/daemon/config.js';
@@ -68,53 +69,29 @@ export const makeFixture = (maxConcurrent: number): Fixture => {
   return { config, root, binDir, ws1: makeWorkspace('ws1'), ws2: makeWorkspace('ws2') };
 };
 
-export const withTempDir = async <A>(
-  prefix: string,
-  use: (directory: string) => A | PromiseLike<A>,
-): Promise<A> => {
-  const directory = mkdtempSync(join(tmpdir(), prefix));
-  try {
-    return await use(directory);
-  } finally {
-    rmSync(directory, { recursive: true, force: true });
-  }
-};
-
-export const withFixture = <A>(
-  maxConcurrent: number,
-  use: (fixture: Fixture) => Effect.Effect<A, unknown>,
-): Promise<A> =>
-  Effect.runPromise(
-    Effect.scoped(
-      Effect.gen(function* () {
-        const fixture = makeFixture(maxConcurrent);
-        yield* Effect.addFinalizer(() =>
-          Effect.sync(() => rmSync(fixture.root, { recursive: true, force: true })),
-        );
-        return yield* use(fixture);
-      }),
-    ),
+/**
+ * A fresh fixture tree, removed when the enclosing scope closes. Inside
+ * `it.live` the test runner owns that scope.
+ */
+export const scopedFixture = (maxConcurrent: number): Effect.Effect<Fixture, never, Scope.Scope> =>
+  Effect.acquireRelease(
+    Effect.sync(() => makeFixture(maxConcurrent)),
+    (fixture) => Effect.sync(() => rmSync(fixture.root, { recursive: true, force: true })),
   );
 
-export const withDaemon = <A>(
-  maxConcurrent: number,
-  use: (fixture: Fixture) => Effect.Effect<A, unknown>,
-): Promise<A> =>
-  Effect.runPromise(
-    Effect.scoped(
-      Effect.gen(function* () {
-        const fixture = makeFixture(maxConcurrent);
-        yield* Effect.addFinalizer(() =>
-          Effect.sync(() => rmSync(fixture.root, { recursive: true, force: true })),
-        );
-        yield* Effect.forkScoped(runDaemon(fixture.config));
-        yield* pingDaemon(fixture.config.socketPath, 500).pipe(
-          Effect.retry(Schedule.spaced('50 millis').pipe(Schedule.upTo({ times: 100 }))),
-        );
-        return yield* use(fixture);
-      }),
-    ),
-  );
+/**
+ * A fixture with an in-process daemon listening on its socket. The daemon
+ * fiber is interrupted, then the tree removed, when the scope closes.
+ */
+export const scopedDaemon = (maxConcurrent: number): Effect.Effect<Fixture, unknown, Scope.Scope> =>
+  Effect.gen(function* () {
+    const fixture = yield* scopedFixture(maxConcurrent);
+    yield* Effect.forkScoped(runDaemon(fixture.config));
+    yield* pingDaemon(fixture.config.socketPath, 500).pipe(
+      Effect.retry(Schedule.spaced('50 millis').pipe(Schedule.upTo({ times: 100 }))),
+    );
+    return fixture;
+  });
 
 export const shortId = (): string => randomUUID().slice(0, 8);
 

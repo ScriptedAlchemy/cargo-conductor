@@ -2,8 +2,9 @@ import { mkdtemp, rename, rm, stat, unlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { describe, expect, it } from '@rstest/core';
+import { describe, expect, it } from 'effect-rstest';
 import * as Effect from 'effect/Effect';
+import * as Fiber from 'effect/Fiber';
 
 import { makeSignalShutdownController } from '../src/daemon/lifecycle.js';
 import {
@@ -85,26 +86,26 @@ describe('signal shutdown lifecycle', () => {
 });
 
 describe('socket ownership lifecycle', () => {
-  it('fails when the bound socket path is unlinked', async () => {
-    const stateDir = await mkdtemp(join(tmpdir(), 'cargo-hauler-socket-owner-'));
-    const socketPath = join(stateDir, 'daemon.sock');
-    try {
-      await writeFile(socketPath, 'bound socket stand-in');
-      const identity = await readSocketIdentity(socketPath);
-      const lost = Effect.runPromise(
+  it.live('fails when the bound socket path is unlinked', () =>
+    Effect.gen(function* () {
+      const stateDir = yield* Effect.acquireRelease(
+        Effect.promise(() => mkdtemp(join(tmpdir(), 'cargo-hauler-socket-owner-'))),
+        (directory) => Effect.promise(() => rm(directory, { recursive: true, force: true })),
+      );
+      const socketPath = join(stateDir, 'daemon.sock');
+      yield* Effect.promise(() => writeFile(socketPath, 'bound socket stand-in'));
+      const identity = yield* Effect.promise(() => readSocketIdentity(socketPath));
+      const lost = yield* Effect.forkChild(
         Effect.flip(monitorSocketOwnership(socketPath, identity, 5)),
       );
 
-      await new Promise((resolve) => setTimeout(resolve, 15));
-      await unlink(socketPath);
+      yield* Effect.sleep('15 millis');
+      yield* Effect.promise(() => unlink(socketPath));
 
-      const error = await lost;
+      const error = yield* Fiber.join(lost);
       expect(error._tag).toBe('SocketOwnershipLost');
       expect(error.socketPath).toBe(socketPath);
-    } finally {
-      await rm(stateDir, { recursive: true, force: true });
-    }
-  });
+    }));
 
   it('does not unlink a replacement socket during teardown', async () => {
     const stateDir = await mkdtemp(join(tmpdir(), 'cargo-hauler-socket-cleanup-'));

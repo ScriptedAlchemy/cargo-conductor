@@ -2,14 +2,14 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { describe, expect, it } from '@rstest/core';
+import { describe, expect, it } from 'effect-rstest';
 import { expectDocument, renderRoute, renderRouteEvents, testManifest } from 'agent-bundle/test';
 import * as Effect from 'effect/Effect';
 
 import type { DaemonConfigShape } from '../../src/daemon/config.js';
 import { requestOverSocket } from '../../src/daemon/control.js';
 import type { RequestRecord } from '../../src/daemon/protocol.js';
-import { withDaemon } from '../harness.js';
+import { scopedDaemon } from '../harness.js';
 
 /**
  * Route-unit proof: the hauler routes render the Agent Documents they claim,
@@ -107,9 +107,9 @@ describe('tool documents without a daemon', () => {
 });
 
 describe('tool documents against a live daemon', () => {
-  it('submits a request, streams await progress, and shows the ticket in status', async () => {
-    await withDaemon(2, (fixture) =>
+  it.live('submits a request, streams await progress, and shows the ticket in status', () =>
       Effect.gen(function* () {
+        const fixture = yield* scopedDaemon(2);
         // Background submits carry no env, so the job is started over the
         // socket with the fake cargo pinned; the routes then observe it.
         const ack = yield* requestOverSocket({
@@ -180,7 +180,5 @@ describe('tool documents against a live daemon', () => {
           expect(fetched.result).toMatchObject({ operation: 'result', ticket });
           expectDocument(fetched).toHaveStatus('success').toContainContext(`${ticket} succeeded`);
         });
-      }),
-    );
-  }, 30_000);
+      }), 30_000);
 });

@@ -1,4 +1,4 @@
-import { describe, expect, it } from '@rstest/core';
+import { describe, expect, it } from 'effect-rstest';
 
 import { namedPackagesInArgv, optionParts } from '../src/lib/argv.js';
 import { isRecord } from '../src/lib/guards.js';

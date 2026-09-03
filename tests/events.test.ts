@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { Agent } from '@agent-bundle/runtime';
-import { afterEach, beforeEach, describe, expect, it } from '@rstest/core';
+import { afterEach, beforeEach, describe, expect, it } from 'effect-rstest';
 import type { AgentEventRouteProps, CanonicalAgentEvent } from 'agent-bundle';
 import { isValidElement, type ReactElement, type ReactNode } from 'react';
 

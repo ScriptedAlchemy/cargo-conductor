@@ -3,7 +3,7 @@ import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { describe, expect, it } from '@rstest/core';
+import { describe, expect, it } from 'effect-rstest';
 
 import { appendHookRecord, hookEventsFileName } from '../src/hooks/record.js';
 import { probeActiveBuilds } from '../src/hooks/probe.js';

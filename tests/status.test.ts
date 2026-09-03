@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { join, sep } from 'node:path';
 
-import { describe, expect, it } from '@rstest/core';
+import { describe, expect, it } from 'effect-rstest';
 
 import { resolveDaemonConfig } from '../src/daemon/config.js';
 import { resolveHookSocketPath, resolveHookStateDir } from '../src/hooks/paths.js';

@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-import { describe, expect, it } from '@rstest/core';
+import { describe, expect, it } from 'effect-rstest';
 import * as Effect from 'effect/Effect';
 import * as Schedule from 'effect/Schedule';
 
@@ -13,7 +13,7 @@ import {
   type StatusResultMessage,
 } from '../src/daemon/protocol.js';
 
-import { withDaemon, withFixture, type Fixture } from './harness.js';
+import { scopedDaemon, scopedFixture, type Fixture } from './harness.js';
 
 const collectIo = (): {
   readonly io: {
@@ -48,238 +48,225 @@ const cargoEnv = (fixture: Fixture, extra: Record<string, string> = {}): Record<
 });
 
 describe('runExecClient', () => {
-  it('streams brokered cargo output and injects queue/start progress', () =>
-    withDaemon(5, (fixture) =>
-      Effect.gen(function* () {
-        const collected = collectIo();
-        const result = yield* runExecClient({
-          argv: ['cargo', 'check'],
-          autoSpawn: false,
-          config: fixture.config,
-          cwd: fixture.ws1,
-          env: cargoEnv(fixture),
-          io: collected.io,
-        });
+  it.live('streams brokered cargo output and injects queue/start progress', () =>
+    Effect.gen(function* () {
+      const fixture = yield* scopedDaemon(5);
+      const collected = collectIo();
+      const result = yield* runExecClient({
+        argv: ['cargo', 'check'],
+        autoSpawn: false,
+        config: fixture.config,
+        cwd: fixture.ws1,
+        env: cargoEnv(fixture),
+        io: collected.io,
+      });
 
-        expect(result.mode).toBe('brokered');
-        expect(result.exitCode).toBe(0);
-        expect(result.ticket).toMatch(/^cc-\d+$/u);
-        expect(collected.stdout()).toContain('fake-out:check');
-        expect(collected.stderr()).toContain('fake-err:check');
-        expect(collected.stderr()).toMatch(/ticket cc-\d+ queued \(0 ahead/u);
-        expect(collected.stderr()).toMatch(/ticket cc-\d+ started \(waited \d+ms\)/u);
-      }),
-    ));
+      expect(result.mode).toBe('brokered');
+      expect(result.exitCode).toBe(0);
+      expect(result.ticket).toMatch(/^cc-\d+$/u);
+      expect(collected.stdout()).toContain('fake-out:check');
+      expect(collected.stderr()).toContain('fake-err:check');
+      expect(collected.stderr()).toMatch(/ticket cc-\d+ queued \(0 ahead/u);
+      expect(collected.stderr()).toMatch(/ticket cc-\d+ started \(waited \d+ms\)/u);
+    }));
 
-  it('preserves a non-zero cargo exit code from the daemon', () =>
-    withDaemon(5, (fixture) =>
-      Effect.gen(function* () {
-        const collected = collectIo();
-        const result = yield* runExecClient({
-          argv: ['cargo', 'test'],
-          autoSpawn: false,
-          config: fixture.config,
-          cwd: fixture.ws1,
-          env: cargoEnv(fixture, { FAKE_EXIT: '17' }),
-          io: collected.io,
-        });
+  it.live('preserves a non-zero cargo exit code from the daemon', () =>
+    Effect.gen(function* () {
+      const fixture = yield* scopedDaemon(5);
+      const collected = collectIo();
+      const result = yield* runExecClient({
+        argv: ['cargo', 'test'],
+        autoSpawn: false,
+        config: fixture.config,
+        cwd: fixture.ws1,
+        env: cargoEnv(fixture, { FAKE_EXIT: '17' }),
+        io: collected.io,
+      });
 
-        expect(result.mode).toBe('brokered');
-        expect(result.exitCode).toBe(17);
-      }),
-    ));
+      expect(result.mode).toBe('brokered');
+      expect(result.exitCode).toBe(17);
+    }));
 
-  it('runs help/version queries in place without a ticket or a spool record', () =>
-    withFixture(5, (fixture) =>
-      Effect.gen(function* () {
-        const collected = collectIo();
-        const result = yield* runExecClient({
-          argv: ['cargo', 'hauler', '--help'],
-          autoSpawn: false,
-          config: fixture.config,
-          cwd: fixture.ws1,
-          env: cargoEnv(fixture),
-          io: collected.io,
-        });
+  it.live('runs help/version queries in place without a ticket or a spool record', () =>
+    Effect.gen(function* () {
+      const fixture = yield* scopedFixture(5);
+      const collected = collectIo();
+      const result = yield* runExecClient({
+        argv: ['cargo', 'hauler', '--help'],
+        autoSpawn: false,
+        config: fixture.config,
+        cwd: fixture.ws1,
+        env: cargoEnv(fixture),
+        io: collected.io,
+      });
 
-        expect(result).toEqual({ exitCode: 0, mode: 'passthrough' });
-        expect(collected.stdout()).toContain('fake-out:hauler --help');
-        expect(collected.stderr()).toContain('--help is a local query');
-        // Local queries are not missed work: nothing is spooled for the
-        // daemon to ingest into cost history.
-        expect(() =>
-          readFileSync(join(fixture.config.stateDir, passthroughSpoolFileName), 'utf8'),
-        ).toThrow();
-      }),
-    ));
+      expect(result).toEqual({ exitCode: 0, mode: 'passthrough' });
+      expect(collected.stdout()).toContain('fake-out:hauler --help');
+      expect(collected.stderr()).toContain('--help is a local query');
+      // Local queries are not missed work: nothing is spooled for the
+      // daemon to ingest into cost history.
+      expect(() =>
+        readFileSync(join(fixture.config.stateDir, passthroughSpoolFileName), 'utf8'),
+      ).toThrow();
+    }));
 
-  it('falls through to a local cargo process when the daemon is unreachable', () =>
-    withFixture(5, (fixture) =>
-      Effect.gen(function* () {
-        const collected = collectIo();
-        const result = yield* runExecClient({
+  it.live('falls through to a local cargo process when the daemon is unreachable', () =>
+    Effect.gen(function* () {
+      const fixture = yield* scopedFixture(5);
+      const collected = collectIo();
+      const result = yield* runExecClient({
+        argv: ['cargo', 'build'],
+        autoSpawn: false,
+        config: fixture.config,
+        cwd: fixture.ws1,
+        env: cargoEnv(fixture),
+        io: collected.io,
+      });
+
+      expect(result).toEqual({ exitCode: 0, mode: 'passthrough' });
+      expect(collected.stdout()).toContain('fake-out:build');
+      expect(collected.stderr()).toContain('fake-err:build');
+      expect(collected.stderr()).toContain('daemon unreachable; running cargo directly');
+
+      const lines = readFileSync(join(fixture.config.stateDir, passthroughSpoolFileName), 'utf8')
+        .trim()
+        .split('\n')
+        .map((line) => JSON.parse(line) as Record<string, unknown>);
+      expect(lines).toEqual([
+        expect.objectContaining({
           argv: ['cargo', 'build'],
-          autoSpawn: false,
-          config: fixture.config,
           cwd: fixture.ws1,
-          env: cargoEnv(fixture),
-          io: collected.io,
-        });
+          exitCode: 0,
+          kind: 'passthrough',
+          version: 1,
+        }),
+      ]);
 
-        expect(result).toEqual({ exitCode: 0, mode: 'passthrough' });
-        expect(collected.stdout()).toContain('fake-out:build');
-        expect(collected.stderr()).toContain('fake-err:build');
-        expect(collected.stderr()).toContain('daemon unreachable; running cargo directly');
+      // Started after the passthrough so it ingests the spool on boot; the
+      // runner scope interrupts it before the fixture tree is removed.
+      yield* Effect.forkScoped(runDaemon(fixture.config));
+      yield* pingDaemon(fixture.config.socketPath, 500).pipe(
+        Effect.retry(Schedule.spaced('50 millis').pipe(Schedule.upTo({ times: 100 }))),
+      );
+      const messages = yield* requestOverSocket({
+        isTerminal: (message) => message.type === 'status-result',
+        message: { id: 'passthrough-ingest', limit: 10, type: 'status' },
+        socketPath: fixture.config.socketPath,
+      });
+      const status = messages.find(
+        (message): message is StatusResultMessage => message.type === 'status-result',
+      );
+      expect(status?.report.recent).toEqual([
+        expect.objectContaining({
+          argv: ['cargo', 'build'],
+          exitCode: 0,
+          status: 'passthrough',
+        }),
+      ]);
+    }));
 
-        const lines = readFileSync(join(fixture.config.stateDir, passthroughSpoolFileName), 'utf8')
-          .trim()
-          .split('\n')
-          .map((line) => JSON.parse(line) as Record<string, unknown>);
-        expect(lines).toEqual([
-          expect.objectContaining({
-            argv: ['cargo', 'build'],
-            cwd: fixture.ws1,
-            exitCode: 0,
-            kind: 'passthrough',
-            version: 1,
+  it.live('invokes ensureDaemon before falling back to passthrough', () =>
+    Effect.gen(function* () {
+      const fixture = yield* scopedFixture(5);
+      const collected = collectIo();
+      let ensured = 0;
+      const result = yield* runExecClient({
+        argv: ['cargo', 'check'],
+        config: fixture.config,
+        cwd: fixture.ws1,
+        ensureDaemon: () =>
+          Effect.sync(() => {
+            ensured += 1;
           }),
-        ]);
+        env: cargoEnv(fixture),
+        io: collected.io,
+      });
+      expect(ensured).toBe(1);
+      expect(result.mode).toBe('passthrough');
+      expect(collected.stdout()).toContain('fake-out:check');
+    }));
 
-        yield* Effect.scoped(
-          Effect.gen(function* () {
-            yield* Effect.forkScoped(runDaemon(fixture.config));
-            yield* pingDaemon(fixture.config.socketPath, 500).pipe(
-              Effect.retry(
-                Schedule.spaced('50 millis').pipe(Schedule.upTo({ times: 100 })),
-              ),
-            );
-            const messages = yield* requestOverSocket({
-              isTerminal: (message) => message.type === 'status-result',
-              message: { id: 'passthrough-ingest', limit: 10, type: 'status' },
-              socketPath: fixture.config.socketPath,
-            });
-            const status = messages.find(
-              (message): message is StatusResultMessage => message.type === 'status-result',
-            );
-            expect(status?.report.recent).toEqual([
-              expect.objectContaining({
-                argv: ['cargo', 'build'],
-                exitCode: 0,
-                status: 'passthrough',
-              }),
-            ]);
-          }),
-        );
-      }),
-    ));
+  it.live('strips ANSI from streamed stderr when the consumer does not render color', () =>
+    Effect.gen(function* () {
+      const fixture = yield* scopedDaemon(5);
+      const collected = collectIo();
+      const colored = '\u001b[31mred\u001b[0m';
+      const result = yield* runExecClient({
+        argv: ['cargo', 'check', colored],
+        autoSpawn: false,
+        config: fixture.config,
+        cwd: fixture.ws1,
+        env: cargoEnv(fixture),
+        io: collected.io,
+        stderrColor: false,
+      });
 
-  it('invokes ensureDaemon before falling back to passthrough', () =>
-    withFixture(5, (fixture) =>
-      Effect.gen(function* () {
-        const collected = collectIo();
-        let ensured = 0;
-        const result = yield* runExecClient({
-          argv: ['cargo', 'check'],
-          config: fixture.config,
-          cwd: fixture.ws1,
-          ensureDaemon: () =>
-            Effect.sync(() => {
-              ensured += 1;
-            }),
-          env: cargoEnv(fixture),
-          io: collected.io,
-        });
-        expect(ensured).toBe(1);
-        expect(result.mode).toBe('passthrough');
-        expect(collected.stdout()).toContain('fake-out:check');
-      }),
-    ));
+      expect(result.exitCode).toBe(0);
+      expect(collected.stderr()).toContain('fake-err:check red');
+      expect(collected.stderr()).not.toContain('\u001b');
+      // Stdout may be program/data output; it is never rewritten.
+      expect(collected.stdout()).toContain(colored);
+    }));
 
-  it('strips ANSI from streamed stderr when the consumer does not render color', () =>
-    withDaemon(5, (fixture) =>
-      Effect.gen(function* () {
-        const collected = collectIo();
-        const colored = '\u001b[31mred\u001b[0m';
-        const result = yield* runExecClient({
-          argv: ['cargo', 'check', colored],
-          autoSpawn: false,
-          config: fixture.config,
-          cwd: fixture.ws1,
-          env: cargoEnv(fixture),
-          io: collected.io,
-          stderrColor: false,
-        });
+  it.live('passes ANSI through on stderr for a color-capable consumer', () =>
+    Effect.gen(function* () {
+      const fixture = yield* scopedDaemon(5);
+      const collected = collectIo();
+      const colored = '\u001b[31mred\u001b[0m';
+      const result = yield* runExecClient({
+        argv: ['cargo', 'check', colored],
+        autoSpawn: false,
+        config: fixture.config,
+        cwd: fixture.ws1,
+        env: cargoEnv(fixture),
+        io: collected.io,
+        stderrColor: true,
+      });
 
-        expect(result.exitCode).toBe(0);
-        expect(collected.stderr()).toContain('fake-err:check red');
-        expect(collected.stderr()).not.toContain('\u001b');
-        // Stdout may be program/data output; it is never rewritten.
-        expect(collected.stdout()).toContain(colored);
-      }),
-    ));
+      expect(result.exitCode).toBe(0);
+      expect(collected.stderr()).toContain(`fake-err:check ${colored}`);
+    }));
 
-  it('passes ANSI through on stderr for a color-capable consumer', () =>
-    withDaemon(5, (fixture) =>
-      Effect.gen(function* () {
-        const collected = collectIo();
-        const colored = '\u001b[31mred\u001b[0m';
-        const result = yield* runExecClient({
-          argv: ['cargo', 'check', colored],
-          autoSpawn: false,
-          config: fixture.config,
-          cwd: fixture.ws1,
-          env: cargoEnv(fixture),
-          io: collected.io,
-          stderrColor: true,
-        });
+  it.live('suppresses heartbeat progress while brokered output keeps streaming', () =>
+    Effect.gen(function* () {
+      const fixture = yield* scopedDaemon(5);
+      const collected = collectIo();
+      const result = yield* runExecClient({
+        argv: ['cargo', 'check'],
+        autoSpawn: false,
+        config: fixture.config,
+        cwd: fixture.ws1,
+        env: cargoEnv(fixture, {
+          FAKE_OUTPUT_COUNT: '8',
+          FAKE_OUTPUT_INTERVAL: '0.04',
+        }),
+        heartbeatMs: 30,
+        io: collected.io,
+      });
 
-        expect(result.exitCode).toBe(0);
-        expect(collected.stderr()).toContain(`fake-err:check ${colored}`);
-      }),
-    ));
+      expect(result.mode).toBe('brokered');
+      expect(result.exitCode).toBe(0);
+      expect(collected.stdout()).toContain('fake-tick:7');
+      expect(collected.stderr()).not.toContain('still running');
+    }));
 
-  it('suppresses heartbeat progress while brokered output keeps streaming', () =>
-    withDaemon(5, (fixture) =>
-      Effect.gen(function* () {
-        const collected = collectIo();
-        const result = yield* runExecClient({
-          argv: ['cargo', 'check'],
-          autoSpawn: false,
-          config: fixture.config,
-          cwd: fixture.ws1,
-          env: cargoEnv(fixture, {
-            FAKE_OUTPUT_COUNT: '8',
-            FAKE_OUTPUT_INTERVAL: '0.04',
-          }),
-          heartbeatMs: 30,
-          io: collected.io,
-        });
+  it.live('emits heartbeat progress after brokered output becomes silent', () =>
+    Effect.gen(function* () {
+      const fixture = yield* scopedDaemon(5);
+      const collected = collectIo();
+      const result = yield* runExecClient({
+        argv: ['cargo', 'check'],
+        autoSpawn: false,
+        config: fixture.config,
+        cwd: fixture.ws1,
+        env: cargoEnv(fixture, { FAKE_SLEEP: '0.35' }),
+        heartbeatMs: 80,
+        io: collected.io,
+        silenceThresholdMs: 120,
+      });
 
-        expect(result.mode).toBe('brokered');
-        expect(result.exitCode).toBe(0);
-        expect(collected.stdout()).toContain('fake-tick:7');
-        expect(collected.stderr()).not.toContain('still running');
-      }),
-    ));
-
-  it('emits heartbeat progress after brokered output becomes silent', () =>
-    withDaemon(5, (fixture) =>
-      Effect.gen(function* () {
-        const collected = collectIo();
-        const result = yield* runExecClient({
-          argv: ['cargo', 'check'],
-          autoSpawn: false,
-          config: fixture.config,
-          cwd: fixture.ws1,
-          env: cargoEnv(fixture, { FAKE_SLEEP: '0.35' }),
-          heartbeatMs: 80,
-          io: collected.io,
-          silenceThresholdMs: 120,
-        });
-
-        expect(result.mode).toBe('brokered');
-        expect(result.exitCode).toBe(0);
-        expect(collected.stderr()).toMatch(/still running \(\d+s\)/u);
-      }),
-    ));
+      expect(result.mode).toBe('brokered');
+      expect(result.exitCode).toBe(0);
+      expect(collected.stderr()).toMatch(/still running \(\d+s\)/u);
+    }));
 });

@@ -1,12 +1,12 @@
-import { rmSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { NodeServices } from '@effect/platform-node';
-import { describe, expect, it } from '@rstest/core';
+import { describe, expect, it } from 'effect-rstest';
 import * as Deferred from 'effect/Deferred';
 import * as Effect from 'effect/Effect';
 import * as Fiber from 'effect/Fiber';
 import * as Layer from 'effect/Layer';
+import type * as Scope from 'effect/Scope';
 
 import { Broker, BrokerLive } from '../src/daemon/broker.js';
 import { DaemonConfig } from '../src/daemon/config.js';
@@ -16,13 +16,28 @@ import { createLedgerApi, Ledger, openLedgerDatabase } from '../src/daemon/ledge
 import type { LedgerApi } from '../src/daemon/ledger.js';
 import type { AckMessage, AwaitResultMessage, ResultResultMessage } from '../src/daemon/protocol.js';
 import { Topology } from '../src/daemon/topology.js';
-import { makeFixture, pollReport, shortId, withDaemon } from './harness.js';
+import { pollReport, scopedDaemon, scopedFixture, shortId } from './harness.js';
+import type { Fixture } from './harness.js';
 
-describe('async tickets', () => {
-  it('removes an interrupted ticket waiter immediately', async () => {
-    const fixture = makeFixture(1);
-    const db = openLedgerDatabase(fixture.config.databasePath);
+interface BrokerFixture {
+  readonly fixture: Fixture;
+  readonly ledger: LedgerApi;
+  readonly layer: Layer.Layer<Broker>;
+}
+
+/** A fixture, an open ledger, and a broker layer over it, all released with the scope. */
+const brokerFixture = (
+  maxConcurrent: number,
+  wrapLedger: (base: LedgerApi) => LedgerApi = (base) => base,
+): Effect.Effect<BrokerFixture, never, Scope.Scope> =>
+  Effect.gen(function* () {
+    const fixture = yield* scopedFixture(maxConcurrent);
+    const db = yield* Effect.acquireRelease(
+      Effect.sync(() => openLedgerDatabase(fixture.config.databasePath)),
+      (database) => Effect.sync(() => database.close()),
+    );
     const baseLedger = createLedgerApi(db);
+    const ledger = wrapLedger(baseLedger);
     const costModel = createCostModel({
       kacheReader: null,
       seedDurations: baseLedger.recentDurations,
@@ -35,14 +50,18 @@ describe('async tickets', () => {
           editedRecently: () => Effect.succeed(false),
         }),
       ),
-      Layer.provideMerge(Layer.succeed(Ledger, baseLedger)),
+      Layer.provideMerge(Layer.succeed(Ledger, ledger)),
       Layer.provideMerge(Layer.succeed(DaemonConfig, fixture.config)),
       Layer.provideMerge(NodeServices.layer),
     );
+    return { fixture, ledger, layer };
+  });
 
-    try {
-      await Effect.runPromise(
-        Effect.scoped(
+describe('async tickets', () => {
+  it.live('removes an interrupted ticket waiter immediately', () =>
+    Effect.gen(function* () {
+      const { fixture, layer } = yield* brokerFixture(1);
+      yield* Effect.scoped(
           Effect.gen(function* () {
             const broker = yield* Broker;
             const submitted = yield* broker.submit(
@@ -69,39 +88,14 @@ describe('async tickets', () => {
             expect(remainingWaiters).toBe(0);
             yield* broker.kill(submitted.ticket);
           }),
-        ).pipe(Effect.provide(layer)),
-      );
-    } finally {
-      db.close();
-      rmSync(fixture.root, { force: true, recursive: true });
-    }
-  });
+        ).pipe(Effect.provide(layer));
+    }));
 
-  it('overlays a live output tail on a running ticket instead of staying blind until settlement', async () => {
-    const fixture = makeFixture(1);
-    const db = openLedgerDatabase(fixture.config.databasePath);
-    const baseLedger = createLedgerApi(db);
-    const costModel = createCostModel({
-      kacheReader: null,
-      seedDurations: baseLedger.recentDurations,
-    });
-    const layer = BrokerLive.pipe(
-      Layer.provideMerge(Layer.succeed(CostModel, costModel)),
-      Layer.provideMerge(
-        Layer.succeed(Topology, {
-          dependencyClosure: () => Effect.succeed(new Set<string>()),
-          editedRecently: () => Effect.succeed(false),
-        }),
-      ),
-      Layer.provideMerge(Layer.succeed(Ledger, baseLedger)),
-      Layer.provideMerge(Layer.succeed(DaemonConfig, fixture.config)),
-      Layer.provideMerge(NodeServices.layer),
-    );
-    const started = Deferred.makeUnsafe<void>();
-
-    try {
-      await Effect.runPromise(
-        Effect.scoped(
+  it.live('overlays a live output tail on a running ticket instead of staying blind until settlement', () =>
+    Effect.gen(function* () {
+      const { fixture, layer } = yield* brokerFixture(1);
+      const started = Deferred.makeUnsafe<void>();
+      yield* Effect.scoped(
           Effect.gen(function* () {
             const broker = yield* Broker;
             const submitted = yield* broker.submit(
@@ -134,45 +128,21 @@ describe('async tickets', () => {
             const settled = yield* broker.getTicket(submitted.ticket);
             expect(settled?.outputTailLive).not.toBe(true);
           }),
-        ).pipe(Effect.provide(layer)),
-      );
-    } finally {
-      db.close();
-      rmSync(fixture.root, { force: true, recursive: true });
-    }
-  });
+        ).pipe(Effect.provide(layer));
+    }));
 
-  it('settles running, queued, and attached rows when the broker scope closes', async () => {
-    const fixture = makeFixture(1);
-    const db = openLedgerDatabase(fixture.config.databasePath);
-    const ledger = createLedgerApi(db);
-    const costModel = createCostModel({
-      kacheReader: null,
-      seedDurations: ledger.recentDurations,
-    });
-    const layer = BrokerLive.pipe(
-      Layer.provideMerge(Layer.succeed(CostModel, costModel)),
-      Layer.provideMerge(
-        Layer.succeed(Topology, {
-          dependencyClosure: () => Effect.succeed(new Set<string>()),
-          editedRecently: () => Effect.succeed(false),
-        }),
-      ),
-      Layer.provideMerge(Layer.succeed(Ledger, ledger)),
-      Layer.provideMerge(Layer.succeed(DaemonConfig, fixture.config)),
-      Layer.provideMerge(NodeServices.layer),
-    );
-    const started = Deferred.makeUnsafe<void>();
-    const callbacks = {
-      onExit: () => Effect.void,
-      onOutput: () => Effect.void,
-      onStarted: () => Effect.asVoid(Deferred.succeed(started, undefined)),
-    };
-    const tickets: string[] = [];
+  it.live('settles running, queued, and attached rows when the broker scope closes', () =>
+    Effect.gen(function* () {
+      const { fixture, layer, ledger } = yield* brokerFixture(1);
+      const started = Deferred.makeUnsafe<void>();
+      const callbacks = {
+        onExit: () => Effect.void,
+        onOutput: () => Effect.void,
+        onStarted: () => Effect.asVoid(Deferred.succeed(started, undefined)),
+      };
+      const tickets: string[] = [];
 
-    try {
-      await Effect.runPromise(
-        Effect.scoped(
+      yield* Effect.scoped(
           Effect.gen(function* () {
             const broker = yield* Broker;
             const running = yield* broker.submit(
@@ -229,49 +199,22 @@ describe('async tickets', () => {
             expect(waiterCount).toBe(1);
             yield* Fiber.interrupt(waiter);
           }),
-        ).pipe(Effect.provide(layer)),
-      );
+        ).pipe(Effect.provide(layer));
 
-      const active = await Effect.runPromise(ledger.activeRequests());
+      const active = yield* ledger.activeRequests();
       expect(active).toEqual([]);
-      const records = await Promise.all(
-        tickets.map((ticket) => Effect.runPromise(ledger.getRequestByTicket(ticket))),
-      );
+      const records = yield* Effect.forEach(tickets, (ticket) => ledger.getRequestByTicket(ticket));
       expect(records).toHaveLength(4);
       for (const record of records) {
         expect(record?.status).toBe('killed');
         expect(record?.error).toBe('daemon shutdown');
       }
-    } finally {
-      db.close();
-      rmSync(fixture.root, { force: true, recursive: true });
-    }
-  });
+    }));
 
-  it('kills a foreground submission whose connection closed during registration', async () => {
-    const fixture = makeFixture(1);
-    const db = openLedgerDatabase(fixture.config.databasePath);
-    const ledger = createLedgerApi(db);
-    const costModel = createCostModel({
-      kacheReader: null,
-      seedDurations: ledger.recentDurations,
-    });
-    const layer = BrokerLive.pipe(
-      Layer.provideMerge(Layer.succeed(CostModel, costModel)),
-      Layer.provideMerge(
-        Layer.succeed(Topology, {
-          dependencyClosure: () => Effect.succeed(new Set<string>()),
-          editedRecently: () => Effect.succeed(false),
-        }),
-      ),
-      Layer.provideMerge(Layer.succeed(Ledger, ledger)),
-      Layer.provideMerge(Layer.succeed(DaemonConfig, fixture.config)),
-      Layer.provideMerge(NodeServices.layer),
-    );
-
-    try {
-      await Effect.runPromise(
-        Effect.scoped(
+  it.live('kills a foreground submission whose connection closed during registration', () =>
+    Effect.gen(function* () {
+      const { fixture, layer } = yield* brokerFixture(1);
+      yield* Effect.scoped(
           Effect.gen(function* () {
             const broker = yield* Broker;
             const submitted = yield* broker.submit(
@@ -293,57 +236,32 @@ describe('async tickets', () => {
             expect(result.record?.status).toBe('killed');
             expect(result.record?.startedAtMs).toBeNull();
           }),
-        ).pipe(Effect.provide(layer)),
-      );
-    } finally {
-      db.close();
-      rmSync(fixture.root, { force: true, recursive: true });
-    }
-  });
+        ).pipe(Effect.provide(layer));
+    }));
 
-  it('does not lose completion between the await ledger read and waiter registration', async () => {
-    const fixture = makeFixture(1);
-    const db = openLedgerDatabase(fixture.config.databasePath);
-    const baseLedger = createLedgerApi(db);
-    const readStarted = Deferred.makeUnsafe<void>();
-    const releaseRead = Deferred.makeUnsafe<void>();
-    const runStarted = Deferred.makeUnsafe<void>();
-    const runFinished = Deferred.makeUnsafe<void>();
-    let delayNextRead = false;
-    let delayed = false;
-    const ledger: LedgerApi = {
-      ...baseLedger,
-      getRequestByTicket: (ticket) =>
-        Effect.gen(function* () {
-          const record = yield* baseLedger.getRequestByTicket(ticket);
-          if (delayNextRead && !delayed) {
-            delayed = true;
-            yield* Deferred.succeed(readStarted, undefined);
-            yield* Deferred.await(releaseRead);
-          }
-          return record;
-        }),
-    };
-    const costModel = createCostModel({
-      kacheReader: null,
-      seedDurations: baseLedger.recentDurations,
-    });
-    const layer = BrokerLive.pipe(
-      Layer.provideMerge(Layer.succeed(CostModel, costModel)),
-      Layer.provideMerge(
-        Layer.succeed(Topology, {
-          dependencyClosure: () => Effect.succeed(new Set<string>()),
-          editedRecently: () => Effect.succeed(false),
-        }),
-      ),
-      Layer.provideMerge(Layer.succeed(Ledger, ledger)),
-      Layer.provideMerge(Layer.succeed(DaemonConfig, fixture.config)),
-      Layer.provideMerge(NodeServices.layer),
-    );
+  it.live('does not lose completion between the await ledger read and waiter registration', () =>
+    Effect.gen(function* () {
+      const readStarted = Deferred.makeUnsafe<void>();
+      const releaseRead = Deferred.makeUnsafe<void>();
+      const runStarted = Deferred.makeUnsafe<void>();
+      const runFinished = Deferred.makeUnsafe<void>();
+      let delayNextRead = false;
+      let delayed = false;
+      const { fixture, layer } = yield* brokerFixture(1, (baseLedger) => ({
+        ...baseLedger,
+        getRequestByTicket: (ticket) =>
+          Effect.gen(function* () {
+            const record = yield* baseLedger.getRequestByTicket(ticket);
+            if (delayNextRead && !delayed) {
+              delayed = true;
+              yield* Deferred.succeed(readStarted, undefined);
+              yield* Deferred.await(releaseRead);
+            }
+            return record;
+          }),
+      }));
 
-    try {
-      await Effect.runPromise(
-        Effect.scoped(
+      yield* Effect.scoped(
           Effect.gen(function* () {
             const broker = yield* Broker;
             const submitted = yield* broker.submit(
@@ -372,17 +290,12 @@ describe('async tickets', () => {
             expect(result.timedOut).toBe(false);
             expect(result.record?.status).toBe('done');
           }),
-        ).pipe(Effect.provide(layer)),
-      );
-    } finally {
-      db.close();
-      rmSync(fixture.root, { force: true, recursive: true });
-    }
-  });
+        ).pipe(Effect.provide(layer));
+    }));
 
-  it('keeps a background request after the client disconnects and serves await/result', () =>
-    withDaemon(5, (fixture) =>
+  it.live('keeps a background request after the client disconnects and serves await/result', () =>
       Effect.gen(function* () {
+        const fixture = yield* scopedDaemon(5);
         const ackMessages = yield* requestOverSocket({
           isTerminal: (message) => message.type === 'ack' || message.type === 'error',
           message: {
@@ -433,6 +346,5 @@ describe('async tickets', () => {
         );
         expect(awaitResult?.timedOut).toBe(false);
         expect(awaitResult?.request?.ticket).toBe(ticket);
-      }),
-    ));
+      }));
 });

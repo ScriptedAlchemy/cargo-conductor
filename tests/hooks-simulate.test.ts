@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { listHooks, simulateHook } from 'agent-bundle/api';
-import { describe, expect, it } from '@rstest/core';
+import { describe, expect, it } from 'effect-rstest';
 import * as Effect from 'effect/Effect';
 
 import { handleAfterShell } from '../src/hooks/after-shell.js';
@@ -16,7 +16,7 @@ import {
 import type { HookRecord } from '../src/hooks/record.js';
 import { recordDeniedAttempt } from '../src/hooks/rpc.js';
 
-import { pollReport, withDaemon } from './harness.js';
+import { pollReport, scopedDaemon } from './harness.js';
 
 const repoRoot = fileURLToPath(new URL('..', import.meta.url));
 const fixtureRoot = join(repoRoot, 'tests', 'fixtures', 'hooks');
@@ -73,14 +73,13 @@ const runWrapper = (
     child.stdin.end(`${JSON.stringify(input)}\n`);
   });
 
-const findWrapper = (event: 'before-tool' | 'after-tool', cursor: boolean): string | undefined => {
+/** The generated event-route wrapper for one hook (`event-route-tool-before[.cursor].mjs`). */
+const findWrapper = (event: 'tool-before' | 'tool-after', cursor: boolean): string | undefined => {
   if (!existsSync(pluginHooksRoot)) {
     return undefined;
   }
-  return readdirSync(pluginHooksRoot).find((name) => {
-    const isCursor = name.endsWith('.cursor.mjs');
-    return name.startsWith(`${event}-`) && name.endsWith('.mjs') && isCursor === cursor;
-  });
+  const expected = `event-route-${event}${cursor ? '.cursor' : ''}.mjs`;
+  return readdirSync(pluginHooksRoot).find((name) => name === expected);
 };
 
 describe('host envelope fixtures', () => {
@@ -128,50 +127,49 @@ describe('host envelope fixtures', () => {
     ]);
   });
 
-  it('records a denied destructive hook attempt in the daemon ledger', () =>
-    withDaemon(1, (fixture) =>
-      Effect.gen(function* () {
-        const result = yield* Effect.promise(() =>
-          handleBeforeShell(
-            {
-              cwd: fixture.ws1,
-              sessionId: 'deny-session',
-              toolInput: { command: 'cargo clean' },
-              toolName: 'Bash',
-            },
-            { nativeEvent: 'preToolUse', target: 'plugin' },
-            {
-              hasActiveBuilds: () => true,
-              record: () => undefined,
-              recordAttempt: (attempt) =>
-                recordDeniedAttempt(attempt, fixture.config.socketPath),
-            },
-          ),
-        );
-        expect(result).toEqual(
-          expect.objectContaining({
-            outcome: 'deny',
-            reason: expect.stringContaining('cargo clean is blocked'),
-          }),
-        );
+  it.live('records a denied destructive hook attempt in the daemon ledger', () =>
+    Effect.gen(function* () {
+      const fixture = yield* scopedDaemon(1);
+      const result = yield* Effect.promise(() =>
+        handleBeforeShell(
+          {
+            cwd: fixture.ws1,
+            sessionId: 'deny-session',
+            toolInput: { command: 'cargo clean' },
+            toolName: 'Bash',
+          },
+          { nativeEvent: 'preToolUse', target: 'plugin' },
+          {
+            hasActiveBuilds: () => true,
+            record: () => undefined,
+            recordAttempt: (attempt) =>
+              recordDeniedAttempt(attempt, fixture.config.socketPath),
+          },
+        ),
+      );
+      expect(result).toEqual(
+        expect.objectContaining({
+          outcome: 'deny',
+          reason: expect.stringContaining('cargo clean is blocked'),
+        }),
+      );
 
-        const report = yield* pollReport(fixture, (candidate) =>
-          candidate.recent.some((request) => request.status === 'denied'),
-        );
-        expect(report.recent).toEqual(
-          expect.arrayContaining([
-            expect.objectContaining({
-              argv: ['cargo', 'clean'],
-              cwd: fixture.ws1,
-              error: expect.stringContaining('cargo clean is blocked'),
-              host: 'cursor',
-              session: 'deny-session',
-              status: 'denied',
-            }),
-          ]),
-        );
-      }),
-    ));
+      const report = yield* pollReport(fixture, (candidate) =>
+        candidate.recent.some((request) => request.status === 'denied'),
+      );
+      expect(report.recent).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            argv: ['cargo', 'clean'],
+            cwd: fixture.ws1,
+            error: expect.stringContaining('cargo clean is blocked'),
+            host: 'cursor',
+            session: 'deny-session',
+            status: 'denied',
+          }),
+        ]),
+      );
+    }));
 });
 
 describe('agent-bundle hooks simulate', () => {
@@ -264,10 +262,10 @@ describe('agent-bundle hooks simulate', () => {
     90_000,
   );
 
-  it.skipIf(findWrapper('before-tool', false) === undefined)(
+  it.skipIf(findWrapper('tool-before', false) === undefined)(
     'accepts native Claude and Codex PreToolUse envelopes on the generated wrapper',
     async () => {
-      const wrapper = join(pluginHooksRoot, findWrapper('before-tool', false)!);
+      const wrapper = join(pluginHooksRoot, findWrapper('tool-before', false)!);
       for (const file of ['claude-before-cargo.json', 'codex-before-cargo.json'] as const) {
         const ran = await runWrapper(wrapper, loadJson(file));
         expect(ran.code).toBe(0);
@@ -281,10 +279,10 @@ describe('agent-bundle hooks simulate', () => {
     },
   );
 
-  it.skipIf(findWrapper('before-tool', true) === undefined)(
+  it.skipIf(findWrapper('tool-before', true) === undefined)(
     'accepts a native Cursor preToolUse envelope on the generated cursor wrapper',
     async () => {
-      const wrapper = join(pluginHooksRoot, findWrapper('before-tool', true)!);
+      const wrapper = join(pluginHooksRoot, findWrapper('tool-before', true)!);
       const ran = await runWrapper(wrapper, loadJson('cursor-before-cargo.json'));
       expect(ran.code).toBe(0);
       expect(ran.stdout.length).toBeGreaterThan(0);
