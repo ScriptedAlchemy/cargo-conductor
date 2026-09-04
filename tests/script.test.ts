@@ -98,19 +98,6 @@ describe('hauler script', () => {
     expect(seen).not.toHaveProperty('terminal');
   });
 
-  it('rejects dashboard arguments outside its grammar with usage and exit 2', async () => {
-    for (const argv of [
-      ['dashboard', '--port', 'nope'],
-      ['dashboard', '--port', '70000'],
-      ['dashboard', '--target', 'vscode'],
-      ['dashboard', '--open'],
-    ]) {
-      const result = await run(argv);
-      expect(result.code).toBe(2);
-      expect(result.text).toContain('Usage: hauler dashboard');
-    }
-  });
-
   it('dispatches exec to the streaming client instead of JSON-printing a receipt', async () => {
     let seenArgv: readonly string[] | undefined;
     const result = await run(['exec', '--session', 's1', '--', 'cargo', 'check', '-p', 'alpha'], {

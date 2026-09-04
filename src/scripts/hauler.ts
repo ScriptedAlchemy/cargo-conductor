@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process';
-import { existsSync, readFileSync, realpathSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
+import { existsSync, realpathSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import type { AgentTerminal, ExecutableMainContext } from 'agent-bundle';
@@ -37,10 +37,7 @@ Commands:
       an older install (in-flight tickets end as "orphaned by daemon restart")
   install-shim [--dir DIR] [--real-cargo PATH] [--force]
       Install an optional PATH cargo shim
-  dashboard [--target HOST] [--port N] [--no-open]
-      Serve the dashboard App in a plain browser tab against the running
-      daemon (from the plugin checkout or the npm package) until Ctrl-C
-  status | log | last | await <ticket> | result <ticket> | request [--after TICKET] -- <cargo command>
+  status | log | last | await <ticket> | result <ticket> | request [--after TICKET] -- <cargo command> | dashboard
       Routed commands; run \`cargo-hauler --help\` for options
 `;
 
@@ -212,156 +209,6 @@ const runDaemonCommand = async (
   return daemonExitCode(result);
 };
 
-const dashboardUsage = 'Usage: hauler dashboard [--target claude|codex|cursor|portable] [--port N] [--no-open]\n';
-
-const dashboardTargets = ['claude', 'codex', 'cursor', 'portable'] as const;
-
-type DashboardTarget = (typeof dashboardTargets)[number];
-
-const isDashboardTarget = (value: string): value is DashboardTarget =>
-  (dashboardTargets as readonly string[]).includes(value);
-
-interface DashboardArgv {
-  readonly open: boolean;
-  readonly port?: number;
-  readonly target: DashboardTarget;
-}
-
-const parseDashboardArgv = (rest: readonly string[]): DashboardArgv | undefined => {
-  let open = true;
-  let port: number | undefined;
-  let target: DashboardTarget = 'portable';
-  for (let index = 0; index < rest.length; index += 1) {
-    const argument = rest[index];
-    switch (argument) {
-      case '--no-open':
-        open = false;
-        break;
-      case '--port': {
-        const value = Number(rest[index + 1]);
-        if (!Number.isInteger(value) || value < 0 || value > 65_535) {
-          return undefined;
-        }
-        port = value;
-        index += 1;
-        break;
-      }
-      case '--target': {
-        const value = rest[index + 1];
-        if (value === undefined || !isDashboardTarget(value)) {
-          return undefined;
-        }
-        target = value;
-        index += 1;
-        break;
-      }
-      default:
-        return undefined;
-    }
-  }
-  return { open, ...(port === undefined ? {} : { port }), target };
-};
-
-/**
- * Where this entry lives decides what it can serve: `dist/bin/hauler.js` sits
- * two levels under the project root (a checkout or the npm package), whose
- * `artifact/` holds every built host pack; `artifact/<host>/scripts/hauler.mjs`
- * sits two levels under that artifact root. An installed host pack is neither
- * and has no artifact to serve from.
- */
-const locateDashboardProject = (): { readonly artifact: string; readonly root: string } | undefined => {
-  const here = fileURLToPath(new URL('../../', import.meta.url));
-  if (existsSync(join(here, 'agent-bundle.manifest.json'))) {
-    return { artifact: here, root: dirname(here) };
-  }
-  if (existsSync(join(here, 'artifact', 'agent-bundle.manifest.json'))) {
-    return { artifact: join(here, 'artifact'), root: here };
-  }
-  return undefined;
-};
-
-/**
- * The framework's own CLI as the project resolves it: the `agent-bundle`
- * package under the nearest `node_modules` at or above the root, read from its
- * manifest's `bin`. Looked up by path, not `require.resolve`: the package's
- * `exports` declare no `require` condition, and an `import()` of it here
- * would drag the framework into every bundle that carries this entry.
- */
-const frameworkCliPath = (root: string): string | undefined => {
-  for (let directory = root; ; directory = dirname(directory)) {
-    const packageDir = join(directory, 'node_modules', 'agent-bundle');
-    const manifestPath = join(packageDir, 'package.json');
-    if (existsSync(manifestPath)) {
-      const manifest: unknown = JSON.parse(readFileSync(manifestPath, 'utf8'));
-      const bin = typeof manifest === 'object' && manifest !== null && 'bin' in manifest ? manifest.bin : undefined;
-      const relative =
-        typeof bin === 'string' ? bin : typeof bin === 'object' && bin !== null ? Reflect.get(bin, 'agent-bundle') : undefined;
-      return typeof relative === 'string' ? resolve(packageDir, relative) : undefined;
-    }
-    if (directory === dirname(directory)) {
-      return undefined;
-    }
-  }
-};
-
-/**
- * `hauler dashboard`: the MCP App in a plain browser tab, outside any MCP
- * host. It runs the framework's own `agent-bundle serve-app` (agent-bundle#514)
- * against this install's built artifact: the packed `hauler` server launches
- * exactly as `mcp run` launches it, the App is bound to it through the
- * Workbench's host stack on a loopback origin, `hauler_status` is called once
- * so it opens populated, and `call-tool` is approved so the panels may poll;
- * the command stays in the foreground until Ctrl-C or the server exits.
- *
- * The framework is spawned, never imported: a routed command importing
- * `agent-bundle/api` would either inline the framework into every host pack's
- * bin or leave a bare import the artifact validator rejects (`AB6005`). The
- * packs stay self-contained, and `agent-bundle` is resolved from the project
- * at run time — the checkout (or an install that adds it) has it; an
- * installed host pack does not, and says so.
- */
-const runDashboard = (rest: readonly string[], options: ScriptOptions): Promise<number> => {
-  const write = options.write ?? defaultWrite;
-  const writeStderr = options.writeStderr ?? defaultWriteStderr;
-  const argv = parseDashboardArgv(rest);
-  if (argv === undefined) {
-    write(dashboardUsage);
-    return Promise.resolve(2);
-  }
-  const project = locateDashboardProject();
-  if (project === undefined) {
-    writeStderr(
-      'hauler dashboard runs from the plugin checkout or the npm package, where the built artifact sits beside the CLI; an installed host pack has none. In an MCP host, call hauler_status instead — the dashboard App is attached to its result.\n',
-    );
-    return Promise.resolve(1);
-  }
-  const cli = frameworkCliPath(project.root);
-  if (cli === undefined) {
-    writeStderr(
-      `hauler dashboard needs agent-bundle resolvable from ${project.root} (\`pnpm install\` in the checkout). In an MCP host, call hauler_status instead — the dashboard App is attached to its result.\n`,
-    );
-    return Promise.resolve(1);
-  }
-  const serveArgv = [
-    cli,
-    'serve-app',
-    'hauler/dashboard',
-    '--root',
-    project.root,
-    '--artifact',
-    project.artifact,
-    '--target',
-    argv.target,
-    '--tool',
-    'hauler_status',
-    '--allow',
-    'call-tool',
-    argv.open ? '--open' : '--no-open',
-    ...(argv.port === undefined ? [] : ['--port', String(argv.port)]),
-  ];
-  return forwardToProcess(serveArgv, options);
-};
-
 /**
  * The generated routed CLI: `dist/bin/cargo-hauler.js` beside this script in
  * the npm package, or `bin/cargo-hauler.mjs` one level up in a host artifact
@@ -433,8 +280,6 @@ export const runScript = async (
       return runInstallShim(rest, write);
     case 'daemon':
       return runDaemonCommand(rest, write);
-    case 'dashboard':
-      return runDashboard(rest, options);
     default:
       return forwardToRoutedCli(argv, options);
   }

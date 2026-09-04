@@ -83,7 +83,7 @@ checkout? See [Install](#install).
 | `hauler request [--session ID] [--host HOST] [--cwd DIR] [--after TICKET …] -- <cargo …>` | Submit a background request and return its ticket, with where it landed in its lane (`queued behind cc-3281 (~13m)`, `waiting for cc-3281`, or `attached to cc-3281`). `--after` works as for `exec`. |
 | `hauler daemon <run\|start\|stop\|status\|restart>` | Manage the daemon lifecycle. `restart` sends the graceful stop, waits up to 5 s for the old pid to exit, then starts a daemon from this install and prints both (`restarted: pid 741314 (0.4.1) → pid 742001 (0.4.4)`); a daemon that has not exited by then is reported, not killed, and nothing is started (exit `1`). Tickets in flight at the restart are not handed over: the new daemon marks them `killed` with the error `orphaned by daemon restart`. |
 | `hauler install-shim [--dir DIR] [--real-cargo PATH] [--force]` | Install the optional PATH shim. |
-| `hauler dashboard [--target HOST] [--port N] [--open false] [--artifact DIR]` | Open the dashboard in a plain browser tab: serve the MCP App standalone against the plugin's own `hauler` server on `127.0.0.1`, call `hauler_status` once so it opens populated, and stay in the foreground until Ctrl-C. Runs from the checkout or the npm package (it needs the built `artifact/` and a resolvable `agent-bundle`); in an MCP host, call `hauler_status` instead. |
+| `hauler dashboard [--target claude\|codex\|cursor\|portable] [--port N] [--no-open]` | Open the dashboard in a plain browser tab: serve the MCP App standalone against the plugin's own `hauler` server on `127.0.0.1` (through `agent-bundle serve-app`), call `hauler_status` once so it opens populated, and stay in the foreground until Ctrl-C. A checkout command: it needs the built `artifact/` beside the CLI and `agent-bundle` under `node_modules` (`pnpm install && pnpm build`); the npm package ships no runtime dependencies and an installed host pack has no artifact, so both report what is missing. In an MCP host, call `hauler_status` instead. |
 
 The `hauler` MCP server projects the same operations as `hauler_status`,
 `hauler_log`, `hauler_last`, `hauler_await`, `hauler_result`, `hauler_kill`,
@@ -95,8 +95,9 @@ The dashboard is an MCP App (`ui://cargo-hauler/dashboard.html`) attached to
 `hauler_status`. It shows contention and admission, in-flight and queued work
 with live output per ticket, metrics over one-hour, 24-hour, and all-time
 windows, per-command timings, optional kache data, lanes, and history. It
-refreshes itself while open. Outside an MCP host, `hauler dashboard` serves
-the same App in a plain browser tab against the running daemon.
+refreshes itself while open. Outside an MCP host, `hauler dashboard` (from the
+plugin checkout) serves the same App in a plain browser tab against the
+running daemon.
 
 ![cargo-hauler metrics for one-hour, 24-hour, and all-time windows](docs/media/dashboard-metrics.png)
 
