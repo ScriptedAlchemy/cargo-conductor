@@ -76,6 +76,8 @@ export const requestRecordSchema = z.object({
   outputTail: z.string().nullable(),
   /** True when outputTail is a live in-progress snapshot, not the settled tail. */
   outputTailLive: z.boolean().optional(),
+  /** On-disk full output log (`<stateDir>/tickets/<ticket>.log`); null until the run starts. */
+  outputPath: z.string().nullable(),
   queuedAtMs: z.number().nullable(),
   runMs: z.number().nullable(),
   session: z.string().nullable(),
@@ -383,6 +385,21 @@ export const ticketInputSchema = z
   })
   .strict();
 
+/**
+ * `hauler_result` alone takes `full`: the whole on-disk output log as the
+ * document body. `hauler_await` keeps `ticketInputSchema` — a wait that ends
+ * in a full log would blow the rendered-route budget for nothing.
+ */
+export const resultInputSchema = z
+  .object({
+    ticket: z.string().min(1),
+    full: z
+      .boolean()
+      .optional()
+      .describe('Render the whole on-disk output log instead of the stored tail'),
+  })
+  .strict();
+
 export const awaitResultSchema = z
   .object({
     operation: z.literal('await'),
@@ -490,4 +507,5 @@ export type LimitInput = z.infer<typeof limitInputSchema>;
 export type StatusInput = z.infer<typeof statusInputSchema>;
 export type DaemonInput = z.infer<typeof daemonInputSchema>;
 export type TicketInput = z.infer<typeof ticketInputSchema>;
+export type ResultInput = z.infer<typeof resultInputSchema>;
 export type RequestInput = z.infer<typeof requestInputSchema>;

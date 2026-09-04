@@ -71,6 +71,7 @@ import {
 } from './scheduler.js';
 import type { AdmissionLoadInput } from './scheduler.js';
 import type { TicketDirectory } from './ticket-directory.js';
+import { openTicketLog } from './ticket-log.js';
 import type { TopologyApi } from './topology.js';
 
 export interface Lane {
@@ -229,6 +230,7 @@ export const makeLaneRuntime = (deps: LaneRuntimeDeps): Effect.Effect<LaneRuntim
           execArgv: plan.execArgv,
           demux: plan.demux,
           tail: new TailBuffer(config.outputTailBytes),
+          log: null,
           estimateMs: estimate.estimateMs,
           estimateSource: estimate.source,
           startedAtMs: null,
@@ -500,6 +502,15 @@ export const makeLaneRuntime = (deps: LaneRuntimeDeps): Effect.Effect<LaneRuntim
           const startedAtMs = job.startedAtMs;
           const waitMs = Math.max(0, (startedAtMs ?? atMs) - job.queuedAtMs);
           const runMs = startedAtMs === null ? 0 : Math.max(0, atMs - startedAtMs);
+          // Flush the on-disk log before the row turns terminal, so a
+          // `hauler result --full` issued on the exit sees the whole run.
+          const log = job.log;
+          if (log !== null) {
+            yield* step(
+              'closeTicketLog',
+              log.close().pipe(Effect.timeout('5 seconds'), Effect.ignore),
+            );
+          }
           yield* step(
             'ledger.markFinished',
             ledger.markFinished(job.id, {
@@ -575,17 +586,25 @@ export const makeLaneRuntime = (deps: LaneRuntimeDeps): Effect.Effect<LaneRuntim
         }
         yield* Effect.logDebug('starting admitted job');
         const runStartedAtMs = Date.now();
+        // The log opens in the same frame that publishes the start, so a
+        // follower registering against a started leader always finds the
+        // path it shares (completeAttachRegistration reads `leader.log`).
         const queuedAttachments = yield* Effect.sync(() => {
           job.startedAtMs = runStartedAtMs;
           job.lastOutputAtMs = runStartedAtMs;
+          job.log =
+            config.ticketLogMaxBytes > 0
+              ? openTicketLog(config.ticketLogDir, job.ticket, config.ticketLogMaxBytes)
+              : null;
           return [...job.attachments.values()];
         });
+        const outputPath = job.log?.path ?? null;
         yield* Effect.sync(() => {
           lane.running = job.ticket;
         });
         // execArgv already carries the demux flag and any batch-folded -p
         // packages: this is the invocation the ledger reports as "ran as".
-        yield* ledger.markRunning(job.id, runStartedAtMs, job.execArgv);
+        yield* ledger.markRunning(job.id, runStartedAtMs, job.execArgv, outputPath);
         yield* Ref.set(job.state, 'running');
         const waitMs = runStartedAtMs - job.queuedAtMs;
         yield* Effect.annotateCurrentSpan('waitMs', waitMs);
@@ -594,7 +613,7 @@ export const makeLaneRuntime = (deps: LaneRuntimeDeps): Effect.Effect<LaneRuntim
           queuedAttachments,
           (attachment) =>
             Effect.gen(function* () {
-              yield* ledger.markRunning(attachment.id, runStartedAtMs);
+              yield* ledger.markRunning(attachment.id, runStartedAtMs, undefined, outputPath);
               const won = yield* attachments.notifyAttachmentStarted(attachment, runStartedAtMs);
               if (won) {
                 // The winner attached while the leader was queued: no output

@@ -76,9 +76,10 @@ const makeFixture = (
     CARGO_HAULER_STATE_DIR: stateDir,
     CARGO_HAULER_MAX_CONCURRENT: String(maxConcurrent),
     CARGO_HAULER_BATCH_WINDOW_MS: '0',
+    // Hermetic tests: the fixture daemon's admission must not depend on the
+    // host's CPU or memory pressure at the moment the suite runs (a swapping
+    // host would park every fake cargo at the gate for up to two minutes).
     CARGO_HAULER_CPU_PRESSURE_THRESHOLD: '0',
-    // Hermetic tests: host memory pressure must not park fixture jobs at the
-    // admission gate (up to two minutes) while unrelated builds run.
     CARGO_HAULER_MEM_PRESSURE_SOFT: 'off',
     CARGO_HAULER_MEM_PRESSURE_HARD: 'off',
     CARGO_HAULER_MEM_AVAILABLE_MIN_GB: 'off',

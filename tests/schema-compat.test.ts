@@ -29,6 +29,7 @@ const baseRecord = {
   intentJson: null,
   intentKey: null,
   laneKey: '["/ws","/ws/target"]',
+  outputPath: null,
   outputTail: null,
   queuedAtMs: 1,
   runMs: 1,

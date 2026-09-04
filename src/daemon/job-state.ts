@@ -16,6 +16,7 @@ import type {
   StallReport,
 } from './protocol.js';
 import type { ReplayAudience, ReplayBuffer, ReplayChunk } from './replay.js';
+import type { TicketLogWriter } from './ticket-log.js';
 
 /**
  * Mutable job and attachment fields change only inside synchronous frames, so
@@ -169,6 +170,12 @@ export interface Job {
   readonly demux: DemuxState | null;
   /** Leader-view output tail; authoritative for the ledger row. */
   readonly tail: TailBuffer;
+  /**
+   * The on-disk full output log, open from the run's start through
+   * settlement (null before the start, when logs are disabled, or when the
+   * file could not be opened). Every chunk `emitChunk` fans out is appended.
+   */
+  log: TicketLogWriter | null;
   /** Cost-model estimate at submission; feeds lane scheduling. */
   readonly estimateMs: number;
   /** Provenance of `estimateMs`; a `default` prior must never trip a client's auto-background. */

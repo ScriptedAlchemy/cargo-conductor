@@ -108,6 +108,14 @@ export interface RequestRecord {
    * staying blind until the end.
    */
   readonly outputTailLive?: boolean;
+  /**
+   * Full combined stdout+stderr of the run on disk
+   * (`<stateDir>/tickets/<ticket>.log`), bounded by
+   * `CARGO_HAULER_TICKET_LOG_MAX_BYTES`. A leader's own file; for an attached
+   * follower, the leader's file it shared. Null until the run starts, and
+   * for requests that never ran.
+   */
+  readonly outputPath: string | null;
   readonly error: string | null;
   readonly errorCount: number | null;
   readonly warningCount: number | null;

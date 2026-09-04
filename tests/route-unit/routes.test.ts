@@ -1,3 +1,5 @@
+import { join } from 'node:path';
+
 import { describe, expect, it } from 'effect-rstest';
 import { expectDocument, renderRoute, renderRouteEvents, testManifest } from 'agent-bundle/test';
 import * as Effect from 'effect/Effect';
@@ -185,6 +187,27 @@ describe('tool documents against a live daemon', () => {
           });
           expect(fetched.result).toMatchObject({ operation: 'result', ticket });
           expectDocument(fetched).toHaveStatus('success').toContainContext(`${ticket} succeeded`);
+
+          // The finished ticket names its full on-disk log (#68): the JSON
+          // carries the path, the document points at it and how to read it.
+          const outputPath = join(fixture.config.ticketLogDir, `${ticket}.log`);
+          expect(fetched.result).toMatchObject({ request: { outputPath } });
+          expectDocument(fetched)
+            .toContainText(`Full output: ${outputPath} (`)
+            .toContainText(`hauler_result { ticket: "${ticket}", full: true }`);
+
+          const full = await renderRoute('tool:hauler/hauler_result', {
+            ...daemon,
+            input: { full: true, ticket },
+          });
+          expect(full.result).toMatchObject({ operation: 'result', request: { outputPath }, ticket });
+          expectDocument(full)
+            .toHaveStatus('success')
+            .toContainText(`Full output (`)
+            .toContainMarkdown('fake-out:check -p ws1')
+            .toContainMarkdown('fake-err:check -p ws1')
+            .toContainContext(`${ticket} succeeded`);
+          expect(JSON.stringify(full.document)).not.toContain('Output tail:');
         });
       }), 30_000);
 });

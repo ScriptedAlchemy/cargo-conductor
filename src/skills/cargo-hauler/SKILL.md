@@ -42,6 +42,18 @@ clippy, fmt, nextest) or is waiting on someone else's cargo.
   `hauler_result` is for a point-in-time read and includes the live output
   tail while a run is still in progress. The dashboard drawer refreshes that
   tail every three seconds.
+- Triage a red ticket from its log, never by re-running it. The stored tail
+  is bounded, but every run's whole output is on disk: `hauler result cc-N`
+  prints `Full output: <path> (size)` (and `--json` carries
+  `request.outputPath`); `hauler result cc-N --full` or `hauler_result` with
+  `full: true` renders the whole log — the `failures:` list and each
+  `---- <test> stdout ----` panic section of a `cargo test` run included. A
+  log too large for one document shows its last part and the path; read
+  the file directly for the rest. Re-running a 16-minute suite to see what
+  failed doubles the cost and may not reproduce a flaky failure.
+- If a shell command was auto-backgrounded while its stdout was redirected
+  (`cargo test > out.log` exited 75), the file holds only the notice: the
+  output is in the ticket log, `hauler result cc-N --full`.
 - Folded test runs share one process. Queued `cargo test` /
   `cargo nextest run` requests with the same test selection (targets,
   filters, arguments after `--`, filterset) but different packages may fold

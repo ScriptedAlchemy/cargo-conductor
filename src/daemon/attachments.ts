@@ -112,9 +112,16 @@ export const makeAttachmentRuntime = (deps: AttachmentRuntimeDeps): AttachmentRu
 
   /**
    * Fans one output chunk to the leader, the replay buffer, the leader-view
-   * tail, and every attachment the filter admits. Coverage attachments see
-   * only chunks relevant to their scope in demux mode; identity attachments
-   * always see everything.
+   * tail, the on-disk ticket log, and every attachment the filter admits.
+   * Coverage attachments see only chunks relevant to their scope in demux
+   * mode; identity attachments always see everything.
+   *
+   * The log gets exactly what flows through here, in arrival order, bytes
+   * as captured (ANSI included). For a demultiplexed run that is the
+   * rendered view — cargo's JSON message stream never reaches this point;
+   * `handleStdoutLine` forwards each diagnostic's `rendered` text and the
+   * non-JSON stdout lines instead — which is what a reader triaging the
+   * ticket wants, not the raw `--message-format=json` lines.
    */
   const emitChunk = (
     job: Job,
@@ -128,6 +135,7 @@ export const makeAttachmentRuntime = (deps: AttachmentRuntimeDeps): AttachmentRu
         job.lastOutputAtMs = Date.now();
         job.replay.push(channel, data, audience, encodedData);
         job.tail.push(data);
+        job.log?.write(data);
         const live: Attachment[] = [];
         for (const attachment of job.attachments.values()) {
           if (!attachmentReceives(attachment, audience)) {
@@ -498,7 +506,13 @@ export const makeAttachmentRuntime = (deps: AttachmentRuntimeDeps): AttachmentRu
       if (leader.startedAtMs === null) {
         return;
       }
-      yield* ledger.markRunning(attachment.id, leader.startedAtMs);
+      // A follower shares the leader's run, so it shares the leader's log.
+      yield* ledger.markRunning(
+        attachment.id,
+        leader.startedAtMs,
+        undefined,
+        leader.log?.path ?? null,
+      );
       const won = yield* notifyAttachmentStarted(attachment, leader.startedAtMs);
       if (won) {
         yield* replayThenGoLive(leader, attachment);

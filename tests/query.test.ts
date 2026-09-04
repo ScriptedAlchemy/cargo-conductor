@@ -86,6 +86,7 @@ const coloredRecord: RequestRecord = {
   intentJson: null,
   intentKey: null,
   laneKey: '["/ws","/ws/target"]',
+  outputPath: null,
   outputTail: `${esc}[0m\n ${esc}[1m${esc}[94m--> ${esc}[0msrc/lib.rs:3:5\n`,
   queuedAtMs: 1,
   runMs: 1,

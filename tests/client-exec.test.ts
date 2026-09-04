@@ -241,6 +241,44 @@ describe('runExecClient', () => {
       expect(collected.stderr()).toContain('exit 75');
     }));
 
+  it.live('tells a caller with redirected stdout that the redirect receives no output (#68)', () =>
+    Effect.gen(function* () {
+      const fixture = yield* scopedFixture(5);
+      mkdirSync(fixture.config.stateDir, { recursive: true });
+      yield* scriptedDaemon(fixture.config.socketPath, {
+        ack: { etaMs: 10 * 60_000, etaSource: 'ewma' },
+      });
+      const redirected = collectIo();
+      const result = yield* runExecClient({
+        argv: ['cargo', 'test'],
+        autoSpawn: false,
+        config: fixture.config,
+        cwd: fixture.ws1,
+        host: 'claude',
+        io: redirected.io,
+        stdoutIsTty: false,
+      });
+      expect(result.exitCode).toBe(75);
+      // `cargo test > out.log` auto-backgrounded: out.log holds only this
+      // notice, so it must say where the test output actually went.
+      expect(redirected.stderr()).toContain(
+        'your redirected stdout receives no output; read it with `hauler result cc-1 --full`',
+      );
+
+      const terminal = collectIo();
+      yield* runExecClient({
+        argv: ['cargo', 'test'],
+        autoSpawn: false,
+        config: fixture.config,
+        cwd: fixture.ws1,
+        host: 'claude',
+        io: terminal.io,
+        stdoutIsTty: true,
+      });
+      expect(terminal.stderr()).toContain('exceeds the claude shell cap');
+      expect(terminal.stderr()).not.toContain('redirected stdout');
+    }));
+
   it.live('counts the queue wait toward the shell cap, not just the job’s own runtime', () =>
     Effect.gen(function* () {
       const fixture = yield* scopedFixture(5);

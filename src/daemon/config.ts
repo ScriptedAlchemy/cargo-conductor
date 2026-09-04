@@ -7,6 +7,8 @@ import * as Layer from 'effect/Layer';
 
 import { daemonSocketPath, defaultKacheIndexPath, resolveStateDir } from '../status.js';
 
+import { ticketLogDirFor } from './ticket-log.js';
+
 /** Filesystem layout and concurrency settings for one daemon instance. */
 export interface DaemonConfigShape {
   readonly stateDir: string;
@@ -20,6 +22,14 @@ export interface DaemonConfigShape {
   readonly maxConcurrent: number;
   /** Bytes of combined stdout+stderr retained per request in the ledger. */
   readonly outputTailBytes: number;
+  /** Directory of per-ticket full output logs (`<stateDir>/tickets`). */
+  readonly ticketLogDir: string;
+  /**
+   * Bytes of a leader's combined output written to its on-disk ticket log
+   * before the log is truncated with a final notice
+   * (CARGO_HAULER_TICKET_LOG_MAX_BYTES; 0 disables ticket logs).
+   */
+  readonly ticketLogMaxBytes: number;
   /** Bytes of leader output retained in memory for late-attacher replay. */
   readonly replayBufferBytes: number;
   /** kache index.db to read per-crate compile-time priors from ('' disables). */
@@ -122,6 +132,7 @@ const defaultLedgerMaxRows = 50_000;
 const defaultStallEstimateFactor = 3;
 const defaultStallIdleMs = 10 * 60_000;
 const gibibyte = 1024 ** 3;
+const defaultTicketLogMaxBytes = 64 * 1024 * 1024;
 
 export type ConfigWarningSink = (warning: string) => void;
 
@@ -353,6 +364,12 @@ export const resolveDaemonConfigWithWarnings = (
     logPath: join(stateDir, 'daemon.log'),
     maxConcurrent,
     outputTailBytes: 16 * 1024,
+    ticketLogDir: ticketLogDirFor(stateDir),
+    ticketLogMaxBytes: number(
+      pick(env, 'CARGO_HAULER_TICKET_LOG_MAX_BYTES'),
+      defaultTicketLogMaxBytes,
+      { integer: true, min: 0 },
+    ),
     replayBufferBytes: number(
       pick(env, 'CARGO_HAULER_REPLAY_BUFFER_BYTES', 'CARGO_CONDUCTOR_REPLAY_BUFFER_BYTES'),
       defaultReplayBufferBytes,

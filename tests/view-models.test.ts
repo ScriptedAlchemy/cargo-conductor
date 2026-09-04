@@ -39,6 +39,7 @@ const record = (overrides: Partial<RequestRecord> = {}): RequestRecord => ({
   intentJson: null,
   intentKey: null,
   laneKey: 'ws:target',
+  outputPath: null,
   outputTail: null,
   queuedAtMs: nowMs - 65_000,
   runMs: null,

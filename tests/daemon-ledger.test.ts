@@ -332,6 +332,51 @@ describe('exec argv provenance', () => {
       const created = yield* ledger.createRequest(makeInput());
       const record = yield* ledger.getRequest(created.id);
       expect(record?.execArgv).toBeNull();
+      expect(record?.outputPath).toBeNull();
+    }));
+});
+
+describe('output path provenance (#68)', () => {
+  it.effect('records the full-output log path at run start and keeps it through settlement', () =>
+    Effect.gen(function* () {
+      const ledger = yield* scopedLedger;
+      const created = yield* ledger.createRequest(makeInput());
+      yield* ledger.markQueued(created.id, 1_200);
+      yield* ledger.markRunning(created.id, 1_700, ['cargo', 'check'], '/state/tickets/cc-1.log');
+      expect((yield* ledger.getRequest(created.id))?.outputPath).toBe('/state/tickets/cc-1.log');
+      yield* ledger.markFinished(created.id, { atMs: 2_000, exitCode: 0, status: 'done' });
+      const finished = yield* ledger.getRequest(created.id);
+      expect(finished?.outputPath).toBe('/state/tickets/cc-1.log');
+      // Status rows omit the tail blob but still carry the path.
+      expect((yield* ledger.recentStatusRequests(5))[0]?.outputPath).toBe(
+        '/state/tickets/cc-1.log',
+      );
+    }));
+
+  it.effect('points an attached follower at the leader log it shared', () =>
+    Effect.gen(function* () {
+      const ledger = yield* scopedLedger;
+      const leader = yield* ledger.createRequest(makeInput({ createdAtMs: 1_000 }));
+      const follower = yield* ledger.createRequest(makeInput({ createdAtMs: 1_100 }));
+      yield* ledger.markAttached(follower.id, {
+        atMs: 1_150,
+        leaderTicket: leader.ticket,
+        mode: 'identity',
+      });
+      yield* ledger.markRunning(leader.id, 1_200, ['cargo', 'check'], '/state/tickets/cc-1.log');
+      yield* ledger.markRunning(follower.id, 1_200, undefined, '/state/tickets/cc-1.log');
+      expect((yield* ledger.getRequest(follower.id))?.outputPath).toBe('/state/tickets/cc-1.log');
+    }));
+
+  it.effect('answers hasRequest for present, pruned, and never-created ids', () =>
+    Effect.gen(function* () {
+      const ledger = yield* scopedLedger;
+      const created = yield* ledger.createRequest(makeInput());
+      expect(yield* ledger.hasRequest(created.id)).toBe(true);
+      expect(yield* ledger.hasRequest(created.id + 1)).toBe(false);
+      yield* ledger.markFinished(created.id, { atMs: 2_000, exitCode: 0, status: 'done' });
+      yield* ledger.pruneRetention({ maxRows: 0, nowMs: 100 * 86_400_000, retentionDays: 1 });
+      expect(yield* ledger.hasRequest(created.id)).toBe(false);
     }));
 });
 

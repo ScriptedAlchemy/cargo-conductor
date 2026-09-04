@@ -34,6 +34,8 @@ const configAt = (stateDir: string): DaemonConfigShape => ({
   logPath: join(stateDir, 'daemon.log'),
   maxConcurrent: 1,
   outputTailBytes: 1024,
+  ticketLogDir: join(stateDir, 'tickets'),
+  ticketLogMaxBytes: 1024,
   replayBufferBytes: 1024,
   kacheIndexPath: '',
   jobsGrant: 1,
