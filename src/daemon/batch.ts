@@ -1,7 +1,6 @@
 import { namedPackagesInArgv } from '../lib/argv.js';
 
 import { sameCompileSurface, stringArraysEqual } from './coverage.js';
-import { cargoExecutablePattern } from './intent-normalizer.js';
 import type { NormalizedCargoIntent } from './intent-normalizer.js';
 
 /** Subcommands whose invocations may be merged into one multi-package run. */
@@ -144,10 +143,29 @@ export const batchKindFor = (intent: NormalizedCargoIntent): BatchKind | null =>
 };
 
 /**
+ * The test selection a `cargo test` composite would run for every package:
+ * `--test` targets, positional name filters, and the harness arguments after
+ * `--`. Positional filters and post-`--` filters reach libtest the same way,
+ * but the composite is the leader's argv, so each must match byte for byte.
+ */
+const sameTestSelection = (
+  leader: NormalizedCargoIntent,
+  candidate: NormalizedCargoIntent,
+): boolean =>
+  stringArraysEqual(leader.targets, candidate.targets) &&
+  stringArraysEqual(leader.testFilters, candidate.testFilters) &&
+  stringArraysEqual(leader.passthrough, candidate.passthrough);
+
+/**
  * Whether `candidate` can fold into a composite of `kind` led by `leader`.
- * Compile composites need identical target selection; test composites share
- * only the compile surface and take the union of target and filter
- * selections (each eligibility gate pins the candidate's subcommand).
+ * Every kind needs an identical compile surface and an identical selection
+ * (each eligibility gate pins the candidate's subcommand); only the package
+ * sets may differ. For `cargo test` the selection is the `--test` target
+ * set, the name filters, and the arguments after `--`; for nextest it is
+ * the filterset. The composite is therefore the leader's argv plus the
+ * followers' `-p` flags and runs exactly what each participant asked for
+ * over the union of their packages — never a foreign target or filter
+ * (#53).
  */
 export const batchCompatibleFor = (
   kind: BatchKind,
@@ -158,9 +176,17 @@ export const batchCompatibleFor = (
     case 'compile':
       return batchCompatible(leader, candidate);
     case 'test':
-      return testBatchEligible(candidate) && sameCompileSurface(leader, candidate);
+      return (
+        testBatchEligible(candidate) &&
+        sameCompileSurface(leader, candidate) &&
+        sameTestSelection(leader, candidate)
+      );
     case 'nextest':
-      return nextestBatchEligible(candidate) && sameCompileSurface(leader, candidate);
+      return (
+        nextestBatchEligible(candidate) &&
+        sameCompileSurface(leader, candidate) &&
+        stringArraysEqual(leader.filterExpressions, candidate.filterExpressions)
+      );
     default: {
       const exhaustive: never = kind;
       return exhaustive;
@@ -168,211 +194,60 @@ export const batchCompatibleFor = (
   }
 };
 
-/**
- * Folded test runs share the composite's full exit: `--no-fail-fast` ran
- * every participant's selection, so a failure belongs to all of them.
- * Compile batches keep requeue-on-failure semantics instead (the failure
- * may live in a foreign package).
- */
-export const batchExitShared = (intent: NormalizedCargoIntent): boolean =>
-  testFoldSubcommands.has(intent.subcommand);
-
-const pushUnique = (values: string[], value: string): void => {
-  if (!values.includes(value)) {
-    values.push(value);
-  }
-};
-
-const unionPackages = (participants: readonly NormalizedCargoIntent[]): readonly string[] => {
+/** Every package a composite ran: the leader's plus each folded participant's. */
+export const compositePackages = (
+  leader: NormalizedCargoIntent,
+  participants: readonly NormalizedCargoIntent[],
+): readonly string[] => {
   const union: string[] = [];
-  for (const participant of participants) {
+  for (const participant of [leader, ...participants]) {
     for (const name of participant.packages) {
-      pushUnique(union, name);
-    }
-  }
-  return union;
-};
-
-/** Union of `--test` targets; null when a participant runs the default set. */
-const unionIntegrationTestTargets = (
-  participants: readonly NormalizedCargoIntent[],
-): readonly string[] | null => {
-  const union: string[] = [];
-  for (const participant of participants) {
-    if (participant.targets.length === 0) {
-      return null;
-    }
-    for (const target of participant.targets) {
-      pushUnique(union, target.slice(integrationTestTargetPrefix.length));
-    }
-  }
-  return union;
-};
-
-/** Union of libtest name filters (libtest ORs them); null when a participant filters nothing. */
-const unionTestNameFilters = (
-  participants: readonly NormalizedCargoIntent[],
-): readonly string[] | null => {
-  const union: string[] = [];
-  for (const participant of participants) {
-    const filters = [...participant.testFilters, ...participant.passthrough];
-    if (filters.length === 0) {
-      return null;
-    }
-    for (const filter of filters) {
-      pushUnique(union, filter);
+      if (!union.includes(name)) {
+        union.push(name);
+      }
     }
   }
   return union;
 };
 
 /**
- * Index of the subcommand token. Sound only for fold-eligible intents:
- * eligibility leaves no unmodeled pre-subcommand option, so a leading dash
- * token is `--manifest-path`/`--target-dir` (value-taking) or an inline
- * `=` form.
+ * Whether a folded participant owns the composite's failure. A test or
+ * nextest composite runs the participants' shared selection over the union
+ * of their packages with `--no-fail-fast`, so cargo's non-zero exit is a
+ * participant's own only when it named every package the composite ran.
+ * Otherwise the failure may live in a package it never asked for, and —
+ * because cargo's test output does not attribute failures to packages
+ * reliably — the participant requeues to run alone instead of inheriting a
+ * false failure (#53). Compile batches always requeue (the demux proves
+ * cleanly compiled demands separately). The leader keeps the composite's
+ * exit, as compile-batch leaders do.
  */
-const subcommandIndex = (argv: readonly string[]): number => {
-  let index = 0;
-  const executable = argv[index];
-  if (executable !== undefined && cargoExecutablePattern.test(executable)) {
-    index += 1;
-  }
-  if (argv[index]?.startsWith('+') === true) {
-    index += 1;
-  }
-  while (index < argv.length) {
-    const token = argv[index];
-    if (token === undefined || !token.startsWith('-')) {
-      return index;
-    }
-    index += token === '--manifest-path' || token === '--target-dir' ? 2 : 1;
-  }
-  return -1;
-};
-
-const flagPresent = (argv: readonly string[], flag: string): boolean =>
-  argv.some((token) => token === flag || token.startsWith(`${flag}=`));
-
-/**
- * Rebuilds one `cargo test` invocation that serves every participant.
- * Superset semantics throughout: packages and `--test` targets union,
- * name filters union after `--` (libtest ORs them), and any participant
- * without a narrowing drops that narrowing from the composite entirely.
- * `--no-fail-fast` keeps one participant's failing target from skipping
- * another's tests. Faithful because eligibility admits only fully modeled
- * flags and `sameCompileSurface` pins the followers to the leader's
- * features, profile, toolchain, and target triple.
- */
-export const composeTestBatchArgv = (
-  leaderArgv: readonly string[],
+export const batchFailureOwned = (
   leader: NormalizedCargoIntent,
+  composite: readonly string[],
+  participant: NormalizedCargoIntent,
+): boolean =>
+  testFoldSubcommands.has(leader.subcommand) &&
+  composite.every((name) => participant.packages.includes(name));
+
+/**
+ * Extends the leader's `cargo test` / `cargo nextest run` argv to serve
+ * every participant: the followers' `-p` flags join the leader's, and
+ * `--no-fail-fast` keeps one package's failing tests from skipping
+ * another's. Nothing else changes — `batchCompatibleFor` admits only
+ * followers whose selection and compile surface already match the leader's.
+ */
+export const composeTestFoldArgv = (
+  leaderArgv: readonly string[],
   followers: readonly NormalizedCargoIntent[],
 ): string[] => {
-  const participants = [leader, ...followers];
-  const argv = [...leaderArgv.slice(0, subcommandIndex(leaderArgv) + 1)];
-  for (const name of unionPackages(participants)) {
-    argv.push('-p', name);
-  }
-  if (leader.allFeatures) {
-    argv.push('--all-features');
-  }
-  if (leader.noDefaultFeatures) {
-    argv.push('--no-default-features');
-  }
-  if (leader.features.length > 0) {
-    argv.push('--features', leader.features.join(','));
-  }
-  if (leader.profile !== 'test') {
-    argv.push('--profile', leader.profile);
-  }
-  if (leader.targetTriple !== null && flagPresent(leaderArgv, '--target')) {
-    argv.push('--target', leader.targetTriple);
-  }
-  if (leader.manifestPath !== null && !flagPresent(argv, '--manifest-path')) {
-    argv.push('--manifest-path', leader.manifestPath);
-  }
-  if (flagPresent(leaderArgv, '--target-dir') && !flagPresent(argv, '--target-dir')) {
-    argv.push('--target-dir', leader.targetDir);
-  }
-  const testTargets = unionIntegrationTestTargets(participants);
-  if (testTargets !== null) {
-    for (const name of testTargets) {
-      argv.push('--test', name);
-    }
-  }
-  argv.push('--no-fail-fast');
-  const filters = unionTestNameFilters(participants);
-  if (filters !== null) {
-    argv.push('--', ...filters);
-  }
-  return argv;
-};
-
-const filterExpressionFlags = new Set(['-E', '--filterset', '--filter-expr']);
-
-const isInlineFilterExpression = (token: string): boolean =>
-  token.startsWith('-E=') || token.startsWith('--filterset=') || token.startsWith('--filter-expr=');
-
-/** Leader argv minus its own filterset flags (the composite re-expresses them). */
-const withoutFilterExpressions = (argv: readonly string[]): string[] => {
-  const result: string[] = [];
-  for (let index = 0; index < argv.length; index += 1) {
-    const token = argv[index];
-    if (token === undefined) {
-      continue;
-    }
-    if (token === '--') {
-      result.push(...argv.slice(index));
-      break;
-    }
-    if (filterExpressionFlags.has(token)) {
-      index += 1;
-      continue;
-    }
-    if (isInlineFilterExpression(token)) {
-      continue;
-    }
-    result.push(token);
-  }
-  return result;
-};
-
-/** One participant's selection as a nextest filterset expression. */
-const nextestSelectionExpression = (intent: NormalizedCargoIntent): string => {
-  const expressions =
-    intent.filterExpressions.length > 0
-      ? intent.filterExpressions
-      : intent.packages.map((name) => `package(${name})`);
-  return expressions.length === 1
-    ? expressions.join('')
-    : expressions.map((expression) => `(${expression})`).join(' or ');
-};
-
-/**
- * Extends the leader's `cargo nextest run` argv to serve every participant:
- * one composite `-E` ORs each participant's selection (its own filtersets,
- * or `package(...)` terms from its `-p` flags), `-p` flags union to keep the
- * build scope tight, and `--no-fail-fast` protects participants from each
- * other's failures.
- */
-export const composeNextestBatchArgv = (
-  leaderArgv: readonly string[],
-  leader: NormalizedCargoIntent,
-  followers: readonly NormalizedCargoIntent[],
-): string[] => {
-  const participants = [leader, ...followers];
-  const expression = participants
-    .map((participant) => `(${nextestSelectionExpression(participant)})`)
-    .join(' or ');
-  const base = withExtraPackages(
-    withoutFilterExpressions(leaderArgv),
+  const argv = withExtraPackages(
+    leaderArgv,
     followers.flatMap((follower) => follower.packages),
   );
-  const insertAt = trailerIndex(base);
-  const insertion = ['-E', expression];
-  if (!base.slice(0, insertAt).includes('--no-fail-fast')) {
-    insertion.push('--no-fail-fast');
+  const insertAt = trailerIndex(argv);
+  if (argv.slice(0, insertAt).includes('--no-fail-fast')) {
+    return argv;
   }
-  return [...base.slice(0, insertAt), ...insertion, ...base.slice(insertAt)];
+  return [...argv.slice(0, insertAt), '--no-fail-fast', ...argv.slice(insertAt)];
 };

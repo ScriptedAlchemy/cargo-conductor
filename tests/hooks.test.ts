@@ -13,7 +13,7 @@ const services = (
   extras: HookServices = {},
 ): HookServices => ({
   haulerArgv: ['hauler'],
-  hasActiveBuilds: () => false,
+  probeDaemon: () => 'idle',
   ...extras,
 });
 
@@ -38,7 +38,7 @@ describe('beforeTool shell hook', () => {
 
     expect(result.outcome).toBe('continue');
     expect(result.updatedInput).toEqual({
-      command: 'hauler exec --session sess-1 --host claude --cwd /tmp/ws -- cargo test -p foo',
+      command: 'hauler exec --session sess-1 --host claude -- cargo test -p foo',
       timeout: 120,
     });
     expect(result.reason).toBeUndefined();
@@ -48,7 +48,7 @@ describe('beforeTool shell hook', () => {
     const result = await runBefore('CARGO_TARGET_DIR=tmp cargo test');
 
     expect(result.updatedInput?.command).toBe(
-      'CARGO_TARGET_DIR=tmp hauler exec --session sess-1 --host claude --cwd /tmp/ws -- cargo test',
+      'CARGO_TARGET_DIR=tmp hauler exec --session sess-1 --host claude -- cargo test',
     );
   });
 
@@ -56,7 +56,7 @@ describe('beforeTool shell hook', () => {
     const result = await runBefore('cargo check && cargo test | tee log.txt');
 
     expect(result.updatedInput?.command).toBe(
-      'hauler exec --session sess-1 --host claude --cwd /tmp/ws -- cargo check && hauler exec --session sess-1 --host claude --cwd /tmp/ws -- cargo test | tee log.txt',
+      'hauler exec --session sess-1 --host claude -- cargo check && hauler exec --session sess-1 --host claude -- cargo test | tee log.txt',
     );
   });
 
@@ -64,12 +64,12 @@ describe('beforeTool shell hook', () => {
     const result = await runBefore('sudo -u builder cargo test');
 
     expect(result.updatedInput?.command).toBe(
-      'sudo -u builder hauler exec --session sess-1 --host claude --cwd /tmp/ws -- cargo test',
+      'sudo -u builder hauler exec --session sess-1 --host claude -- cargo test',
     );
   });
 
   it('rewrites the escape hatches agents reach for: env -u, timeout, rustup run, toolchain paths', async () => {
-    const wrap = 'hauler exec --session sess-1 --host claude --cwd /tmp/ws --';
+    const wrap = 'hauler exec --session sess-1 --host claude --';
     const toolchain = '/home/me/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo';
 
     // `env` operands after flags: unsets, then an assignment, then cargo.
@@ -134,7 +134,7 @@ describe('beforeTool shell hook', () => {
   it('denies cargo clean while builds are active and never rewrites on deny', async () => {
     const records: HookRecord[] = [];
     const result = await runBefore('cargo clean', undefined, {
-      hasActiveBuilds: () => true,
+      probeDaemon: () => 'active',
       record: (entry) => {
         records.push(entry);
       },
@@ -154,9 +154,30 @@ describe('beforeTool shell hook', () => {
     expect(result.updatedInput?.command).toContain('-- cargo +nightly clean -p foo');
   });
 
-  it('fails open on cargo clean when the daemon is unreachable', async () => {
+  it('runs cargo clean raw when no daemon is listening', async () => {
     const result = await runBefore('cargo clean', undefined, {
-      hasActiveBuilds: () => null,
+      probeDaemon: () => 'absent',
+    });
+
+    expect(result).toEqual({ outcome: 'continue' });
+  });
+
+  it('brokers cargo clean when the daemon is too busy to answer the probe', async () => {
+    // A saturated daemon is exactly when a raw clean would race in-flight
+    // builds; the lane serializes it instead.
+    const result = await runBefore('cargo clean -p foo', undefined, {
+      probeDaemon: () => 'busy',
+    });
+
+    expect(result.outcome).toBe('continue');
+    expect(result.updatedInput?.command).toBe('hauler exec --session sess-1 --host claude -- cargo clean -p foo');
+  });
+
+  it('runs cargo clean raw when the probe itself throws', async () => {
+    const result = await runBefore('cargo clean', undefined, {
+      probeDaemon: () => {
+        throw new Error('boom');
+      },
     });
 
     expect(result).toEqual({ outcome: 'continue' });
@@ -165,7 +186,7 @@ describe('beforeTool shell hook', () => {
   it('does not consult the daemon probe for non-destructive cargo', async () => {
     const result = await runBefore('cargo test', undefined, {
       haulerArgv: ['hauler'],
-      hasActiveBuilds: () => {
+      probeDaemon: () => {
         throw new Error('boom');
       },
     });

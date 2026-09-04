@@ -107,6 +107,13 @@ export const armSharedJobserver = (options: ArmJobserverOptions): boolean => {
   }
 };
 
+/**
+ * Whether this process holds the armed pool. An armed daemon lets the FIFO
+ * own parallelism and must not pin `CARGO_BUILD_JOBS` on the cargos it
+ * spawns, since cargo ignores an inherited jobserver once `-j` is set.
+ */
+export const isSharedJobserverArmed = (): boolean => armed !== null;
+
 /** Closes the retained descriptor; the pool's tokens die with it. */
 export const releaseSharedJobserver = (): void => {
   if (armed === null) {

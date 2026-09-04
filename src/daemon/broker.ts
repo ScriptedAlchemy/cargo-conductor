@@ -34,6 +34,7 @@ import type {
 import { laneKeyFor, makeLaneRuntime } from './lane-exec.js';
 import { Ledger } from './ledger.js';
 import { memoryAvailableBytes, memoryPressureLevel, memoryPsi } from './pressure.js';
+import { parseTicket } from './protocol.js';
 import type {
   AttachMode,
   EstimateSource,
@@ -99,6 +100,8 @@ export interface BrokerApi {
     input: AttemptInput,
   ) => Effect.Effect<{ readonly ticket: string }>;
   readonly kill: (ticket: string, options?: KillOptions) => Effect.Effect<boolean>;
+  /** Record that the submitting client stopped streaming the ticket; false when the ticket is unknown. */
+  readonly detach: (ticket: string) => Effect.Effect<boolean>;
   readonly report: (recentLimit?: number) => Effect.Effect<StatusReport>;
   readonly getTicket: (ticket: string) => Effect.Effect<RequestRecord | null>;
   readonly awaitTicket: (ticket: string, maxWaitMs: number) => Effect.Effect<AwaitTicketResult>;
@@ -418,6 +421,11 @@ export const BrokerLive: Layer.Layer<
     ): Effect.Effect<readonly SessionCompletedRecord[]> =>
       ledger.sessionCompleted(session, sinceMs);
 
+    const detach = (ticket: string): Effect.Effect<boolean> => {
+      const id = parseTicket(ticket);
+      return id === null ? Effect.succeed(false) : ledger.markDetached(id);
+    };
+
     const killAttachment = (entry: {
       readonly leader: Job;
       readonly attachment: Attachment;
@@ -652,6 +660,7 @@ export const BrokerLive: Layer.Layer<
       submit,
       recordAttempt,
       kill,
+      detach,
       report,
       getTicket,
       awaitTicket,

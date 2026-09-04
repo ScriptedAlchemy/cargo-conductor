@@ -1,4 +1,4 @@
-import { parse, print } from 'bashjsast';
+import { Lexer, T, parse, print } from 'bashjsast';
 import type { BashSimpleCommand, BashWord } from 'bashjsast';
 
 import { parseCargoArgv } from '../daemon/intent-normalizer.js';
@@ -8,6 +8,9 @@ import { isRecord } from './shared.js';
 const cargoExecutable = /(?:^|[/\\])cargo(?:\.exe)?$/u;
 const haulerExecutable = /(?:^|[/\\])(?:cargo-hauler|hauler)(?:\.mjs)?$/u;
 const prefixCommands = new Set([
+  // `!` lexes as a plain word after `while`/`until`/`if`, so a negated test
+  // arrives as the command name rather than a negated pipeline.
+  '!',
   'builtin',
   'command',
   'env',
@@ -55,10 +58,17 @@ const prefixPositionals: Readonly<Record<string, number>> = {
 };
 const isAssignment = (token: string | undefined): token is string =>
   token !== undefined && /^[A-Za-z_][A-Za-z0-9_]*=/u.test(token);
+/** `command -v cargo` / `command -V cargo` print a path or description; they never run cargo. */
+const commandLookupFlag = /^-[A-Za-z]*[vV]/u;
 
+/**
+ * No `cwd` here on purpose: the rewritten command runs in the same shell as
+ * the original, so `hauler exec` inherits the working directory through
+ * `process.cwd()`. Passing the hook envelope's cwd would override an
+ * in-command `cd crates/foo && cargo build`.
+ */
 export interface RewriteOptions {
   readonly haulerArgv: readonly string[];
-  readonly cwd?: string;
   readonly host: string;
   readonly session: string;
 }
@@ -101,12 +111,14 @@ const findCargoIndex = (argv: readonly string[]): number => {
     }
     index += 1;
     if (base === 'rustup') {
-      // Only `rustup run <toolchain> cargo …` wraps a cargo command; every
-      // other rustup subcommand is rustup's own business.
+      // Only `rustup run [flags] <toolchain> [--] cargo …` wraps a cargo
+      // command; every other rustup subcommand is rustup's own business.
       if (argv[index] !== 'run') {
         return -1;
       }
-      index += 2;
+      index += 1;
+      index = skipOptionEnd(argv, skipFlags(argv, index)) + 1;
+      index = skipOptionEnd(argv, index);
       continue;
     }
     const valueFlags = prefixValueFlags[base];
@@ -120,8 +132,15 @@ const findCargoIndex = (argv: readonly string[]): number => {
         index += 1;
         continue;
       }
+      if (token === '--') {
+        index += 1;
+        break;
+      }
       if (!token.startsWith('-')) {
         break;
+      }
+      if (base === 'command' && commandLookupFlag.test(token)) {
+        return -1;
       }
       index += 1;
       if (token.includes('=')) {
@@ -136,6 +155,17 @@ const findCargoIndex = (argv: readonly string[]): number => {
   }
   return -1;
 };
+
+const skipFlags = (argv: readonly string[], start: number): number => {
+  let index = start;
+  while (index < argv.length && argv[index]?.startsWith('-') === true && argv[index] !== '--') {
+    index += 1;
+  }
+  return index;
+};
+
+const skipOptionEnd = (argv: readonly string[], index: number): number =>
+  argv[index] === '--' ? index + 1 : index;
 
 const isAlreadyWrapped = (argv: readonly string[]): boolean => {
   const haulerIndex = argv.findIndex((token) => haulerExecutable.test(token));
@@ -205,20 +235,104 @@ const walkSimpleCommands = (node: unknown, visit: (command: BashSimpleCommand) =
   }
 };
 
-const wrapWords = (words: readonly BashWord[], cargoIndex: number, options: RewriteOptions): BashWord[] => {
-  const inserted: BashWord[] = [
-    ...options.haulerArgv.map(asWord),
-    asWord('exec'),
-    asWord('--session'),
-    asWord(options.session),
-    asWord('--host'),
-    asWord(options.host),
-  ];
-  if (options.cwd !== undefined && options.cwd.length > 0) {
-    inserted.push(asWord('--cwd'), asWord(options.cwd));
+const wrapWords = (words: readonly BashWord[], cargoIndex: number, options: RewriteOptions): BashWord[] => [
+  ...words.slice(0, cargoIndex),
+  ...options.haulerArgv.map(asWord),
+  asWord('exec'),
+  asWord('--session'),
+  asWord(options.session),
+  asWord('--host'),
+  asWord(options.host),
+  asWord('--'),
+  ...words.slice(cargoIndex),
+];
+
+/**
+ * Tokens the round-trip comparison treats as one statement separator: the
+ * printer emits `;\n` where the source had `;` or a newline.
+ */
+const separatorTypes = new Set<string>([T.NEWLINE, T.SEMI]);
+/**
+ * Reserved words and grouping tokens the printer pads with newlines (`then\n`,
+ * `do\n`, `{ \n`, `\nfi`). Separators next to them carry no meaning: the lexer
+ * only produces these token types in command position, so a missing separator
+ * would already show up as a different token type.
+ */
+const structuralTypes = new Set<string>([
+  T.CASE,
+  T.COPROC,
+  T.DO,
+  T.DONE,
+  T.ELIF,
+  T.ELSE,
+  T.ESAC,
+  T.FI,
+  T.FOR,
+  T.FUNCTION,
+  T.IF,
+  T.IN,
+  T.LBRACE,
+  T.LPAREN,
+  T.RBRACE,
+  T.RPAREN,
+  T.SELECT,
+  T.SEMI_AND,
+  T.SEMI_SEMI,
+  T.SEMI_SEMI_AND,
+  T.THEN,
+  T.UNTIL,
+  T.WHILE,
+]);
+const separatorMarker = ';';
+
+const normalizedTokens = (source: string): readonly string[] | null => {
+  let tokens: readonly { readonly type: string; readonly value: string }[];
+  try {
+    tokens = new Lexer(source).tokenize();
+  } catch {
+    return null;
   }
-  inserted.push(asWord('--'), ...words.slice(cargoIndex));
-  return [...words.slice(0, cargoIndex), ...inserted];
+  const normalized: string[] = [];
+  let lastStructural = true;
+  for (const token of tokens) {
+    if (token.type === T.EOF) {
+      break;
+    }
+    if (separatorTypes.has(token.type)) {
+      if (!lastStructural && normalized[normalized.length - 1] !== separatorMarker) {
+        normalized.push(separatorMarker);
+      }
+      continue;
+    }
+    const structural = structuralTypes.has(token.type);
+    if (structural && normalized[normalized.length - 1] === separatorMarker) {
+      normalized.pop();
+    }
+    normalized.push(`${token.type}:${token.value}`);
+    lastStructural = structural;
+  }
+  if (normalized[normalized.length - 1] === separatorMarker) {
+    normalized.pop();
+  }
+  return normalized;
+};
+
+/**
+ * The pinned bashjsast parser discards `&` (background jobs), the `time`
+ * keyword, and `|&`, and its printer places heredoc bodies immediately after
+ * their command, which breaks any heredoc that is not the final statement.
+ * Rather than enumerate those cases, require that printing the untouched AST
+ * reproduces the original token stream (modulo separators and whitespace);
+ * anything else is a construct the rewrite cannot express, so the command is
+ * left alone.
+ */
+const roundTrips = (command: string, printedUnchanged: string): boolean => {
+  const before = normalizedTokens(command);
+  const after = normalizedTokens(printedUnchanged);
+  if (before === null || after === null || before.length !== after.length) {
+    return false;
+  }
+  return before.every((token, index) => token === after[index]);
 };
 
 const rewriteSimpleCommand = (command: BashSimpleCommand, options: RewriteOptions): boolean => {
@@ -241,44 +355,19 @@ const rewriteSimpleCommand = (command: BashSimpleCommand, options: RewriteOption
   return true;
 };
 
-export const inspectShellCommand = (command: string): InspectedCommand => {
-  const ast = parse(command);
-  let alreadyWrapped = false;
-  let destructive = false;
-  let hasCargo = false;
-  walkSimpleCommands(ast, (simple) => {
-    const argv = commandWords(simple).map((word) => word.text);
-    if (isAlreadyWrapped(argv)) {
-      alreadyWrapped = true;
-      return;
-    }
-    const cargoIndex = findCargoIndex(argv);
-    if (cargoIndex === -1) {
-      return;
-    }
-    hasCargo = true;
-    if (isDestructiveArgv(argv.slice(cargoIndex))) {
-      destructive = true;
-    }
-  });
-  return { alreadyWrapped, destructive, hasCargo };
-};
+export interface PreparedShellCommand {
+  readonly inspection: InspectedCommand;
+  /** The rewritten command, or the original when nothing changed or the AST cannot round-trip. */
+  readonly rewrite: (options: RewriteOptions) => string;
+}
 
-export const rewriteShellCommand = (command: string, options: RewriteOptions): string => {
-  const ast = parse(command);
-  let changed = false;
-  walkSimpleCommands(ast, (simple) => {
-    if (rewriteSimpleCommand(simple, options)) {
-      changed = true;
-    }
-  });
-  return changed ? print(ast) : command;
-};
-
-/** Parse once for the beforeTool hook, deferring mutation until it elects to rewrite. */
-export const prepareShellCommand = (
-  command: string,
-): { readonly inspection: InspectedCommand; readonly rewrite: (options: RewriteOptions) => string } => {
+/**
+ * Parse once for the beforeTool hook, deferring mutation until it elects to
+ * rewrite. `alreadyWrapped` reports that at least one invocation is already
+ * brokered; `hasCargo` reports that at least one is not, so a partially
+ * wrapped list (`hauler exec -- cargo build && cargo test`) still rewrites.
+ */
+export const prepareShellCommand = (command: string): PreparedShellCommand => {
   const ast = parse(command);
   let alreadyWrapped = false;
   let destructive = false;
@@ -301,6 +390,9 @@ export const prepareShellCommand = (
   return {
     inspection: { alreadyWrapped, destructive, hasCargo },
     rewrite: (options) => {
+      if (!hasCargo || !roundTrips(command, print(ast))) {
+        return command;
+      }
       let changed = false;
       walkSimpleCommands(ast, (simple) => {
         if (rewriteSimpleCommand(simple, options)) {
@@ -311,3 +403,9 @@ export const prepareShellCommand = (
     },
   };
 };
+
+export const inspectShellCommand = (command: string): InspectedCommand =>
+  prepareShellCommand(command).inspection;
+
+export const rewriteShellCommand = (command: string, options: RewriteOptions): string =>
+  prepareShellCommand(command).rewrite(options);

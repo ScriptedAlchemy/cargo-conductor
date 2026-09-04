@@ -1,7 +1,7 @@
 import * as Effect from 'effect/Effect';
 import * as Metric from 'effect/Metric';
 
-import { batchExitShared } from './batch.js';
+import { batchFailureOwned, compositePackages } from './batch.js';
 import { attachModeMetric, jobOutcomeMetric } from './broker-metrics.js';
 import { hasLibKind, parseCargoJsonLine } from './cargo-json.js';
 import { attachModeFor } from './coverage.js';
@@ -14,6 +14,7 @@ import {
   guarded,
   makeDiagnosticAccumulator,
   requeueReasonFor,
+  settlementStep,
 } from './job-state.js';
 import type { Attachment, ExitInfo, Job } from './job-state.js';
 import type { LedgerApi } from './ledger.js';
@@ -78,6 +79,17 @@ export interface AttachmentRuntime {
 }
 
 const nonNegativeMs = (value: number): number => Math.max(0, Math.round(value));
+
+/**
+ * A raw-output leader spawned with a merged pipe delivers cargo's stderr on
+ * its stdout channel. A follower whose caller keeps separate descriptors
+ * would print that stderr to its stdout (and vice versa), so the two only
+ * share a run when they agree on `mergeStderr`. Demux runs own stdout and
+ * never merge, so the flag is irrelevant there.
+ */
+const channelsCompatible = (leader: Job, attachment: Attachment): boolean =>
+  leader.demux !== null ||
+  (leader.input.mergeStderr === true) === (attachment.input.mergeStderr === true);
 
 const leaderRunMsAt = (job: Job, atMs: number): number | null =>
   job.startedAtMs === null ? null : nonNegativeMs(atMs - job.startedAtMs);
@@ -180,10 +192,19 @@ export const makeAttachmentRuntime = (deps: AttachmentRuntimeDeps): AttachmentRu
    * Replay the leader's buffered output, then drain anything that arrived
    * during the replay; `live` flips true in the same sync frame that
    * observes an empty pending queue, so no chunk is lost or reordered.
+   *
+   * The snapshot and the reset of `pendingLive` share one sync frame: every
+   * chunk emitted since registration is already in the replay buffer, so
+   * anything queued on the attachment so far would otherwise be delivered
+   * twice (once from the snapshot, once from the drain).
    */
   const replayThenGoLive = (job: Job, attachment: Attachment): Effect.Effect<void> =>
     Effect.gen(function* () {
-      const snapshot = job.replay.snapshot();
+      const snapshot = yield* Effect.sync(() => {
+        const taken = job.replay.snapshot();
+        attachment.pendingLive.length = 0;
+        return taken;
+      });
       if (snapshot.droppedBytes > 0) {
         const notice = Buffer.from(
           `[cargo-hauler] replay truncated: ${snapshot.droppedBytes} earlier output bytes dropped\n`,
@@ -256,18 +277,29 @@ export const makeAttachmentRuntime = (deps: AttachmentRuntimeDeps): AttachmentRu
   ): Effect.Effect<void> =>
     Effect.gen(function* () {
       const startedAtMs = attachment.startedAtMs;
-      yield* ledger.markFinished(attachment.id, {
-        status: exit.status,
-        atMs,
-        exitCode: exit.exitCode,
-        signal: exit.signal,
-        outputTail: attachment.tail.toString(),
-        error: exit.error,
-        ...(savings === null ? {} : savings),
-        ...diagnosticFinishFields(attachment.diagnostics),
-      });
-      yield* Metric.update(jobOutcomeMetric, exit.status);
-      yield* directory.notifyWaiters(attachment.ticket);
+      // The attachment is already detached, so this is its only exit path:
+      // a ledger or metric defect must not withhold the caller's exit.
+      yield* settlementStep(
+        `ledger.markFinished (${attachment.ticket})`,
+        ledger.markFinished(attachment.id, {
+          status: exit.status,
+          atMs,
+          exitCode: exit.exitCode,
+          signal: exit.signal,
+          outputTail: attachment.tail.toString(),
+          error: exit.error,
+          ...(savings === null ? {} : savings),
+          ...diagnosticFinishFields(attachment.diagnostics),
+        }),
+      );
+      yield* settlementStep(
+        `metrics (${attachment.ticket})`,
+        Metric.update(jobOutcomeMetric, exit.status),
+      );
+      yield* settlementStep(
+        `notifyWaiters (${attachment.ticket})`,
+        directory.notifyWaiters(attachment.ticket),
+      );
       const pending = yield* Effect.sync(() => {
         const batch = [...attachment.pendingLive];
         attachment.pendingLive.length = 0;
@@ -339,7 +371,11 @@ export const makeAttachmentRuntime = (deps: AttachmentRuntimeDeps): AttachmentRu
           continue;
         }
         const job = entry.job;
-        if (job.laneKey !== laneKey || !job.attachGate.open) {
+        if (
+          job.laneKey !== laneKey ||
+          !job.attachGate.open ||
+          !channelsCompatible(job, attachment)
+        ) {
           continue;
         }
         const mode = attachModeFor(job.intent, attachment.intent);
@@ -397,24 +433,29 @@ export const makeAttachmentRuntime = (deps: AttachmentRuntimeDeps): AttachmentRu
         });
       }
       const atMs = Date.now();
+      // Released from the stdout pump: a ledger or metric defect here must
+      // not surface as a pump failure that terminates the leader's cargo.
       yield* Effect.forEach(
         decided,
         ({ attachment, failed }) =>
-          finishAttachmentWithNote(
-            attachment,
-            atMs,
-            failed === null
-              ? `[cargo-hauler] released early: requested packages compiled cleanly under ${job.ticket}\n`
-              : `[cargo-hauler] released early: ${failed} failed to compile under ${job.ticket}\n`,
-            failed === null
-              ? { status: 'done', exitCode: 0, signal: null, error: null }
-              : {
-                  status: 'failed',
-                  exitCode: 101,
-                  signal: null,
-                  error: `compile errors in ${failed}`,
-                },
-            servedSavings(attachment, atMs, null),
+          settlementStep(
+            `early release (${attachment.ticket})`,
+            finishAttachmentWithNote(
+              attachment,
+              atMs,
+              failed === null
+                ? `[cargo-hauler] released early: requested packages compiled cleanly under ${job.ticket}\n`
+                : `[cargo-hauler] released early: ${failed} failed to compile under ${job.ticket}\n`,
+              failed === null
+                ? { status: 'done', exitCode: 0, signal: null, error: null }
+                : {
+                    status: 'failed',
+                    exitCode: 101,
+                    signal: null,
+                    error: `compile errors in ${failed}`,
+                  },
+              servedSavings(attachment, atMs, null),
+            ),
           ),
         { discard: true },
       );
@@ -425,6 +466,11 @@ export const makeAttachmentRuntime = (deps: AttachmentRuntimeDeps): AttachmentRu
    * the leader is already running, deliver the start notice and replay
    * catch-up, then re-check early release — the demand may already be
    * proven by units that finished before this attachment arrived.
+   *
+   * The registration frame and this follow-up are separate steps, so the
+   * leader may have settled (or the attachment been killed or released) in
+   * between; then the attachment already carries its terminal row and exit,
+   * and the attach/running writes below would resurrect it as non-terminal.
    */
   const completeAttachRegistration = (
     leader: Job,
@@ -433,6 +479,16 @@ export const makeAttachmentRuntime = (deps: AttachmentRuntimeDeps): AttachmentRu
     atMs: number,
   ): Effect.Effect<void> =>
     Effect.gen(function* () {
+      const stillAttached = yield* Effect.sync(() =>
+        leader.attachments.get(attachment.ticket) === attachment,
+      );
+      if (!stillAttached) {
+        yield* Effect.logDebug('attachment settled before registration completed', {
+          leader: leader.ticket,
+          ticket: attachment.ticket,
+        });
+        return;
+      }
       yield* Effect.logDebug('registered attachment', {
         leader: leader.ticket,
         mode,
@@ -570,7 +626,15 @@ export const makeAttachmentRuntime = (deps: AttachmentRuntimeDeps): AttachmentRu
         return;
       }
       const leaderRunMs = leaderRunMsAt(job, atMs);
-      for (const attachment of detached) {
+      // Every package the composite ran, for attributing a folded test
+      // failure: the leader's own plus each folded participant's.
+      const composite = compositePackages(
+        job.intent,
+        detached
+          .filter((attachment) => attachment.mode === 'batch')
+          .map((attachment) => attachment.intent),
+      );
+      const settleOne = (attachment: Attachment): Effect.Effect<void> => {
         // A failed leader can still prove a coverage demand: the demanded
         // units may have compiled cleanly before an unrelated unit failed.
         const provenDespiteFailure =
@@ -578,39 +642,50 @@ export const makeAttachmentRuntime = (deps: AttachmentRuntimeDeps): AttachmentRu
           attachment.mode !== 'identity' &&
           job.demux !== null &&
           demandSatisfied(attachment.intent, job.demux);
-        // Folded test composites run with --no-fail-fast and share their
-        // exit: a failed composite IS the participant's failure. Compile
-        // batches requeue instead (the failure may be a foreign package).
+        // A folded test participant inherits the composite's failure only
+        // when it named every package the composite ran; otherwise the
+        // failing tests may belong to another participant's package, and
+        // it requeues to run alone (#53). Compile batches always requeue.
         const mirrors =
           status === 'done' ||
           (status === 'failed' &&
             (attachment.mode === 'identity' ||
-              (attachment.mode === 'batch' && batchExitShared(job.intent))));
+              (attachment.mode === 'batch' &&
+                batchFailureOwned(job.intent, composite, attachment.intent))));
         if (provenDespiteFailure) {
-          yield* finishAttachmentWithNote(
+          return finishAttachmentWithNote(
             attachment,
             atMs,
             `[cargo-hauler] ${job.ticket} failed elsewhere, but your requested packages compiled cleanly\n`,
             { status: 'done', exitCode: 0, signal: null, error: null },
             servedSavings(attachment, atMs, leaderRunMs),
           );
-        } else if (mirrors) {
-          yield* notifyAttachmentStarted(attachment, atMs);
-          yield* finishAttachment(
-            attachment,
-            atMs,
-            { status, exitCode, signal, error },
-            servedSavings(attachment, atMs, leaderRunMs),
-          );
-        } else if (requeue !== null) {
-          yield* requeue(attachment, requeueReasonFor(attachment.mode, status));
-        } else {
-          yield* finishAttachment(
-            attachment,
-            atMs,
-            { status: 'killed', exitCode: null, signal: null, error: 'daemon shutdown' },
+        }
+        if (mirrors) {
+          return notifyAttachmentStarted(attachment, atMs).pipe(
+            Effect.andThen(
+              finishAttachment(
+                attachment,
+                atMs,
+                { status, exitCode, signal, error },
+                servedSavings(attachment, atMs, leaderRunMs),
+              ),
+            ),
           );
         }
+        if (requeue !== null) {
+          return requeue(attachment, requeueReasonFor(attachment.mode, status));
+        }
+        return finishAttachment(attachment, atMs, {
+          status: 'killed',
+          exitCode: null,
+          signal: null,
+          error: 'daemon shutdown',
+        });
+      };
+      // One follower's defect must not strand the followers after it.
+      for (const attachment of detached) {
+        yield* settlementStep(`follower settlement (${attachment.ticket})`, settleOne(attachment));
       }
     });
 

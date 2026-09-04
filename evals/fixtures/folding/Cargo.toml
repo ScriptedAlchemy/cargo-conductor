@@ -1,5 +1,5 @@
 [workspace]
-members = ["check-a", "check-b", "check-c", "test-pkg"]
+members = ["check-a", "check-b", "check-c", "test-pkg", "test-pkg-b", "test-pkg-fail"]
 resolver = "2"
 
 [workspace.package]

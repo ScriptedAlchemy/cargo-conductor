@@ -307,9 +307,13 @@ describe('deterministic cargo-hauler acceptance evals', () => {
   );
 
   it.live(
-    'folds two real cargo test filters and shares the composite output and exit',
+    'folds two real cargo test packages with one selection and shares the composite output and exit',
     () =>
       Effect.gen(function* () {
+        // Folding admits participants with an identical test selection
+        // (here: the whole default set) over different packages (#53); the
+        // pre-#53 shape — one package, two different filters — no longer
+        // folds because the composite would run tests neither asked for.
         const fixture = yield* scopedDaemon(1);
         const targetName = 'test-fold';
         yield* startFakeBlocker(fixture, foldingWorkspace, targetName);
@@ -320,7 +324,7 @@ describe('deterministic cargo-hauler acceptance evals', () => {
         const [alphaFiber, betaFiber] = yield* Effect.all([
           Effect.forkChild(
             execRequest(fixture, {
-              argv: ['cargo', 'test', '-p', 'test-pkg', '--', 'alpha_only'],
+              argv: ['cargo', 'test', '-p', 'test-pkg'],
               cwd: foldingWorkspace,
               extraEnv: env,
               timeoutMs: realCargoTimeoutMs,
@@ -328,7 +332,7 @@ describe('deterministic cargo-hauler acceptance evals', () => {
           ),
           Effect.forkChild(
             execRequest(fixture, {
-              argv: ['cargo', 'test', '-p', 'test-pkg', '--', 'beta_only'],
+              argv: ['cargo', 'test', '-p', 'test-pkg-b'],
               cwd: foldingWorkspace,
               extraEnv: env,
               timeoutMs: realCargoTimeoutMs,
@@ -338,10 +342,9 @@ describe('deterministic cargo-hauler acceptance evals', () => {
         yield* pollReport(
           fixture,
           (report) =>
-            ['alpha_only', 'beta_only'].every((filter) =>
+            ['test-pkg', 'test-pkg-b'].every((name) =>
               report.active.some(
-                (record) =>
-                  record.status === 'queued' && record.argv.includes(filter),
+                (record) => record.status === 'queued' && record.argv.includes(name),
               ),
             ),
           600,
@@ -359,7 +362,7 @@ describe('deterministic cargo-hauler acceptance evals', () => {
         for (const messages of [alpha, beta]) {
           const stdout = decodeOutput(messages, 'stdout');
           expect(stdout).toContain('test alpha_only ... ok');
-          expect(stdout).toContain('test beta_only ... ok');
+          expect(stdout).toContain('test gamma_only ... ok');
         }
 
         const report = yield* allDoneReport(fixture, [
@@ -375,10 +378,83 @@ describe('deterministic cargo-hauler acceptance evals', () => {
         expect(follower?.attachedTo).toBe(leader?.ticket);
         expect(follower?.execArgv).toBeNull();
         expect(leader?.execArgv).toContain('--no-fail-fast');
-        expect(leader?.execArgv).toContain('alpha_only');
-        expect(leader?.execArgv).toContain('beta_only');
+        expect(leader?.execArgv).toContain('test-pkg');
+        expect(leader?.execArgv).toContain('test-pkg-b');
         expect(follower?.finishedAtMs).toBe(leader?.finishedAtMs);
         expect(follower?.exitCode).toBe(leader?.exitCode);
+      }),
+    180_000,
+  );
+
+  it.live(
+    'reruns a folded real cargo test follower alone when another package fails the composite',
+    () =>
+      Effect.gen(function* () {
+        // #53: `test-pkg-fail` leads and fails; `test-pkg` rode its composite
+        // and is green, so it must not inherit the failure. It requeues,
+        // runs `-p test-pkg` by itself, and reports its own passing exit.
+        const fixture = yield* scopedDaemon(1);
+        const targetName = 'test-fold-failure';
+        yield* startFakeBlocker(fixture, foldingWorkspace, targetName);
+        const env = realCargoEnv(fixture, targetName);
+        const failingFiber = yield* Effect.forkChild(
+          execRequest(fixture, {
+            argv: ['cargo', 'test', '-p', 'test-pkg-fail'],
+            cwd: foldingWorkspace,
+            extraEnv: env,
+            timeoutMs: realCargoTimeoutMs,
+          }),
+        );
+        // Queue the failing package first so it leads (ties go to the
+        // older ticket) and the green package folds in as the follower.
+        yield* pollReport(
+          fixture,
+          (report) =>
+            report.active.some(
+              (record) =>
+                record.status === 'queued' && record.argv.includes('test-pkg-fail'),
+            ),
+          600,
+        );
+        const greenFiber = yield* Effect.forkChild(
+          execRequest(fixture, {
+            argv: ['cargo', 'test', '-p', 'test-pkg'],
+            cwd: foldingWorkspace,
+            extraEnv: env,
+            timeoutMs: realCargoTimeoutMs,
+          }),
+        );
+        const [failing, green] = yield* Effect.all(
+          [Fiber.join(failingFiber), Fiber.join(greenFiber)],
+          { concurrency: 'unbounded' },
+        );
+        const failingExit = findExit(failing);
+        expect(failingExit.status).toBe('failed');
+        expect(failingExit.exitCode).toBe(101);
+        expect(decodeOutput(failing, 'stdout')).toContain('test always_fails ... FAILED');
+
+        const greenExit = findExit(green);
+        expect(green.some((message) => message.type === 'requeued')).toBe(true);
+        expect(greenExit.status).toBe('done');
+        expect(greenExit.exitCode).toBe(0);
+        expect(decodeOutput(green, 'stdout')).toContain('test alpha_only ... ok');
+
+        const report = yield* pollReport(
+          fixture,
+          (candidate) =>
+            [failingExit.ticket, greenExit.ticket].every((ticket) =>
+              candidate.recent.some((record) => record.ticket === ticket),
+            ),
+          600,
+        );
+        const failingRecord = requireRecord(report, failingExit.ticket);
+        const greenRecord = requireRecord(report, greenExit.ticket);
+        expect(failingRecord.execArgv).toContain('--no-fail-fast');
+        expect(failingRecord.execArgv).toContain('test-pkg');
+        expect(failingRecord.execArgv).toContain('test-pkg-fail');
+        expect(greenRecord.status).toBe('done');
+        expect(greenRecord.attachedTo).toBeNull();
+        expect(greenRecord.execArgv).toEqual(['cargo', 'test', '-p', 'test-pkg']);
       }),
     180_000,
   );
