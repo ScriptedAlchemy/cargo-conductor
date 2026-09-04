@@ -140,8 +140,8 @@ the same filter as its `session` field). Results carry
 | `tool:hauler/hauler_request` · `cli:request` | submit a background request | `RequestDocument` |
 | `cli:daemon` | `run` / `start` / `stop` / `status` | plain JSON, exit code from the result |
 | `event:session/start` | new session | daemon state and the no-kill rule as context |
-| `event:tool/before` | shell tool about to run | rewrites `cargo …` to `hauler exec --session … --host … -- cargo …`; denies `cargo clean` during in-flight builds |
-| `event:tool/after` | shell tool finished | injects finished-ticket results once per session |
+| `event:tool/before` | shell tool about to run | rewrites `cargo …` to `hauler exec --session … --host … -- cargo …`; denies `cargo clean` during in-flight builds, brokers it while the daemon is too busy to answer |
+| `event:tool/after` | shell tool finished | injects finished background-ticket results once per session |
 | `event:stop` | agent stopping | holds the stop while a foreground ticket is pending (bounded, re-deniable) |
 
 ### Skills
@@ -264,9 +264,23 @@ The hook parses the shell command and rewrites each Cargo invocation to
 `hauler exec --session … --host … -- cargo …`. It recognizes `cargo` behind an
 absolute path (`~/.cargo/bin/cargo`), and behind the wrappers agents actually
 use: `env -u VAR X=y cargo …`, `timeout 600 cargo …`,
-`rustup run <toolchain> cargo …`, `stdbuf`, `nice`, `ionice`, `nohup`,
-`time`, `strace`, `sudo`, `xargs`, `command`, `exec`, and `builtin`. Other
-`rustup` subcommands and already-wrapped commands are left alone.
+`rustup run <toolchain> [--] cargo …`, `stdbuf`, `nice`, `ionice`, `nohup`,
+`/usr/bin/time`, `strace`, `sudo`, `xargs`, `command`, `exec`, `builtin`,
+and a negated test (`while ! cargo build; do …`). Other `rustup`
+subcommands, lookups (`command -v cargo`, `type cargo`, `which cargo`), and
+already-wrapped invocations are left alone; in a partially wrapped list
+(`hauler exec -- cargo build && cargo test`) only the unwrapped half is
+rewritten. The rewrite never passes `--cwd`: the command runs in the same
+shell, so `hauler exec` inherits the working directory and
+`cd crates/foo && cargo build` builds in `crates/foo`.
+
+Before rewriting, the hook checks that the parser can reproduce the original
+command token for token. Constructs the pinned parser cannot round-trip —
+a background `&` (`nohup cargo build … &`, `cargo build & pid=$!`), the
+`time` keyword, `|&`, `coproc`, a heredoc that feeds a pipeline or is
+followed by another statement, `elif`, and `function name { … }` — are left
+untouched and run as plain Cargo rather than risk emitting a changed
+command.
 
 A lane is keyed by workspace root and resolved target directory. It runs one
 job at a time. Different lanes may run concurrently after acquiring one of the
@@ -370,13 +384,19 @@ scripts cannot mistake "submitted" for "built"; explicit `--bg` keeps exit
 `0`. Failed runs feed the estimate history too, so a broken build is not
 re-estimated cold on every retry.
 
-The `tool/after` route checks session tickets and, on the first tool call
-after a ticket finishes, adds its result to the agent context. For foreground
-tickets, the `stop` route waits for the lower of the remaining estimate and
-`CARGO_HAULER_STOP_WAIT_MS`; if the ticket finishes it denies the stop and
-returns the result, otherwise it denies with status and ETA. `stopHookActive`
-and an eight-denial cap per ticket prevent a repeated stop loop; background
-tickets never hold a stop. Codex 0.147.0 stop-hold behaviour is verified in
+The `tool/after` route checks the session's background tickets — `--bg`,
+`hauler_request`, and synchronous requests the client converted to a ticket
+— and, on the first tool call after one finishes, adds its result to the
+agent context. A foreground ticket streamed its exit to the shell the agent
+just watched, so it is never re-announced. For foreground tickets, the
+`stop` route waits for the lower of the remaining estimate and
+`CARGO_HAULER_STOP_WAIT_MS` (clamped to the daemon's two-hour await
+ceiling); if the ticket finishes it denies the stop and returns the result,
+otherwise it denies with status and ETA. `stopHookActive` and an
+eight-denial cap per ticket prevent a repeated stop loop; the per-ticket
+counters live in `hook-state.json`, written atomically and pruned once a
+session's tickets are no longer pending. `--bg` tickets never hold a stop.
+Codex 0.147.0 stop-hold behaviour is verified in
 [docs/codex-hooks.md](docs/codex-hooks.md).
 
 ### PATH shim
@@ -437,7 +457,7 @@ is reported as unavailable and never rejects a request.
 | `CARGO_HAULER_BATCH` | Enabled | `0` disables the batch composer. |
 | `CARGO_HAULER_BATCH_WINDOW_MS` | `150` | Delay applied to a batchable lane head so nearby requests can fold; `0` disables. |
 | `CARGO_HAULER_KILL_GRACE_MS` | `8000` | Time between SIGTERM and SIGKILL when the daemon stops a Cargo process. |
-| `CARGO_HAULER_STOP_WAIT_MS` | `30000` | Maximum wait for one stop-hook invocation. |
+| `CARGO_HAULER_STOP_WAIT_MS` | `30000` | Maximum wait for one stop-hook invocation; values above the 7200000 ms await ceiling are clamped. |
 | `CARGO_HAULER_LOG_LEVEL` | `Info` | Daemon log level. |
 | `CARGO_HAULER_HOST`, `CARGO_HAULER_SESSION` | Unset | Default `--host` and `--session` attribution for `hauler exec`; the PATH shim also borrows `CARGO_HAULER_HOST`'s shell cap for auto-background. |
 
@@ -467,6 +487,11 @@ unset, the daemon reads kache's configured local store from
 - Test sharing uses identity attachment or batch folding, never coverage.
   Folded `test` and `nextest` requests receive the composite output and exit
   code, so a failure may come from another package in the batch.
+- The `cargo clean` guard probes the daemon for 250 ms. Active work denies
+  the clean; an idle daemon brokers it; a daemon that accepts but does not
+  answer in time is busy, so the clean is brokered and the lane serializes
+  it behind the builds it would otherwise race; only a socket nobody listens
+  on (`ECONNREFUSED`, `ENOENT`) lets a raw `cargo clean` run.
 - Hook rewrites, policy denials such as `cargo clean` during an active build,
   and malformed requests are recorded (`hook-events.jsonl`; a failed ledger
   row).

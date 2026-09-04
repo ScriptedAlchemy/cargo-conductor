@@ -1,4 +1,6 @@
-import { incrementDenyCount, readDenyCount } from './hook-state.js';
+import { awaitCeilingMs } from '../daemon/protocol.js';
+
+import { incrementDenyCount, pruneDenyCounts, readDenyCount } from './hook-state.js';
 import { listSessionPending, waitForTickets } from './rpc.js';
 import type { FinishedTicket, PendingTicket } from './rpc.js';
 import { formatFinishedTicket, type HookContext } from './shared.js';
@@ -17,11 +19,12 @@ export interface StopHoldResult {
 }
 
 export interface StopHoldServices {
-  readonly incrementDenyCount?: (ticket: string) => number;
+  readonly incrementDenyCount?: (ticket: string, session: string) => number;
   readonly listPending?: (session: string) => Promise<readonly PendingTicket[]>;
   readonly maxDenyCount?: number;
   readonly maxWaitMs?: number;
   readonly nowMs?: () => number;
+  readonly pruneDenyCounts?: (session: string, keep: readonly string[]) => void;
   readonly readDenyCount?: (ticket: string) => number;
   readonly waitForTickets?: (
     tickets: readonly string[],
@@ -32,7 +35,9 @@ export interface StopHoldServices {
 // 30s per hold is deliberately far below the 900s stop-hook budget: Codex's
 // per-hook timeout honoring is unverified, and the re-deny loop already makes
 // the total wait unbounded. Raise via CARGO_HAULER_STOP_WAIT_MS on hosts
-// known to honor long hook timeouts.
+// known to honor long hook timeouts; values above the daemon's await ceiling
+// are clamped, since the wire schema rejects a larger `maxWaitMs` outright
+// and every ticket would then read as unfinished.
 const defaultMaxWaitMs = (() => {
   const parsed = Number.parseInt(
     process.env.CARGO_HAULER_STOP_WAIT_MS ??
@@ -40,7 +45,7 @@ const defaultMaxWaitMs = (() => {
       '',
     10,
   );
-  return Number.isInteger(parsed) && parsed > 0 ? parsed : 30_000;
+  return Number.isInteger(parsed) && parsed > 0 ? Math.min(parsed, awaitCeilingMs) : 30_000;
 })();
 const defaultMaxDenyCount = 8;
 
@@ -71,7 +76,9 @@ const decideStopHold = async (
   } catch {
     return { outcome: 'continue' };
   }
+  const prune = services.pruneDenyCounts ?? pruneDenyCounts;
   if (pending.length === 0) {
+    prune(session, []);
     return { outcome: 'continue' };
   }
 
@@ -85,7 +92,7 @@ const decideStopHold = async (
   }
 
   const nowMs = (services.nowMs ?? Date.now)();
-  const maxWait = services.maxWaitMs ?? defaultMaxWaitMs;
+  const maxWait = Math.min(services.maxWaitMs ?? defaultMaxWaitMs, awaitCeilingMs);
   const waitMs = Math.min(maxWait, ...pending.map((ticket) => remainingEtaMs(ticket, nowMs)));
   const wait = services.waitForTickets ?? waitForTickets;
   let finished: readonly FinishedTicket[] = [];
@@ -98,6 +105,12 @@ const decideStopHold = async (
     finished = [];
   }
 
+  const finishedTickets = new Set(finished.map((ticket) => ticket.ticket));
+  prune(
+    session,
+    pending.flatMap((ticket) => (finishedTickets.has(ticket.ticket) ? [] : [ticket.ticket])),
+  );
+
   if (finished.length > 0) {
     return {
       outcome: 'deny',
@@ -107,7 +120,7 @@ const decideStopHold = async (
 
   const bump = services.incrementDenyCount ?? incrementDenyCount;
   for (const ticket of pending) {
-    bump(ticket.ticket);
+    bump(ticket.ticket, session);
   }
   return {
     outcome: 'deny',

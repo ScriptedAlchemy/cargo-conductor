@@ -1,8 +1,23 @@
 import { resolveHookSocketPath } from './paths.js';
-import { requestJson } from './rpc.js';
+import { requestOutcome, type RequestOutcome } from './rpc.js';
 import { isRecord } from './shared.js';
 
 const defaultTimeoutMs = 250;
+
+/**
+ * What the `cargo clean` guard learned about the daemon.
+ *
+ * - `active`: queued or running work; a raw clean would race it.
+ * - `idle`: answered, nothing in flight.
+ * - `busy`: alive but did not answer within the probe budget (or answered
+ *   with something other than a status report). A saturated daemon is exactly
+ *   when its lanes are fanning builds into the target directory.
+ * - `absent`: nothing listens on the socket.
+ */
+export type DaemonProbe = 'absent' | 'active' | 'busy' | 'idle';
+
+/** Socket errors that mean no daemon process owns the socket. */
+const absentCodes = new Set(['ECONNREFUSED', 'ENOENT', 'ENOTSOCK']);
 
 const reportHasActive = (report: Readonly<Record<string, unknown>>): boolean => {
   if (Array.isArray(report.active) && report.active.length > 0) {
@@ -16,21 +31,34 @@ const reportHasActive = (report: Readonly<Record<string, unknown>>): boolean => 
   );
 };
 
-/**
- * Lean unix-socket status probe. `true` when the daemon has queued/running
- * work, `false` when it is idle, `null` when the socket cannot be reached.
- */
+const classifyOutcome = (outcome: RequestOutcome): DaemonProbe => {
+  switch (outcome.kind) {
+    case 'reply': {
+      const message = outcome.message;
+      if (message.type !== 'status-result' || !isRecord(message.report)) {
+        return 'busy';
+      }
+      return reportHasActive(message.report) ? 'active' : 'idle';
+    }
+    case 'timeout':
+    case 'closed':
+    case 'malformed':
+      return 'busy';
+    case 'unreachable':
+      // Permission or descriptor errors do not prove the daemon is gone; the
+      // rewrite is the safe default because `hauler exec` itself falls back to
+      // a direct run when it cannot connect.
+      return outcome.code !== undefined && absentCodes.has(outcome.code) ? 'absent' : 'busy';
+    default: {
+      const exhaustive: never = outcome;
+      return exhaustive;
+    }
+  }
+};
+
+/** Lean unix-socket status probe for the `cargo clean` guard. */
 export const probeActiveBuilds = async (
   socketPath: string = resolveHookSocketPath(),
   timeoutMs: number = defaultTimeoutMs,
-): Promise<boolean | null> => {
-  const message = await requestJson(
-    { id: 'hook-status', limit: 1, type: 'status' },
-    socketPath,
-    timeoutMs,
-  );
-  if (message === null || message.type !== 'status-result' || !isRecord(message.report)) {
-    return null;
-  }
-  return reportHasActive(message.report);
-};
+): Promise<DaemonProbe> =>
+  classifyOutcome(await requestOutcome({ id: 'hook-status', limit: 1, type: 'status' }, socketPath, timeoutMs));

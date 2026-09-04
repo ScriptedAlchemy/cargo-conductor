@@ -29,7 +29,7 @@ const loadJson = (name: string): Record<string, unknown> =>
 
 const services = {
   haulerArgv: ['hauler'] as const,
-  hasActiveBuilds: () => false,
+  probeDaemon: () => 'idle' as const,
 };
 
 const canonicalFromNative = (native: Record<string, unknown>): BeforeShellEvent => ({
@@ -143,7 +143,7 @@ describe('host envelope fixtures', () => {
           },
           { nativeEvent: 'preToolUse', target: 'cursor' },
           {
-            hasActiveBuilds: () => true,
+            probeDaemon: () => 'active',
             record: () => undefined,
             recordAttempt: (attempt) =>
               recordDeniedAttempt(attempt, fixture.config.socketPath),
