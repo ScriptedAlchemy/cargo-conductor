@@ -40,6 +40,7 @@ import {
   sectionOrder,
   shortenPath,
   stalledHint,
+  latencySavedStat,
   subcommandDisplayLabel,
   subcommandMetricsView,
   subcommandTimings,
@@ -835,6 +836,24 @@ describe('subcommandTimings (metrics split by subcommand)', () => {
       ['perf', 9_000],
     ]);
     expect(timings.map(subcommandDisplayLabel)).toEqual(['cargo build', 'cargo build · perf']);
+  });
+
+  it('shows a legacy path-shaped subcommand by its basename', () => {
+    expect(subcommandDisplayLabel({ subcommand: '/home/me/.cargo/bin/rustup' })).toBe('cargo rustup');
+  });
+});
+
+describe('latencySavedStat', () => {
+  it('labels a negative total as latency added instead of a negative saving', () => {
+    expect(latencySavedStat(-34_440_000)).toEqual({
+      label: 'latency added by attaching (all time)',
+      value: '9h 34m',
+    });
+    expect(latencySavedStat(120_000)).toEqual({
+      label: 'latency saved (all time)',
+      value: '2m',
+    });
+    expect(latencySavedStat(0)).toEqual({ label: 'latency saved (all time)', value: '0ms' });
   });
 });
 

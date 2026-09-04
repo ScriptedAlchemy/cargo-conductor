@@ -46,6 +46,7 @@ import {
   shortenPath,
   stalledHint,
   subcommandDisplayLabel,
+  latencySavedStat,
   subcommandMetricsView,
   summaryFirstLine,
   terminalStatuses,
@@ -407,9 +408,6 @@ const dashboardWindows = (value: unknown): readonly DashboardMetricsWindow[] =>
 const duration = (value: unknown): string => (typeof value === 'number' ? formatMs(value) : '—');
 const countValue = (value: unknown): string =>
   typeof value === 'number' ? formatCompactNumber(value) : '—';
-const signedDuration = (value: number): string =>
-  value < 0 ? `-${formatMs(Math.abs(value))}` : formatMs(value);
-
 const ticket = (value: unknown): ReactNode =>
   value == null ? '—' : <span className="ticket">{String(value)}</span>;
 
@@ -1046,8 +1044,10 @@ const MetricsSection = ({
   const computeSplitText = hasLedgerSavings
     ? `${formatMs(allTimeExactMs)} exact + ~${formatMs(allTimeEstimatedMs)} est`
     : null;
-  const latencyValue =
-    hasLedgerSavings && allTimeLatencyMs !== null ? signedDuration(allTimeLatencyMs) : '—';
+  const latencyStat =
+    hasLedgerSavings && allTimeLatencyMs !== null
+      ? latencySavedStat(allTimeLatencyMs)
+      : { label: 'latency saved (all time)', value: '—' };
   const latencyTitle =
     hasLedgerSavings && allTimeNegativeLatencyCount !== null
       ? `counterfactual estimateMs minus actual time-to-result; negative means the rider waited longer than its own solo estimate (${formatCompactNumber(allTimeNegativeLatencyCount)} rider${allTimeNegativeLatencyCount === 1 ? '' : 's'} are negative)`
@@ -1136,11 +1136,7 @@ const MetricsSection = ({
           }
           value={computeValue}
         />
-        <Stat
-          label="latency saved (all time)"
-          title={latencyTitle}
-          value={latencyValue}
-        />
+        <Stat label={latencyStat.label} title={latencyTitle} value={latencyStat.value} />
         {attachTotal > 0 ? (
           <Stat
             label="runs avoided (attach)"

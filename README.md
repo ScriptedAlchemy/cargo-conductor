@@ -371,6 +371,8 @@ own `-j` flag or `CARGO_BUILD_JOBS` always wins over both.
 
 ### Tickets and long-running requests
 
+![cargo-hauler dashboard detail drawer streaming a running ticket's live output](docs/media/dashboard-live-output.png)
+
 Every request has a durable ticket (`cc-<n>`). Its status, exit code, output
 tail, estimate, and timestamps are stored in SQLite and can be read from later
 sessions. `hauler exec --bg -- cargo …` and `hauler_request` return the ticket

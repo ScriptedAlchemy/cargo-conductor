@@ -924,10 +924,23 @@ export const subcommandDisplayLabel = (timing: {
   readonly profile?: string;
 }): string => {
   const profile = timing.profile;
+  // Rows recorded before the broker rejected non-cargo programs carry a path here.
+  const subcommand = pathBasename(timing.subcommand);
   return profile === undefined || profile === defaultCargoProfile(timing.subcommand)
-    ? `cargo ${timing.subcommand}`
-    : `cargo ${timing.subcommand} · ${profile}`;
+    ? `cargo ${subcommand}`
+    : `cargo ${subcommand} · ${profile}`;
 };
+
+/**
+ * The all-time latency tile. The ledger's number is counterfactual solo
+ * estimate minus actual time-to-result summed over riders; when it is negative
+ * the riders waited longer than they would have alone, and a "saved" label
+ * with a minus sign misreads. Say what happened instead.
+ */
+export const latencySavedStat = (latencyMs: number): { readonly label: string; readonly value: string } =>
+  latencyMs < 0
+    ? { label: 'latency added by attaching (all time)', value: formatMs(-latencyMs) }
+    : { label: 'latency saved (all time)', value: formatMs(latencyMs) };
 
 export interface SubcommandMetricsView {
   readonly source: 'daemon-lifetime' | 'visible-window';
