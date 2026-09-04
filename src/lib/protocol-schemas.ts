@@ -418,7 +418,9 @@ export const ticketLineageSchema = z
     conversation: z.string(),
     depth: z.number().int().nonnegative(),
     parent: z.string().optional(),
-    resolution: z.enum(['native', 'registry', 'inferred']),
+    // Mirrors the runtime's AgentLineageResolution; `confirmed` is a registry
+    // edge the host itself named (Claude's Agent PostToolUse, agent-bundle#486).
+    resolution: z.enum(['native', 'registry', 'confirmed', 'inferred']),
     root: z.string(),
   })
   .strict();

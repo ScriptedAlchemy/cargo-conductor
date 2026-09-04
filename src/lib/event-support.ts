@@ -104,19 +104,28 @@ export const stopHoldEventFrom = (native: AgentEventNativePayload): StopHoldEven
   };
 };
 
+/**
+ * `continue` is the no-decision answer (the host's own flow applies), `allow`
+ * is the explicit `tool/before` approval for a hauler-governed rewrite, and
+ * `deny` blocks. No route ever returns `ask`: the hauler adds no prompts.
+ */
 export interface EventDecision {
-  readonly outcome: 'continue' | 'deny';
+  readonly outcome: 'continue' | 'allow' | 'deny';
   readonly reason?: string;
   readonly updatedInput?: Readonly<Record<string, unknown>>;
 }
 
 /**
  * The strict route-result value: only `outcome`, `reason`, `updatedInput`.
- * Additional context travels as `<Agent.Context>` children, never here.
+ * Additional context travels as `<Agent.Context>` children, never here. A
+ * `continue` result carries no decision, so it has no channel for `reason`
+ * (agent-bundle rejects the pair); the reason is dropped there.
  */
 export const decisionValue = (decision: EventDecision): JsonValue =>
   documentValue({
     outcome: decision.outcome,
-    ...(decision.reason === undefined || decision.reason.length === 0 ? {} : { reason: decision.reason }),
+    ...(decision.outcome === 'continue' || decision.reason === undefined || decision.reason.length === 0
+      ? {}
+      : { reason: decision.reason }),
     ...(decision.updatedInput === undefined ? {} : { updatedInput: decision.updatedInput }),
   });

@@ -95,7 +95,7 @@ describe('host envelope fixtures', () => {
 
     for (const item of cases) {
       const result = await handleBeforeShell(canonicalFromNative(loadJson(item.file)), item.context, services);
-      expect(result.outcome).toBe('continue');
+      expect(result.outcome).toBe('allow');
       expect(result.updatedInput?.command).toContain(`--host ${item.host}`);
       expect(result.updatedInput?.command).toContain('-- cargo');
     }

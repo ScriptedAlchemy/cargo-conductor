@@ -9,7 +9,7 @@ export interface HookRecord {
   readonly cwd?: string;
   readonly exitCode?: number | null;
   readonly host: string;
-  readonly outcome: 'continue' | 'deny';
+  readonly outcome: 'continue' | 'allow' | 'deny';
   readonly phase: 'beforeTool' | 'afterTool';
   readonly reason?: string;
   readonly rewritten?: string;
