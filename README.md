@@ -457,13 +457,9 @@ is reported as unavailable and never rejects a request.
 | `CARGO_HAULER_BATCH` | Enabled | `0`, `false`, `off`, or `no` disables the batch composer. |
 | `CARGO_HAULER_BATCH_WINDOW_MS` | `150` | Delay applied to a batchable lane head so nearby requests can fold; `0` disables. |
 | `CARGO_HAULER_KILL_GRACE_MS` | `8000` | Time between SIGTERM and SIGKILL when the daemon stops a Cargo process. |
-<<<<<<< HEAD
-| `CARGO_HAULER_STOP_WAIT_MS` | `30000` | Maximum wait for one stop-hook invocation. |
+| `CARGO_HAULER_STOP_WAIT_MS` | `30000` | Maximum wait for one stop-hook invocation; values above the 7200000 ms await ceiling are clamped. |
 | `CARGO_HAULER_LEDGER_RETENTION_DAYS` | `30` | Finished ledger rows older than this many days are deleted when the daemon starts; `0` disables the age limit. |
 | `CARGO_HAULER_LEDGER_MAX_ROWS` | `50000` | Total ledger rows beyond which the oldest finished rows are deleted when the daemon starts; `0` disables the row cap. |
-=======
-| `CARGO_HAULER_STOP_WAIT_MS` | `30000` | Maximum wait for one stop-hook invocation; values above the 7200000 ms await ceiling are clamped. |
->>>>>>> origin/master
 | `CARGO_HAULER_LOG_LEVEL` | `Info` | Daemon log level. |
 | `CARGO_HAULER_HOST`, `CARGO_HAULER_SESSION` | Unset | Default `--host` and `--session` attribution for `hauler exec`; the PATH shim also borrows `CARGO_HAULER_HOST`'s shell cap for auto-background. |
 
