@@ -924,10 +924,23 @@ export const subcommandDisplayLabel = (timing: {
   readonly profile?: string;
 }): string => {
   const profile = timing.profile;
+  // Rows recorded before the broker rejected non-cargo programs carry a path here.
+  const subcommand = pathBasename(timing.subcommand);
   return profile === undefined || profile === defaultCargoProfile(timing.subcommand)
-    ? `cargo ${timing.subcommand}`
-    : `cargo ${timing.subcommand} · ${profile}`;
+    ? `cargo ${subcommand}`
+    : `cargo ${subcommand} · ${profile}`;
 };
+
+/**
+ * The all-time latency tile. The ledger's number is counterfactual solo
+ * estimate minus actual time-to-result summed over riders; when it is negative
+ * the riders waited longer than they would have alone, and a "saved" label
+ * with a minus sign misreads. Say what happened instead.
+ */
+export const latencySavedStat = (latencyMs: number): { readonly label: string; readonly value: string } =>
+  latencyMs < 0
+    ? { label: 'latency added by attaching (all time)', value: formatMs(-latencyMs) }
+    : { label: 'latency saved (all time)', value: formatMs(latencyMs) };
 
 export interface SubcommandMetricsView {
   readonly source: 'daemon-lifetime' | 'visible-window';
@@ -1014,6 +1027,32 @@ export const quietOutputHint = (
   return {
     label: `quiet ${Math.floor(quietMs / 60_000)}m`,
     title: 'no output — long compile/link phases can be silent; check kache/rustc activity',
+  };
+};
+
+/**
+ * Stall pill for a running row (#46): the daemon saw no process-tree CPU and
+ * no output for `idleMs` on a run already past its estimate. The title names
+ * the release command; riders point at their leader.
+ */
+export const stalledHint = (
+  stall: unknown,
+  killTicket: unknown,
+): { readonly label: string; readonly title: string } | null => {
+  if (
+    typeof stall !== 'object' ||
+    stall === null ||
+    !('idleMs' in stall) ||
+    typeof stall.idleMs !== 'number' ||
+    !Number.isFinite(stall.idleMs) ||
+    stall.idleMs < 0
+  ) {
+    return null;
+  }
+  const kill = typeof killTicket === 'string' ? ` — hauler kill ${killTicket}` : '';
+  return {
+    label: `stalled ${Math.floor(stall.idleMs / 60_000)}m`,
+    title: `no CPU and no output for ${Math.floor(stall.idleMs / 60_000)}m on a run past its estimate; likely deadlocked${kill}`,
   };
 };
 

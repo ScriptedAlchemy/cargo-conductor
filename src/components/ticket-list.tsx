@@ -26,8 +26,11 @@ const outcome = (record: RequestRecord, nowMs: number): string => {
       }
       return record.queue === undefined ? `queued${timing}` : `queued${timing} · ${record.queue.position} ahead`;
     }
-    case 'running':
-      return record.estimateMs === null ? `running${timing}` : `running${timing} / ~${formatMs(record.estimateMs)}`;
+    case 'running': {
+      const estimate = record.estimateMs === null ? '' : ` / ~${formatMs(record.estimateMs)}`;
+      const stalled = record.stall === undefined ? '' : ` · stalled ${formatMs(record.stall.idleMs)}`;
+      return `running${timing}${estimate}${stalled}`;
+    }
     case 'done':
       return record.attachedTo === null ? `done${timing}` : `done${timing} · rode ${record.attachedTo}`;
     case 'failed':

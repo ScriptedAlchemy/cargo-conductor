@@ -32,7 +32,7 @@ export const LaneBoard = ({ active, lanes, nowMs }: LaneBoardProps) => {
         rows={model.rows.map((row) => [
           row.name,
           row.running,
-          row.runningFor ?? '—',
+          row.runningFor === null ? '—' : `${row.runningFor}${row.stalled === null ? '' : ` · ${row.stalled}`}`,
           row.runningCommand ?? '—',
           String(row.queued),
         ])}

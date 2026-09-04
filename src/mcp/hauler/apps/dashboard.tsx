@@ -44,7 +44,9 @@ import {
   runMetricsView,
   sectionOrder,
   shortenPath,
+  stalledHint,
   subcommandDisplayLabel,
+  latencySavedStat,
   subcommandMetricsView,
   summaryFirstLine,
   terminalStatuses,
@@ -191,6 +193,7 @@ interface RequestRow {
   readonly delayed?: unknown;
   readonly admissionHold?: unknown;
   readonly quietMs?: unknown;
+  readonly stall?: unknown;
   readonly workspaceRoot?: unknown;
   readonly intentJson?: unknown;
   readonly errorCount?: unknown;
@@ -405,9 +408,6 @@ const dashboardWindows = (value: unknown): readonly DashboardMetricsWindow[] =>
 const duration = (value: unknown): string => (typeof value === 'number' ? formatMs(value) : '—');
 const countValue = (value: unknown): string =>
   typeof value === 'number' ? formatCompactNumber(value) : '—';
-const signedDuration = (value: number): string =>
-  value < 0 ? `-${formatMs(Math.abs(value))}` : formatMs(value);
-
 const ticket = (value: unknown): ReactNode =>
   value == null ? '—' : <span className="ticket">{String(value)}</span>;
 
@@ -449,6 +449,8 @@ const elapsedCell = (
   waitMs: unknown,
   quietMs: unknown,
   nowMs: number,
+  stall?: unknown,
+  killTicket?: unknown,
 ): ReactNode => {
   if (typeof sinceMs !== 'number') {
     return '—';
@@ -457,6 +459,7 @@ const elapsedCell = (
   const remaining = remainingEstimateMs(elapsed, estimateMs);
   const waited = queuedWaitMs(waitMs);
   const quiet = quietOutputHint(quietMs);
+  const stalled = stalledHint(stall, killTicket);
   return (
     <>
       <span className="dur">{formatMs(elapsed)}</span>
@@ -470,6 +473,14 @@ const elapsedCell = (
         <span className="est" title={quiet.title}>
           {' '}· {quiet.label}
         </span>
+      )}
+      {stalled === null ? null : (
+        <>
+          {' '}
+          <span className="pill killed" title={stalled.title}>
+            {stalled.label}
+          </span>
+        </>
       )}
     </>
   );
@@ -1033,8 +1044,10 @@ const MetricsSection = ({
   const computeSplitText = hasLedgerSavings
     ? `${formatMs(allTimeExactMs)} exact + ~${formatMs(allTimeEstimatedMs)} est`
     : null;
-  const latencyValue =
-    hasLedgerSavings && allTimeLatencyMs !== null ? signedDuration(allTimeLatencyMs) : '—';
+  const latencyStat =
+    hasLedgerSavings && allTimeLatencyMs !== null
+      ? latencySavedStat(allTimeLatencyMs)
+      : { label: 'latency saved (all time)', value: '—' };
   const latencyTitle =
     hasLedgerSavings && allTimeNegativeLatencyCount !== null
       ? `counterfactual estimateMs minus actual time-to-result; negative means the rider waited longer than its own solo estimate (${formatCompactNumber(allTimeNegativeLatencyCount)} rider${allTimeNegativeLatencyCount === 1 ? '' : 's'} are negative)`
@@ -1123,11 +1136,7 @@ const MetricsSection = ({
           }
           value={computeValue}
         />
-        <Stat
-          label="latency saved (all time)"
-          title={latencyTitle}
-          value={latencyValue}
-        />
+        <Stat label={latencyStat.label} title={latencyTitle} value={latencyStat.value} />
         {attachTotal > 0 ? (
           <Stat
             label="runs avoided (attach)"
@@ -1419,6 +1428,8 @@ const DashboardContent = ({ structured }: { readonly structured: StructuredConte
                     row.waitMs,
                     row.quietMs,
                     nowMs,
+                    row.stall,
+                    typeof row.attachedTo === 'string' ? row.attachedTo : row.ticket,
                   ),
                 ],
                 onSelect: selectRow(row),

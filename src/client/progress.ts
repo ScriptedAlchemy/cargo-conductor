@@ -49,6 +49,8 @@ export type ProgressEvent =
       readonly hold?: AdmissionHold;
       /** Prerequisites (`--after`) still unsettled; the job is queued but not schedulable. */
       readonly waitingFor?: readonly PrerequisiteContext[];
+      /** The daemon flagged the run stalled: idle window and the ticket whose kill frees the lane. */
+      readonly stalled?: { readonly idleMs: number; readonly killTicket: string };
     }
   | {
       readonly kind: 'passthrough';
@@ -59,7 +61,16 @@ export type ProgressEvent =
       readonly estimateMs: number | null;
       readonly ticket: string;
       /** Set when a synchronous request was converted because its estimate exceeds the host cap. */
-      readonly auto?: { readonly capMs: number; readonly host: string };
+      readonly auto?: {
+        readonly capMs: number;
+        readonly host: string;
+        /**
+         * The caller's stdout is not a terminal (`cargo test > out.log`): the
+         * redirect will hold only this notice, never the command's output,
+         * so the notice must say where that output can be read (#68).
+         */
+        readonly stdoutRedirected: boolean;
+      };
     };
 
 const prefix = '[cargo-hauler]';
@@ -162,7 +173,11 @@ export const formatProgressLine = (event: ProgressEvent): string => {
           event.estimateMs === undefined || event.estimateMs === null
             ? ''
             : ` (est ~${formatDuration(event.estimateMs)})`;
-        return `${prefix} ${event.ticket} ${event.phase} ${formatDuration(event.elapsedMs)}${estimate}${delayed} — ${event.command}\n`;
+        const stalled =
+          event.stalled === undefined
+            ? ''
+            : ` · looks stalled (no CPU for ${formatDuration(event.stalled.idleMs)}) — hauler kill ${event.stalled.killTicket}`;
+        return `${prefix} ${event.ticket} ${event.phase} ${formatDuration(event.elapsedMs)}${estimate}${delayed}${stalled} — ${event.command}\n`;
       }
       return `${prefix} ticket ${event.ticket} still ${event.phase} (${Math.floor(event.elapsedMs / 1000)}s)\n`;
     }
@@ -177,7 +192,10 @@ export const formatProgressLine = (event: ProgressEvent): string => {
       if (event.auto === undefined) {
         return `${prefix} ticket ${event.ticket} submitted in background${eta}\n${retrieve}`;
       }
-      return `${prefix} ticket ${event.ticket} estimate${eta} exceeds the ${event.auto.host} shell cap (${formatDuration(event.auto.capMs)}); submitted in background, not run yet (exit 75)\n${retrieve}`;
+      const redirected = event.auto.stdoutRedirected
+        ? `; your redirected stdout receives no output; read it with \`hauler result ${event.ticket} --full\``
+        : '';
+      return `${prefix} ticket ${event.ticket} estimate${eta} exceeds the ${event.auto.host} shell cap (${formatDuration(event.auto.capMs)}); submitted in background, not run yet (exit 75)${redirected}\n${retrieve}`;
     }
     default: {
       const exhaustive: never = event;

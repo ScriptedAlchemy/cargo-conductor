@@ -77,6 +77,15 @@ describe('parseCargoArgv', () => {
     });
   });
 
+  it('rejects a program path that is not cargo instead of treating it as the subcommand', () => {
+    // A mis-resolved shim once submitted `/home/me/.cargo/bin/rustup test …`;
+    // the daemon ran rustup with a cargo subcommand and logged the path as the
+    // "subcommand" in every metrics view.
+    expect(() => parseCargoArgv(['/home/me/.cargo/bin/rustup', 'test', '-p', 'foo'])).toThrow(
+      /program must be cargo/u,
+    );
+  });
+
   it('accepts cargo global options before the subcommand', () => {
     expect(parseCargoArgv([
       '/usr/local/bin/cargo',

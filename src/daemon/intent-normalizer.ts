@@ -176,6 +176,12 @@ export const parseCargoArgv = (input: readonly string[]): ParsedCargoArgv => {
   const argv = [...input];
   if (argv[0] !== undefined && cargoExecutablePattern.test(argv[0])) {
     argv.shift();
+  } else if (argv[0] !== undefined && /[/\\]/u.test(argv[0])) {
+    // A path-shaped first argument is a program, and the only program the
+    // broker runs is cargo. A mis-resolved shim once submitted
+    // `~/.cargo/bin/rustup test …`; running it would fail and the path would
+    // be recorded as the "subcommand" in every metrics view.
+    throw new Error(`program must be cargo, got ${argv[0]}`);
   }
 
   const toolchainArgument = argv[0]?.startsWith('+') === true ? argv.shift() : undefined;

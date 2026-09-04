@@ -90,6 +90,13 @@ export interface RunExecOptions {
    * NO_COLOR/FORCE_COLOR/CLICOLOR/TERM conventions.
    */
   readonly stderrColor?: boolean;
+  /**
+   * Whether this process's stdout is a terminal. When it is not (the caller
+   * redirected it to a file or pipe), an auto-background notice adds where
+   * the command's output can actually be read. Defaults to
+   * `process.stdout.isTTY`.
+   */
+  readonly stdoutIsTty?: boolean;
   readonly workspaceRoot?: string;
 }
 
@@ -374,7 +381,13 @@ const handleServerMessage = (
               kind: 'background',
               ticket: message.ticket,
               ...(autoBackground && capHost !== undefined
-                ? { auto: { capMs: hostShellCapMs(capHost), host: capHost } }
+                ? {
+                    auto: {
+                      capMs: hostShellCapMs(capHost),
+                      host: capHost,
+                      stdoutRedirected: options.stdoutIsTty !== true,
+                    },
+                  }
                 : {}),
             }),
           );
@@ -734,6 +747,7 @@ export const runExecClient = (
     ...rawOptions,
     io: stripStdout(stripStderr(rawOptions.io)),
     mergeStderr,
+    stdoutIsTty: rawOptions.stdoutIsTty ?? process.stdout.isTTY === true,
   };
   const config = options.config ?? resolveDaemonConfig();
   // Help/version and other non-compiling queries never take a ticket: a

@@ -40,6 +40,7 @@ const record = (overrides: Partial<RequestRecord> = {}): RequestRecord => ({
   intentJson: null,
   intentKey: null,
   laneKey: 'ws:target',
+  outputPath: null,
   outputTail: null,
   queuedAtMs: nowMs - 65_000,
   runMs: null,
@@ -129,6 +130,7 @@ describe('ticketCardModel', () => {
     expect(model.queue).toBe('1 ahead behind cc-6, wait ~30.0s; waiting: 1 heavy build already running');
     expect(model.started).toBeNull();
     expect(model.after).toBeNull();
+    expect(model.stalled).toBeNull();
   });
 
   it('shows what a dependent waits for and keeps its prerequisites on the card', () => {
@@ -147,6 +149,32 @@ describe('ticketCardModel', () => {
     expect(finished.queue).toBeNull();
     expect(finished.after).toBe('cc-3');
   });
+
+  it('names a stalled leader with its idle window and the kill command (#46)', () => {
+    const model = ticketCardModel(
+      record({
+        quietMs: 58 * 60_000,
+        stall: { cpuMs: 3_200, idleMs: 12 * 60_000, since: nowMs - 60_000 },
+        startedAtMs: nowMs - 58 * 60_000,
+      }),
+      nowMs,
+    );
+    expect(model.stalled).toBe('looks stalled: no CPU for 12m and no output — hauler kill cc-7');
+    expect(model.quiet).toBe('no output for 58m');
+
+    const rider = ticketCardModel(
+      record({
+        attachedTo: 'cc-5',
+        orphaned: true,
+        stall: { cpuMs: 3_200, idleMs: 12 * 60_000, since: nowMs - 60_000 },
+        ticket: 'cc-9',
+      }),
+      nowMs,
+    );
+    expect(rider.stalled).toBe(
+      'looks stalled: no CPU for 12m and no output; owner disconnected — hauler kill cc-5',
+    );
+  });
 });
 
 describe('laneBoardModel and admissionModel', () => {
@@ -159,8 +187,17 @@ describe('laneBoardModel and admissionModel', () => {
     const model = laneBoardModel(lanes, [record()], nowMs);
     expect(model.idleLanes).toBe(1);
     expect(model.rows).toEqual([
-      { name: 'ws (target)', queued: 2, running: 'cc-7', runningCommand: 'cargo check -p foo', runningFor: '1m' },
+      { name: 'ws (target)', queued: 2, running: 'cc-7', runningCommand: 'cargo check -p foo', runningFor: '1m', stalled: null },
     ]);
+  });
+
+  it('marks a stalled lane head on its row (#46)', () => {
+    const model = laneBoardModel(
+      lanes,
+      [record({ stall: { cpuMs: 10, idleMs: 15 * 60_000, since: nowMs - 60_000 } })],
+      nowMs,
+    );
+    expect(model.rows[0]?.stalled).toBe('stalled 15m');
   });
 
   it('reports permits with the heavy cap and a paused gate under hard memory pressure', () => {

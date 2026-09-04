@@ -15,9 +15,11 @@ import type {
   StatusResult,
 } from '../lib/protocol-schemas.js';
 import { countWord } from '../lib/text.js';
+import type { TicketOutputModel } from '../lib/ticket-output.js';
 
 import { AdmissionState } from './admission-state.js';
 import { DashboardLink } from './dashboard-link.js';
+import { FullOutput } from './full-output.js';
 import { KacheStats } from './kache-stats.js';
 import { LaneBoard } from './lane-board.js';
 import { DataList } from './primitives.js';
@@ -114,13 +116,27 @@ export const LastDocument = ({ names, nowMs, result }: DocumentProps<LastResult>
   </Agent.Result>
 );
 
-export const ResultDocument = ({ names, nowMs, result }: DocumentProps<ResultFetchResult>) => (
+export interface ResultDocumentProps extends DocumentProps<ResultFetchResult> {
+  /** The ticket's on-disk full output log: a pointer by default, the log itself under `--full`. */
+  readonly output: TicketOutputModel;
+}
+
+/**
+ * `hauler result`: the ticket card with the stored tail, then where the whole
+ * output lives. Under `--full` the log replaces the tail as the document body
+ * (the tail would only repeat its last lines).
+ */
+export const ResultDocument = ({ names, nowMs, output, result }: ResultDocumentProps) => (
   <Agent.Result value={documentValue(result)}>
     <Agent.Text>{result.summary}</Agent.Text>
     {result.request === null ? (
       <TicketNotKnown names={names} ticket={result.ticket} />
     ) : (
-      <TicketDetail names={names} nowMs={nowMs} record={result.request} />
+      <>
+        <TicketCard hideTail={output.kind === 'full'} nowMs={nowMs} record={result.request} />
+        <FullOutput names={names} output={output} ticket={result.request.ticket} />
+        <TicketGuidance names={names} record={result.request} />
+      </>
     )}
   </Agent.Result>
 );

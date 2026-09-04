@@ -19,9 +19,12 @@ import {
   type RequestInput,
   type RequestSubmitResult,
   type ResultFetchResult,
+  type ResultInput,
   type TicketInput,
 } from './protocol-schemas.js';
 import { runTicketEffect } from './ticket-errors.js';
+import { loadTicketOutput } from './ticket-output.js';
+import type { TicketOutputModel } from './ticket-output.js';
 
 export interface TicketOptions {
   readonly config?: DaemonConfigShape;
@@ -97,6 +100,26 @@ export const fetchTicketResult = async (
     summary: describeRequestRecord(input.ticket, request),
     ticket: input.ticket,
   };
+};
+
+export interface TicketResultView {
+  readonly result: ResultFetchResult;
+  /** The ticket's on-disk output log as the document shows it; the JSON result carries only `outputPath`. */
+  readonly output: TicketOutputModel;
+}
+
+/**
+ * `hauler result` / `hauler_result`: the structured result plus the view of
+ * the full output log — a pointer (path and size) by default, the log text
+ * itself under `full`. The log stays out of the JSON result: a 64 MiB run
+ * belongs in a file the agent can grep, not in structured content.
+ */
+export const fetchTicketResultView = async (
+  input: ResultInput,
+  options: TicketOptions,
+): Promise<TicketResultView> => {
+  const result = await fetchTicketResult(input, options);
+  return { output: loadTicketOutput(result.request, input.full === true), result };
 };
 
 export const killTicketResult = async (

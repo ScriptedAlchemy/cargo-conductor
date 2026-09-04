@@ -9,6 +9,7 @@ import type {
   LaneStatus,
   PrerequisiteContext,
   RequestRecord,
+  StallReport,
   StatusMetrics,
   StatusReport,
 } from '../daemon/protocol.js';
@@ -50,6 +51,11 @@ const prerequisiteContextSchema = z.object({
   status: requestStatusSchema,
   ticket: z.string(),
 }) satisfies z.ZodType<PrerequisiteContext>;
+const stallReportSchema = z.object({
+  cpuMs: z.number().nonnegative(),
+  idleMs: z.number().nonnegative(),
+  since: z.number(),
+}) satisfies z.ZodType<StallReport>;
 
 // Daemon-sourced payloads deliberately STRIP unknown keys instead of
 // rejecting them (issue #4): plugin snapshots outlive daemon upgrades, and a
@@ -77,6 +83,8 @@ export const requestRecordSchema = z.object({
   outputTail: z.string().nullable(),
   /** True when outputTail is a live in-progress snapshot, not the settled tail. */
   outputTailLive: z.boolean().optional(),
+  /** On-disk full output log (`<stateDir>/tickets/<ticket>.log`); null until the run starts. */
+  outputPath: z.string().nullable(),
   queuedAtMs: z.number().nullable(),
   runMs: z.number().nullable(),
   session: z.string().nullable(),
@@ -99,6 +107,8 @@ export const requestRecordSchema = z.object({
   delayed: z.boolean().optional(),
   quietMs: z.number().nonnegative().optional(),
   admissionHold: admissionHoldSchema.optional(),
+  stall: stallReportSchema.optional(),
+  orphaned: z.boolean().optional(),
 }) satisfies z.ZodType<RequestRecord>;
 
 const laneStatusSchema = z.object({
@@ -385,6 +395,21 @@ export const ticketInputSchema = z
   })
   .strict();
 
+/**
+ * `hauler_result` alone takes `full`: the whole on-disk output log as the
+ * document body. `hauler_await` keeps `ticketInputSchema` — a wait that ends
+ * in a full log would blow the rendered-route budget for nothing.
+ */
+export const resultInputSchema = z
+  .object({
+    ticket: z.string().min(1),
+    full: z
+      .boolean()
+      .optional()
+      .describe('Render the whole on-disk output log instead of the stored tail'),
+  })
+  .strict();
+
 export const awaitResultSchema = z
   .object({
     operation: z.literal('await'),
@@ -515,4 +540,5 @@ export type LimitInput = z.infer<typeof limitInputSchema>;
 export type StatusInput = z.infer<typeof statusInputSchema>;
 export type DaemonInput = z.infer<typeof daemonInputSchema>;
 export type TicketInput = z.infer<typeof ticketInputSchema>;
+export type ResultInput = z.infer<typeof resultInputSchema>;
 export type RequestInput = z.infer<typeof requestInputSchema>;

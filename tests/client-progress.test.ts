@@ -31,6 +31,22 @@ describe('formatProgressLine', () => {
     );
   });
 
+  it('says so when a running heartbeat carries the stalled flag (#46)', () => {
+    expect(
+      formatProgressLine({
+        command: 'test -p tracedecay-store-runtime --lib',
+        elapsedMs: 58 * 60_000,
+        estimateMs: 5 * 60_000,
+        kind: 'heartbeat',
+        phase: 'running',
+        stalled: { idleMs: 42 * 60_000, killTicket: 'cc-3062' },
+        ticket: 'cc-3062',
+      }),
+    ).toBe(
+      '[cargo-hauler] cc-3062 running 58m (est ~5m) · looks stalled (no CPU for 42m) — hauler kill cc-3062 — test -p tracedecay-store-runtime --lib\n',
+    );
+  });
+
   it('formats queued await heartbeats with lane position, running head, and wait ETA', () => {
     expect(
       formatProgressLine({
@@ -139,6 +155,34 @@ describe('formatProgressLine', () => {
       }),
     ).toBe(
       '[cargo-hauler] cc-3289 queued 2m10s (est ~25s) · waiting for cc-3281 (running 2m/~5m), cc-3290 (queued) — test -p tracedecay --test mcp_suite\n',
+    );
+  });
+
+  it('tells an auto-backgrounded caller with redirected stdout where the output went (#68)', () => {
+    const base = {
+      estimateMs: 600_000,
+      kind: 'background' as const,
+      ticket: 'cc-7',
+    };
+    expect(
+      formatProgressLine({
+        ...base,
+        auto: { capMs: 540_000, host: 'claude', stdoutRedirected: true },
+      }),
+    ).toBe(
+      '[cargo-hauler] ticket cc-7 estimate (ETA 600s) exceeds the claude shell cap (9m); submitted in background, not run yet (exit 75); your redirected stdout receives no output; read it with `hauler result cc-7 --full`\nRetrieve with: hauler result cc-7\nAwait with: hauler await cc-7\n',
+    );
+    expect(
+      formatProgressLine({
+        ...base,
+        auto: { capMs: 540_000, host: 'claude', stdoutRedirected: false },
+      }),
+    ).toBe(
+      '[cargo-hauler] ticket cc-7 estimate (ETA 600s) exceeds the claude shell cap (9m); submitted in background, not run yet (exit 75)\nRetrieve with: hauler result cc-7\nAwait with: hauler await cc-7\n',
+    );
+    // An explicit --bg is not a conversion; the caller chose it.
+    expect(formatProgressLine(base)).toBe(
+      '[cargo-hauler] ticket cc-7 submitted in background (ETA 600s)\nRetrieve with: hauler result cc-7\nAwait with: hauler await cc-7\n',
     );
   });
 

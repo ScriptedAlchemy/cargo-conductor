@@ -586,10 +586,18 @@ export const makeConnectionHandler =
                   return [...ownTickets];
                 });
                 // Queued-but-unstarted work from a dead client is abandoned;
-                // running work continues so its result lands in the ledger.
+                // running work continues so its result lands in the ledger,
+                // but is marked orphaned so a later stall may end it (#46).
                 yield* Effect.forEach(
                   tickets,
-                  (ticket) => options.broker.kill(ticket, { onlyIfQueued: true }),
+                  (ticket) =>
+                    options.broker
+                      .kill(ticket, { onlyIfQueued: true })
+                      .pipe(
+                        Effect.flatMap((killed) =>
+                          killed ? Effect.void : Effect.asVoid(options.broker.markOwnerGone(ticket)),
+                        ),
+                      ),
                   { discard: true },
                 );
               }),

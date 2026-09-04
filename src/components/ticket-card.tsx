@@ -9,6 +9,8 @@ import { DataList, Heading } from './primitives.js';
 import { ticketCardModel } from './view-models.js';
 
 export interface TicketCardProps {
+  /** Leave the output tail out (the caller renders the full log instead). */
+  readonly hideTail?: boolean;
   readonly nowMs: number;
   readonly record: RequestRecord;
   readonly tailLines?: number;
@@ -20,7 +22,7 @@ export interface TicketCardProps {
  * `hauler_result`, `hauler_last`, and `hauler_await` all render this card, so
  * a ticket reads identically wherever an agent meets it.
  */
-export const TicketCard = ({ nowMs, record, tailLines }: TicketCardProps) => {
+export const TicketCard = ({ hideTail = false, nowMs, record, tailLines }: TicketCardProps) => {
   const model = ticketCardModel(record, nowMs);
   return (
     <>
@@ -40,11 +42,14 @@ export const TicketCard = ({ nowMs, record, tailLines }: TicketCardProps) => {
           { label: 'Exit', value: model.exit },
           { label: 'Diagnostics', value: model.diagnosticsSummary },
           { label: 'Output', value: model.quiet },
+          { label: 'Stalled', value: model.stalled },
           { label: 'Error', value: model.error },
         ]}
       />
       <BuildDiagnostics record={record} />
-      <LogTail live={record.outputTailLive === true} text={record.outputTail} {...(tailLines === undefined ? {} : { maxLines: tailLines })} />
+      {hideTail ? null : (
+        <LogTail live={record.outputTailLive === true} text={record.outputTail} {...(tailLines === undefined ? {} : { maxLines: tailLines })} />
+      )}
     </>
   );
 };

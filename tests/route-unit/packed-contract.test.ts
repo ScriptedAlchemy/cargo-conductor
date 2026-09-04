@@ -132,7 +132,7 @@ const fixturesFor = (
   },
   'tool:hauler/hauler_result': {
     input: { ticket: tickets.finished },
-    inputs: [{ ticket: tickets.running }],
+    inputs: [{ ticket: tickets.running }, { full: true, ticket: tickets.finished }],
     resultCompat: 'additive',
   },
   'tool:hauler/hauler_status': {

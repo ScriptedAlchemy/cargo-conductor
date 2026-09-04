@@ -99,6 +99,8 @@ export interface LaneRowModel {
   readonly queued: number;
   readonly runningCommand: string | null;
   readonly runningFor: string | null;
+  /** `stalled 12m` when the daemon flagged the lane head (#46). */
+  readonly stalled: string | null;
 }
 
 export interface LaneBoardModel {
@@ -128,6 +130,7 @@ export const laneBoardModel = (
         runningFor: leader?.startedAtMs === null || leader?.startedAtMs === undefined
           ? null
           : formatMs(Math.max(0, nowMs - leader.startedAtMs)),
+        stalled: leader?.stall === undefined ? null : `stalled ${formatMs(leader.stall.idleMs)}`,
       };
     }),
   };
@@ -268,6 +271,8 @@ export interface TicketCardModel {
   readonly queue: string | null;
   readonly quiet: string | null;
   readonly ranAs: string | null;
+  /** Stall verdict with the kill that frees the lane; null while the run shows progress. */
+  readonly stalled: string | null;
   readonly started: string | null;
   readonly waited: string | null;
   readonly where: string;
@@ -315,6 +320,19 @@ const queueText = (record: RequestRecord): string | null => {
   return parts.length === 0 ? null : parts.join('; ');
 };
 
+/**
+ * A stalled leader overran its estimate with no process-tree CPU and no
+ * output (#46). Riders share the process, so the kill names the leader; an
+ * orphaned leader is one whose submitting connection is gone.
+ */
+const stalledText = (record: RequestRecord): string | null => {
+  if (record.status !== 'running' || record.stall === undefined) {
+    return null;
+  }
+  const owner = record.orphaned === true ? '; owner disconnected' : '';
+  return `looks stalled: no CPU for ${formatMs(record.stall.idleMs)} and no output${owner} — hauler kill ${record.attachedTo ?? record.ticket}`;
+};
+
 const ranAs = (record: RequestRecord): string | null => {
   if (record.execArgv === null) {
     return null;
@@ -342,6 +360,7 @@ export const ticketCardModel = (record: RequestRecord, nowMs: number): TicketCar
       ? `no output for ${formatMs(record.quietMs)}`
       : null,
     ranAs: ranAs(record),
+    stalled: stalledText(record),
     started: record.startedAtMs === null ? null : relativeTime(record.startedAtMs, nowMs),
     waited: record.waitMs === null ? null : formatMs(record.waitMs),
     where: `${shortenPath(record.cwd)}${who === '' ? '' : ` · ${who}`}`,

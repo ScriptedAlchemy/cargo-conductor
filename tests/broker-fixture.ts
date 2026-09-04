@@ -27,9 +27,10 @@ export interface BrokerFixture {
 export const brokerFixture = (
   maxConcurrent: number,
   wrapLedger: (base: LedgerApi) => LedgerApi = (base) => base,
+  env: Readonly<Record<string, string>> = {},
 ): Effect.Effect<BrokerFixture, never, Scope.Scope> =>
   Effect.gen(function* () {
-    const fixture = yield* scopedFixture(maxConcurrent);
+    const fixture = yield* scopedFixture(maxConcurrent, env);
     const baseLedger = yield* scopedLedger(fixture.config);
     const ledger = wrapLedger(baseLedger);
     const costModel = createCostModel({

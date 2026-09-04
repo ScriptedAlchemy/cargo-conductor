@@ -13,6 +13,16 @@ clippy, fmt, nextest) or is waiting on someone else's cargo.
   ticket. If a ticket is genuinely stuck (a deadlocked test, an owner session
   that is gone), stop it through the broker — `hauler kill cc-N` or
   `hauler_kill` — so riders, the lane, and the ledger settle correctly.
+- `stalled` on a running ticket (status, the dashboard, `hauler result`'s
+  `ticket looks stalled (no CPU for Nm) — hauler kill cc-N`, or an await
+  heartbeat) means the daemon measured it: the run is past three times its
+  estimate, its whole process tree has used no CPU for ten minutes, and it
+  printed nothing in that window — a deadlock, not a slow link. A long,
+  silent build that is still burning CPU is never flagged, so trust the flag:
+  run the `hauler kill cc-N` it names (the leader's ticket, even when yours
+  is a rider), then resubmit. If the session that submitted a stalled ticket
+  has already disconnected the daemon kills it itself and records
+  `stalled: … killed automatically` as the error; resubmit in that case too.
 - Scope work with `-p <crate>` instead of workspace-wide `--all-features` when
   a single crate answers the question.
 - Prefer `hauler status`, `hauler last`, and the `hauler_status` MCP
@@ -42,6 +52,18 @@ clippy, fmt, nextest) or is waiting on someone else's cargo.
   killed, and is rejected if the ticket is unknown. Read the acknowledgement:
   `queued behind cc-3281 (~13m)` means something ahead of you was reordered
   in front; `waiting for cc-3281` means the dependency is holding it.
+- Triage a red ticket from its log, never by re-running it. The stored tail
+  is bounded, but every run's whole output is on disk: `hauler result cc-N`
+  prints `Full output: <path> (size)` (and `--json` carries
+  `request.outputPath`); `hauler result cc-N --full` or `hauler_result` with
+  `full: true` renders the whole log — the `failures:` list and each
+  `---- <test> stdout ----` panic section of a `cargo test` run included. A
+  log too large for one document shows its last part and the path; read
+  the file directly for the rest. Re-running a 16-minute suite to see what
+  failed doubles the cost and may not reproduce a flaky failure.
+- If a shell command was auto-backgrounded while its stdout was redirected
+  (`cargo test > out.log` exited 75), the file holds only the notice: the
+  output is in the ticket log, `hauler result cc-N --full`.
 - Folded test runs share one process. Queued `cargo test` /
   `cargo nextest run` requests with the same test selection (targets,
   filters, arguments after `--`, filterset) but different packages may fold
