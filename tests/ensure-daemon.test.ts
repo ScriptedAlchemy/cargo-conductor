@@ -50,6 +50,9 @@ const configAt = (stateDir: string): DaemonConfigShape => ({
   heavyMaxConcurrent: 1,
   ledgerRetentionDays: 0,
   ledgerMaxRows: 0,
+  stallEstimateFactor: 3,
+  stallIdleMs: null,
+  stallAutoKill: true,
 });
 
 describe('spawnDetachedDaemon', () => {

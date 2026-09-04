@@ -64,6 +64,20 @@ export interface AdmissionHold {
   readonly detail: string;
 }
 
+/**
+ * Live stall verdict on a running leader (and, by extension, its riders):
+ * the run overran its estimate, its process tree burned no CPU for `idleMs`,
+ * and it emitted no output in that window. Never persisted to the ledger.
+ */
+export interface StallReport {
+  /** When the leader was first flagged stalled. */
+  readonly since: number;
+  /** Milliseconds since the process tree's CPU time last changed. */
+  readonly idleMs: number;
+  /** Total CPU time of the process tree at the last sample, in milliseconds. */
+  readonly cpuMs: number;
+}
+
 /** One ledgered cargo request, as stored in SQLite and reported over the socket. */
 export interface RequestRecord {
   readonly id: number;
@@ -131,6 +145,10 @@ export interface RequestRecord {
   readonly quietMs?: number;
   /** Present while the (leader) request is held by an admission arm; never persisted. */
   readonly admissionHold?: AdmissionHold;
+  /** Present while the running leader (or the leader this request rides) looks stalled. */
+  readonly stall?: StallReport;
+  /** True once the connection that submitted this running request has disconnected. */
+  readonly orphaned?: boolean;
 }
 
 export interface TransitionRecord {

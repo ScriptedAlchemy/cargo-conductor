@@ -55,7 +55,10 @@ export interface Fixture {
 const canonicalTempDir = (prefix: string): string =>
   realpathSync(mkdtempSync(join(tmpdir(), prefix)));
 
-const makeFixture = (maxConcurrent: number): Fixture => {
+const makeFixture = (
+  maxConcurrent: number,
+  env: Readonly<Record<string, string>> = {},
+): Fixture => {
   const root = canonicalTempDir('cargo-hauler-it-');
   const stateDir = join(root, 'state');
   const binDir = join(root, 'bin');
@@ -74,15 +77,25 @@ const makeFixture = (maxConcurrent: number): Fixture => {
     CARGO_HAULER_MAX_CONCURRENT: String(maxConcurrent),
     CARGO_HAULER_BATCH_WINDOW_MS: '0',
     CARGO_HAULER_CPU_PRESSURE_THRESHOLD: '0',
+    // Hermetic tests: host memory pressure must not park fixture jobs at the
+    // admission gate (up to two minutes) while unrelated builds run.
+    CARGO_HAULER_MEM_PRESSURE_SOFT: 'off',
+    CARGO_HAULER_MEM_PRESSURE_HARD: 'off',
+    CARGO_HAULER_MEM_AVAILABLE_MIN_GB: 'off',
+    CARGO_HAULER_HEAVY_MEM_AVAILABLE_GB: 'off',
     // Hermetic tests: no live kache priors.
     CARGO_HAULER_KACHE_INDEX: '',
+    ...env,
   });
   return { config, root, binDir, ws1: makeWorkspace('ws1'), ws2: makeWorkspace('ws2') };
 };
 
-export const scopedFixture = (maxConcurrent: number): Effect.Effect<Fixture, never, Scope.Scope> =>
+export const scopedFixture = (
+  maxConcurrent: number,
+  env: Readonly<Record<string, string>> = {},
+): Effect.Effect<Fixture, never, Scope.Scope> =>
   Effect.acquireRelease(
-    Effect.sync(() => makeFixture(maxConcurrent)),
+    Effect.sync(() => makeFixture(maxConcurrent, env)),
     (fixture) => Effect.sync(() => rmSync(fixture.root, { recursive: true, force: true })),
   );
 

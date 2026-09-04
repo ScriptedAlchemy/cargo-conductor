@@ -39,6 +39,7 @@ export const TicketCard = ({ nowMs, record, tailLines }: TicketCardProps) => {
           { label: 'Exit', value: model.exit },
           { label: 'Diagnostics', value: model.diagnosticsSummary },
           { label: 'Output', value: model.quiet },
+          { label: 'Stalled', value: model.stalled },
           { label: 'Error', value: model.error },
         ]}
       />
