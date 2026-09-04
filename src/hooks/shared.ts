@@ -1,3 +1,4 @@
+import { diagnosticCounts } from '../components/headlines.js';
 import { isRecord } from '../lib/guards.js';
 import { countWord } from '../lib/text.js';
 
@@ -23,11 +24,6 @@ export interface HookServices {
   readonly recordAttempt?: (attempt: DeniedAttempt) => void | Promise<void>;
   readonly writeCursor?: (session: string, atMs: number) => void;
 }
-
-const diagnosticCounts = (ticket: FinishedTicket): string | null =>
-  ticket.errorCount === null || ticket.warningCount === null
-    ? null
-    : `${countWord(ticket.errorCount, 'error')}, ${countWord(ticket.warningCount, 'warning')}`;
 
 export const formatFinishedTicket = (ticket: FinishedTicket): string => {
   const counts = diagnosticCounts(ticket);

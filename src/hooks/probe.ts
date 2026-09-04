@@ -1,3 +1,5 @@
+import { absentSocketCodes } from '../lib/socket-errors.js';
+
 import { resolveHookSocketPath } from './paths.js';
 import { requestOutcome, type RequestOutcome } from './rpc.js';
 import { isRecord } from './shared.js';
@@ -16,8 +18,8 @@ const defaultTimeoutMs = 250;
  */
 export type DaemonProbe = 'absent' | 'active' | 'busy' | 'idle';
 
-/** Socket errors that mean no daemon process owns the socket. */
-const absentCodes = new Set(['ECONNREFUSED', 'ENOENT', 'ENOTSOCK']);
+/** `ENOTSOCK` joins the shared set here: a stale non-socket file at the path is no daemon either. */
+const absent = (code: string): boolean => absentSocketCodes.has(code) || code === 'ENOTSOCK';
 
 const reportHasActive = (report: Readonly<Record<string, unknown>>): boolean => {
   if (Array.isArray(report.active) && report.active.length > 0) {
@@ -48,7 +50,7 @@ const classifyOutcome = (outcome: RequestOutcome): DaemonProbe => {
       // Permission or descriptor errors do not prove the daemon is gone; the
       // rewrite is the safe default because `hauler exec` itself falls back to
       // a direct run when it cannot connect.
-      return outcome.code !== undefined && absentCodes.has(outcome.code) ? 'absent' : 'busy';
+      return outcome.code !== undefined && absent(outcome.code) ? 'absent' : 'busy';
     default: {
       const exhaustive: never = outcome;
       return exhaustive;

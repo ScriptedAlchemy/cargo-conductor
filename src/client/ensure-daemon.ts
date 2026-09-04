@@ -15,6 +15,7 @@ import type {
 } from '../daemon/control.js';
 import type { PongMessage } from '../daemon/protocol.js';
 import { resolveHaulerArgv } from '../hooks/paths.js';
+import { absentSocketCodes, socketErrorCode } from '../lib/socket-errors.js';
 import { isHaulerInternalEnvironmentVariable } from '../lib/cargo-env.js';
 
 export class SpawnDaemonError extends Data.TaggedError('SpawnDaemonError')<{
@@ -53,37 +54,9 @@ const defaultSpawnDependencies: SpawnDetachedDaemonDependencies = {
   spawnProcess: (command, args, options) => spawn(command, [...args], options),
 };
 
-const absentSocketCodes = new Set(['ECONNREFUSED', 'ENOENT']);
-
-const errorCode = (cause: unknown): string | null => {
-  let current = cause;
-  // Walk both `cause` chains and v4 Socket error wrappers: SocketError nests
-  // the syscall error (with its ECONNREFUSED/ENOENT code) under `.reason`,
-  // not `.cause` — missing that made a dead socket look like a non-absent
-  // failure, so clients never spawned the daemon.
-  for (let depth = 0; depth < 6; depth += 1) {
-    if (typeof current !== 'object' || current === null) {
-      return null;
-    }
-    if ('code' in current && typeof current.code === 'string') {
-      return current.code;
-    }
-    if ('cause' in current && current.cause !== undefined && current.cause !== null) {
-      current = current.cause;
-      continue;
-    }
-    if ('reason' in current && current.reason !== undefined && current.reason !== null) {
-      current = current.reason;
-      continue;
-    }
-    return null;
-  }
-  return null;
-};
-
 /** Exported for the regression test against real socket error shapes. */
 export const daemonIsAbsent = (cause: unknown): boolean => {
-  const code = errorCode(cause);
+  const code = socketErrorCode(cause);
   return code !== null && absentSocketCodes.has(code);
 };
 

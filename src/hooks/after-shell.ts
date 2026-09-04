@@ -51,10 +51,12 @@ const notifyContext = async (
   } catch {
     return undefined;
   }
-  write(session, nowMs);
   if (finished.length === 0) {
+    // The query is `finished_at_ms >= cursor`, so leaving the cursor where it
+    // was returns the same (empty) set next time; skip the state-file write.
     return undefined;
   }
+  write(session, nowMs);
   return finished.map(formatFinishedTicket).join('\n');
 };
 

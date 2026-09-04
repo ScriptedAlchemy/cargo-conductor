@@ -364,30 +364,9 @@ export const makeConnectionHandler =
               });
               return;
             }
-            yield* send({
-              type: 'ack',
-              id: message.id,
-              ticket: submitted.success.ticket,
-              laneKey: submitted.success.laneKey,
-              position: submitted.success.position,
-              ...(submitted.success.ahead === undefined ? {} : { ahead: submitted.success.ahead }),
-              ...(submitted.success.waitingFor === undefined
-                ? {}
-                : { waitingFor: submitted.success.waitingFor }),
-              ...(submitted.success.attachedTo === undefined
-                ? {}
-                : { attachedTo: submitted.success.attachedTo }),
-              ...(submitted.success.attachMode === undefined
-                ? {}
-                : { attachMode: submitted.success.attachMode }),
-              ...(submitted.success.etaMs === undefined ? {} : { etaMs: submitted.success.etaMs }),
-              ...(submitted.success.etaSource === undefined
-                ? {}
-                : { etaSource: submitted.success.etaSource }),
-              ...(submitted.success.waitEtaMs === undefined
-                ? {}
-                : { waitEtaMs: submitted.success.waitEtaMs }),
-            });
+            // `SubmitResult` is the ack's payload key for key; the broker
+            // already omits every optional it did not set.
+            yield* send({ type: 'ack', id: message.id, ...submitted.success });
           });
 
         const handleMessage = (message: ClientMessage): Effect.Effect<void, never, Scope.Scope> => {

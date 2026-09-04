@@ -9,18 +9,27 @@ export { LineBuffer } from '../lib/ndjson.js';
  * the ledger, so it must not import from the other daemon modules.
  */
 
-export type RequestStatus =
-  | 'requested'
-  | 'queued'
-  | 'running'
-  | 'done'
-  | 'failed'
-  | 'killed'
-  | 'denied'
-  | 'passthrough';
+/** Every status a request passes through, in lifecycle order. One list feeds the type, the schema, and the SQL filters. */
+export const requestStatuses = [
+  'requested',
+  'queued',
+  'running',
+  'done',
+  'failed',
+  'killed',
+  'denied',
+  'passthrough',
+] as const;
+export type RequestStatus = (typeof requestStatuses)[number];
 
-/** Terminal statuses a request can end in. */
-export type FinishedStatus = 'done' | 'failed' | 'killed';
+/** Statuses of a request the daemon still owns. */
+export const activeStatuses = ['requested', 'queued', 'running'] as const;
+/** Terminal statuses a request can end in after running. */
+export const finishedStatuses = ['done', 'failed', 'killed'] as const;
+export type FinishedStatus = (typeof finishedStatuses)[number];
+/** Every terminal status, including the ones that never ran. */
+export const terminalStatuses = ['done', 'failed', 'killed', 'denied', 'passthrough'] as const;
+export type TerminalStatus = (typeof terminalStatuses)[number];
 
 /**
  * How an attached request rides its leader (see daemon/coverage.ts):
@@ -30,7 +39,8 @@ export type FinishedStatus = 'done' | 'failed' | 'killed';
  * a folded test/nextest participant mirrors the composite's failure only
  * when it named every package the composite ran, and requeues otherwise.
  */
-export type AttachMode = 'identity' | 'coverage' | 'batch';
+export const attachModes = ['identity', 'coverage', 'batch'] as const;
+export type AttachMode = (typeof attachModes)[number];
 
 /** Provenance of a runtime estimate: measured (`ewma`), kache priors, or a cold-start default. */
 export type EstimateSource = 'ewma' | 'kache' | 'default';

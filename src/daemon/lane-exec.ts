@@ -214,6 +214,9 @@ export const makeLaneRuntime = (deps: LaneRuntimeDeps): Effect.Effect<LaneRuntim
         const editedRecently = yield* topology
           .editedRecently(intent.workspaceRoot, intent.packages)
           .pipe(Effect.catchCause(recoverDefect(false)));
+        // Looked up again rather than taken from the submit-time estimate: on a
+        // cold workspace the first lookup answers with an empty set while the
+        // metadata refresh runs, and this later one can see the filled cache.
         const depClosure = yield* topology
           .dependencyClosure(intent.workspaceRoot, intent.packages)
           .pipe(

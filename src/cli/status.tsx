@@ -15,7 +15,9 @@ export const config = {
 } satisfies CliRouteConfig;
 
 // Redeclared inline (not imported from protocol-schemas): the compiler reads
-// the argv grammar statically from this literal. Keys spell the legacy flags.
+// the argv grammar statically from this literal (AB4814), so the status list
+// cannot reference `requestStatuses`; tests/schema-compat.test.ts pins the two
+// together. Keys spell the legacy flags.
 export const inputSchema = z.object({
   limit: z.number().int().min(1).max(500).optional().describe('Recent rows to show'),
   cwd: z.string().min(1).optional().describe('Only requests from this workspace'),

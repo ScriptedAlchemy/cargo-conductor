@@ -1,6 +1,7 @@
 import { Effect, Schedule, Stream, type Duration } from 'effect';
 
-import { cargoJsonDemuxFlag, namedPackagesInArgv } from '../lib/argv.js';
+import { cargoJsonDemuxFlag, defaultCargoProfile, namedPackagesInArgv } from '../lib/argv.js';
+import { isRecord } from '../lib/guards.js';
 import {
   commandDisplay,
   formatBytes,
@@ -338,10 +339,10 @@ const stringArrayOrNull = (value: unknown): readonly string[] | null =>
     : null;
 
 export const ticketDetailFrom = (record: unknown): TicketDetail | null => {
-  if (record === null || typeof record !== 'object') {
+  if (!isRecord(record)) {
     return null;
   }
-  const row = record as Readonly<Record<string, unknown>>;
+  const row = record;
   const ticket = stringOrNull(row['ticket']);
   if (ticket === null) {
     return null;
@@ -657,29 +658,22 @@ export const memoryStatView = (system: {
 };
 
 /** Detail text of an untyped `admissionHold` record field; null when absent or malformed. */
-export const admissionHoldDetail = (value: unknown): string | null => {
-  if (typeof value !== 'object' || value === null) {
-    return null;
-  }
-  const shape: { readonly detail?: unknown } = value;
-  return typeof shape.detail === 'string' && shape.detail.length > 0 ? shape.detail : null;
-};
+export const admissionHoldDetail = (value: unknown): string | null =>
+  isRecord(value) && typeof value.detail === 'string' && value.detail.length > 0 ? value.detail : null;
 
 /** Heavy-cap admission note from an untyped daemon `system.heavy` payload; null for older daemons. */
 export const heavyAdmissionNote = (system: { readonly heavy?: unknown }): string | null => {
   const heavy = system.heavy;
-  if (typeof heavy !== 'object' || heavy === null) {
+  if (!isRecord(heavy)) {
     return null;
   }
-  const shape: { readonly running?: unknown; readonly maxConcurrent?: unknown; readonly capActive?: unknown } =
-    heavy;
-  return typeof shape.running === 'number' &&
-    typeof shape.maxConcurrent === 'number' &&
-    typeof shape.capActive === 'boolean'
+  return typeof heavy.running === 'number' &&
+    typeof heavy.maxConcurrent === 'number' &&
+    typeof heavy.capActive === 'boolean'
     ? heavyCapNote({
-        capActive: shape.capActive,
-        maxConcurrent: shape.maxConcurrent,
-        running: shape.running,
+        capActive: heavy.capActive,
+        maxConcurrent: heavy.maxConcurrent,
+        running: heavy.running,
       })
     : null;
 };
@@ -795,19 +789,6 @@ export const kacheProfileGroups = (
         maxMs: sorted.reduce((maximum, row) => Math.max(maximum, row.ms), 0),
       };
     });
-};
-
-const defaultCargoProfile = (subcommand: string): string => {
-  if (subcommand === 'test') {
-    return 'test';
-  }
-  if (subcommand === 'bench') {
-    return 'bench';
-  }
-  if (subcommand === 'install') {
-    return 'release';
-  }
-  return 'dev';
 };
 
 interface RowCommandPopulation {

@@ -171,34 +171,21 @@ const writeChannel = (io: ExecIo, channel: 'stdout' | 'stderr', data: Uint8Array
  * it can be program/data output (binary, caller-chosen `--message-format`
  * streams) that stripping must not touch.
  */
-const withStrippedStderr = (io: ExecIo): ExecIo => {
+const withStrippedChannel = (io: ExecIo, channel: 'stdout' | 'stderr'): ExecIo => {
   const stripper = new AnsiStreamStripper();
-  return {
-    writeStderr: (data) => {
-      if (typeof data === 'string') {
-        io.writeStderr(data);
-        return;
-      }
-      const stripped = stripper.push(data);
-      if (stripped.byteLength > 0) {
-        io.writeStderr(stripped);
-      }
-    },
-    writeStdout: io.writeStdout,
+  const forward = (write: (data: Uint8Array) => void, data: Uint8Array): void => {
+    const clean = stripper.push(data);
+    if (clean.byteLength > 0) {
+      write(clean);
+    }
   };
-};
-
-/** A merged stream is text from both channels, so the binary-stdout caveat no longer applies. */
-const withStrippedStdout = (io: ExecIo): ExecIo => {
-  const stripper = new AnsiStreamStripper();
+  if (channel === 'stdout') {
+    return { writeStderr: io.writeStderr, writeStdout: (data) => forward(io.writeStdout, data) };
+  }
   return {
-    writeStderr: io.writeStderr,
-    writeStdout: (data) => {
-      const stripped = stripper.push(data);
-      if (stripped.byteLength > 0) {
-        io.writeStdout(stripped);
-      }
-    },
+    // hauler's own progress strings carry no color and pass through as-is.
+    writeStderr: (data) => (typeof data === 'string' ? io.writeStderr(data) : forward(io.writeStderr, data)),
+    writeStdout: io.writeStdout,
   };
 };
 
@@ -741,8 +728,10 @@ export const runExecClient = (
   const mergeStderr = rawOptions.mergeStderr ?? sharesOutputTarget(1, 2);
   const stdoutColor =
     rawOptions.stdoutColor ?? colorEnabled(process.env, process.stdout.isTTY === true);
-  const stripStderr = stderrColor ? (io: ExecIo) => io : withStrippedStderr;
-  const stripStdout = mergeStderr && !stdoutColor ? withStrippedStdout : (io: ExecIo) => io;
+  const keep = (io: ExecIo): ExecIo => io;
+  const stripStderr = stderrColor ? keep : (io: ExecIo) => withStrippedChannel(io, 'stderr');
+  // A merged stream is text from both channels, so the binary-stdout caveat no longer applies.
+  const stripStdout = mergeStderr && !stdoutColor ? (io: ExecIo) => withStrippedChannel(io, 'stdout') : keep;
   const options: RunExecOptions = {
     ...rawOptions,
     io: stripStdout(stripStderr(rawOptions.io)),

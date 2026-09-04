@@ -1,3 +1,17 @@
+/** The profile cargo builds with when the argv names none. */
+export const defaultCargoProfile = (subcommand: string): string => {
+  if (subcommand === 'test') {
+    return 'test';
+  }
+  if (subcommand === 'bench') {
+    return 'bench';
+  }
+  if (subcommand === 'install') {
+    return 'release';
+  }
+  return 'dev';
+};
+
 export const cargoJsonDemuxFlag = '--message-format=json-diagnostic-rendered-ansi';
 
 export const optionParts = (

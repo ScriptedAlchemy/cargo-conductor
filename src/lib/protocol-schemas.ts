@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-import { awaitCeilingMs } from '../daemon/protocol.js';
+import { attachModes, awaitCeilingMs, requestStatuses } from '../daemon/protocol.js';
 import type {
   AdmissionHold,
   AttachmentSavingsReport,
@@ -14,18 +14,9 @@ import type {
   StatusReport,
 } from '../daemon/protocol.js';
 
-const requestStatusSchema = z.enum([
-  'requested',
-  'queued',
-  'running',
-  'done',
-  'failed',
-  'killed',
-  'denied',
-  'passthrough',
-]);
+const requestStatusSchema = z.enum(requestStatuses);
 
-const attachModeSchema = z.enum(['identity', 'coverage', 'batch']);
+const attachModeSchema = z.enum(attachModes);
 const savedComputeSourceSchema = z.enum(['exact', 'estimate']);
 /** `unresponsive`: the socket exists and a process holds it, but it did not answer in time. */
 const daemonStatusSchema = z.enum(['running', 'stopped', 'unresponsive']);

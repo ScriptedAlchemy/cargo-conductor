@@ -75,7 +75,8 @@ export type ProgressEvent =
 
 const prefix = '[cargo-hauler]';
 
-const formatDuration = (ms: number): string => {
+/** `45s`, `2m`, `2m30s`: the shell-heartbeat duration spelling (whole seconds, no `ms`). */
+export const formatDuration = (ms: number): string => {
   const seconds = Math.max(0, Math.floor(ms / 1000));
   if (seconds < 90) {
     return `${seconds}s`;
