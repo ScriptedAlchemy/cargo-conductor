@@ -28,13 +28,14 @@ import {
 const usage = `Usage: hauler <command>
 
 Commands:
-  exec [--session ID] [--host HOST] [--cwd DIR] [--bg] -- <cargo command>
-      Run cargo through the hauler daemon
+  exec [--session ID] [--host HOST] [--cwd DIR] [--bg] [--after TICKET[,TICKET…]] -- <cargo command>
+      Run cargo through the hauler daemon; --after queues it until those
+      tickets finish (it fails if one of them fails or is killed)
   daemon <run|start|stop|status>
       Control the hauler daemon
   install-shim [--dir DIR] [--real-cargo PATH] [--force]
       Install an optional PATH cargo shim
-  status | log | last | await <ticket> | result <ticket> | request -- <cargo command>
+  status | log | last | await <ticket> | result <ticket> | request [--after TICKET] -- <cargo command>
       Routed commands; run \`cargo-hauler --help\` for options
 `;
 
@@ -145,6 +146,7 @@ const runExecCommand = async (argv: readonly string[], options: ScriptOptions): 
       host: parsed.host ?? envHost ?? 'cli',
       io,
       ...(parsed.background ? { background: true } : {}),
+      ...(parsed.after === undefined ? {} : { after: parsed.after }),
       ...(session === undefined ? {} : { session }),
     }).pipe(
       Effect.map((result) => result.exitCode),

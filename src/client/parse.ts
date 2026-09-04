@@ -13,9 +13,11 @@ export interface ParsedExecArgv {
   readonly cwd?: string;
   readonly host?: string;
   readonly session?: string;
+  /** Tickets named by `--after` (repeatable or comma-separated), deduplicated in order. */
+  readonly after?: readonly string[];
 }
 
-const valuedFlags = ['--cwd', '--host', '--session'] as const;
+const valuedFlags = ['--cwd', '--host', '--session', '--after'] as const;
 type ValuedFlag = (typeof valuedFlags)[number];
 
 const isValuedFlag = (argument: string): argument is ValuedFlag =>
@@ -30,6 +32,16 @@ const takeValue = (argv: readonly string[], index: number, option: ValuedFlag): 
 };
 
 /**
+ * Splits `--after` values (`cc-1,cc-2`, or one ticket per repeated flag) into
+ * a deduplicated ticket list; the daemon validates that each one exists.
+ */
+export const parseTicketList = (values: readonly string[]): readonly string[] => [
+  ...new Set(
+    values.flatMap((value) => value.split(',')).map((part) => part.trim()).filter((part) => part.length > 0),
+  ),
+];
+
+/**
  * Flags before `--` (or before the cargo argv) belong to hauler.
  * Everything after `--`, or the remaining tokens, is the cargo command.
  */
@@ -38,6 +50,7 @@ export const parseExecArgv = (argv: readonly string[]): ParsedExecArgv => {
   let cwd: string | undefined;
   let host: string | undefined;
   let session: string | undefined;
+  const afterValues: string[] = [];
   const cargoArgv: string[] = [];
 
   for (let index = 0; index < argv.length; index += 1) {
@@ -63,6 +76,12 @@ export const parseExecArgv = (argv: readonly string[]): ParsedExecArgv => {
         case '--session':
           session = value;
           break;
+        case '--after':
+          if (parseTicketList([value]).length === 0) {
+            throw new ExecUsageError('--after requires a value');
+          }
+          afterValues.push(value);
+          break;
         default: {
           const exhaustive: never = argument;
           throw new ExecUsageError(`Unhandled option: ${String(exhaustive)}`);
@@ -81,11 +100,13 @@ export const parseExecArgv = (argv: readonly string[]): ParsedExecArgv => {
     throw new ExecUsageError('exec requires a cargo command');
   }
 
+  const after = parseTicketList(afterValues);
   return {
     background,
     cargoArgv,
     ...(cwd === undefined ? {} : { cwd }),
     ...(host === undefined ? {} : { host }),
     ...(session === undefined ? {} : { session }),
+    ...(after.length === 0 ? {} : { after }),
   };
 };

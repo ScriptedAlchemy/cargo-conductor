@@ -216,14 +216,14 @@ executable beside it (`dist/bin/cargo-hauler.js` in the package,
 
 | Command | Behavior |
 | --- | --- |
-| `hauler exec [--session ID] [--host HOST] [--cwd DIR] [--bg] -- <cargo …>` | Submit Cargo through the daemon and stream output; hooks rewrite commands to this form. A relative `--cwd` is resolved against the caller's directory. Exits with cargo's code; `130`/`143` after a SIGINT/SIGTERM (the ticket is killed first); `75` when auto-backgrounded. |
+| `hauler exec [--session ID] [--host HOST] [--cwd DIR] [--bg] [--after TICKET[,TICKET…]] -- <cargo …>` | Submit Cargo through the daemon and stream output; hooks rewrite commands to this form. A relative `--cwd` is resolved against the caller's directory. `--after` (repeatable or comma-separated) keeps the request queued until every named ticket has finished; it fails with `prerequisite cc-N <status>` if one of them fails or is killed, and an unknown ticket is rejected as a bad intent. Exits with cargo's code; `130`/`143` after a SIGINT/SIGTERM (the ticket is killed first); `75` when auto-backgrounded. |
 | `hauler status [--limit N] [--cwd DIR] [--session ID] [--lane KEY] [--ticket ID …] [--status S …] [--command-contains TEXT]` | Queue, active runs, lanes, admission, kache, optionally filtered. |
 | `hauler log [--limit N]` | Recent requests from the ledger. |
 | `hauler last` | The most recent request. |
 | `hauler await <ticket> [--max-wait-ms N]` | Long-poll until the ticket finishes or the wait expires (default 30 s, ceiling 55 s per call — the rendered-route budget; call again to keep waiting). |
 | `hauler result <ticket>` | A stored ticket; running tickets include a live output tail. |
 | `hauler kill <ticket>` | Stop a ticket: drop it from the queue or SIGTERM (then SIGKILL) its cargo process group, freeing the lane. Riders return to their lane or fail with it. |
-| `hauler request [--session ID] [--host HOST] [--cwd DIR] -- <cargo …>` | Submit a background request and return its ticket. |
+| `hauler request [--session ID] [--host HOST] [--cwd DIR] [--after TICKET …] -- <cargo …>` | Submit a background request and return its ticket, with where it landed in its lane (`queued behind cc-3281 (~13m)`, `waiting for cc-3281`, or `attached to cc-3281`). `--after` works as for `exec`. |
 | `hauler daemon <run\|start\|stop\|status>` | Manage the daemon lifecycle. |
 | `hauler install-shim [--dir DIR] [--real-cargo PATH] [--force]` | Install the optional PATH shim. |
 
@@ -330,6 +330,26 @@ callers, dependency-unblocking work, and recently edited packages receive a
 lower scheduling score. Waiting time lowers the score further so broad work
 eventually runs.
 
+Admission within a lane is therefore cost-ordered, not first-in-first-out: a
+queued `cargo test -p foo` (a cheap estimate) normally starts before a queued
+`cargo build --workspace` submitted a minute earlier, even when the test
+spawns a binary that build produces. The acknowledgement makes the order
+visible — `ticket cc-3289 queued behind cc-3281 (1 ahead, wait ~780s)` on
+`exec`, `cc-3289 submitted, queued behind cc-3281 (~13m)` on `request` — and
+`--after` makes the dependency explicit: `hauler exec --after cc-3281 -- cargo
+test …` (or `hauler request --after`, or `after: ["cc-3281"]` on
+`hauler_request`) stays `queued` and is skipped by admission and batch folding
+until every named ticket has settled. Prerequisites may live in any lane; a
+prerequisite in the same lane also scores higher while a ticket waits on it,
+like a dependency-closure leaf. A prerequisite
+that ends `failed` or `killed` settles the dependent `failed` with
+`prerequisite cc-N failed` and no exit code, without spawning cargo; its riders
+follow the normal attachment rules. A prerequisite that already finished
+resolves immediately; an unknown ticket is rejected as a bad intent. A blocked
+ticket never attaches to a run already in flight (that run started before the
+prerequisite finished), and `hauler status`, `hauler result`, and await
+heartbeats show `waits for cc-N (running 2m/~5m)` while it is held.
+
 Admission is separate from lane scheduling. It observes one-minute load per
 core and, on Linux, CPU PSI `some avg10`, then applies the configured thresholds
 and the global permit cap. Load and CPU pressure never defer below
@@ -363,7 +383,7 @@ own `-j` flag or `CARGO_BUILD_JOBS` always wins over both.
 | Lane isolation | A workspace-root and target-directory pair is serialized independently from other lanes. |
 | Admission | Per-core load, Linux CPU PSI, Linux memory PSI and `MemAvailable`, macOS VM pressure, configured thresholds, and the global permit cap control new starts. |
 | Parallelism | One daemon-owned jobserver FIFO shared by every spawned Cargo; a per-run `CARGO_BUILD_JOBS` grant only when the FIFO could not be armed. |
-| Scheduling | EWMA estimates, optional kache priors, fan-out, dependency topology, recent edits, and request age determine lane order. |
+| Scheduling | EWMA estimates, optional kache priors, fan-out, dependency topology, recent edits, and request age determine lane order; `--after cc-N` holds a request until the named tickets settle. |
 | Persistence | Tickets, output tails, timings, outcomes, and savings are stored in SQLite. |
 | Caller output and status | Output streams to attached callers; late callers receive buffered replay. After 30 seconds without output, the client emits a progress heartbeat every 15 seconds with lane queue position, the lane-head ticket, and an aggregate wait ETA. |
 | Wait escalation | A queued request waiting longer than the larger of twice its own estimate and ten minutes is flagged as delayed; running jobs silent for more than five minutes show a quiet-duration hint. Nothing is killed automatically. |

@@ -44,6 +44,7 @@ describe('ticket summaries', () => {
 const esc = '\u001b';
 
 const coloredRecord: RequestRecord = {
+  after: [],
   argv: ['cargo', 'check'],
   attachMode: null,
   attachedTo: null,

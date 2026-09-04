@@ -30,6 +30,7 @@ import {
 } from './broker-metrics.js';
 import type { DaemonConfigShape } from './config.js';
 import type { CostEstimate, CostModelApi } from './cost.js';
+import { isSchedulable } from './dependencies.js';
 import { executeCargo, TailBuffer } from './executor.js';
 import type { ExecutionResult } from './executor.js';
 import type { NormalizedCargoIntent } from './intent-normalizer.js';
@@ -146,6 +147,12 @@ export interface LaneRuntime {
     estimate: CostEstimate,
   ) => Effect.Effect<Job>;
   readonly enqueueJob: (lane: Lane, job: Job) => Effect.Effect<number>;
+  /**
+   * Settles a job that never left the queue as `failed` with `error` (a
+   * prerequisite ended other than `done`), dropping it from the lane. A job
+   * a kill already claimed settles `killed` instead.
+   */
+  readonly failPendingJob: (lane: Lane, job: Job, error: string) => Effect.Effect<void>;
   readonly settleInterruptedJob: (job: Job) => Effect.Effect<void>;
   readonly laneStatuses: () => Effect.Effect<readonly LaneStatus[]>;
   readonly requestStatusFields: (
@@ -233,6 +240,8 @@ export const makeLaneRuntime = (deps: LaneRuntimeDeps): Effect.Effect<LaneRuntim
           admissionHold: null,
           editedRecently,
           depClosure,
+          after: input.after ?? [],
+          waitingFor: new Set<string>(),
         };
       });
 
@@ -248,7 +257,9 @@ export const makeLaneRuntime = (deps: LaneRuntimeDeps): Effect.Effect<LaneRuntim
       });
 
     /**
-     * Splices out the best-scored pending job under the scheduling policy.
+     * Splices out the best-scored schedulable pending job under the
+     * scheduling policy. Jobs blocked on `--after` prerequisites stay put
+     * (they still count toward the score of the jobs they wait on).
      * `unblocks` counts the other pending requests (and their coalesced
      * waiters) whose dependency closure this candidate compiles — running a
      * leaf crate first releases the dependents queued above it and warms
@@ -257,10 +268,15 @@ export const makeLaneRuntime = (deps: LaneRuntimeDeps): Effect.Effect<LaneRuntim
     const takeNextJob = (lane: Lane): Effect.Effect<Job | undefined> =>
       Effect.sync(() => {
         const nowMs = Date.now();
+        const ready = lane.pending.filter(isSchedulable);
         const index = selectNextIndex(
-          lane.pending.map((candidate) => scheduleCandidate(candidate, lane.pending, nowMs)),
+          ready.map((candidate) => scheduleCandidate(candidate, lane.pending, nowMs)),
         );
-        return index === -1 ? undefined : lane.pending.splice(index, 1)[0];
+        const next = index === -1 ? undefined : ready[index];
+        if (next !== undefined) {
+          lane.pending.splice(lane.pending.indexOf(next), 1);
+        }
+        return next;
       });
 
     /**
@@ -272,6 +288,8 @@ export const makeLaneRuntime = (deps: LaneRuntimeDeps): Effect.Effect<LaneRuntim
      * Only `queued` candidates fold: a pending job already in
      * `kill-requested` (disconnect cleanup leaves it in the lane) would
      * otherwise be compiled for nobody and settled `done` instead of `killed`.
+     * A job blocked on `--after` prerequisites does not fold either: the
+     * composite would run it before the work it declared it needs.
      * Folded followers keep their own `mergeStderr`; the composite's channels
      * are forwarded as the leader produced them.
      */
@@ -292,6 +310,7 @@ export const makeLaneRuntime = (deps: LaneRuntimeDeps): Effect.Effect<LaneRuntim
             if (
               candidate === undefined ||
               Ref.getUnsafe(candidate.state) !== 'queued' ||
+              !isSchedulable(candidate) ||
               !batchCompatibleFor(kind, leader.intent, candidate.intent)
             ) {
               continue;
@@ -545,6 +564,22 @@ export const makeLaneRuntime = (deps: LaneRuntimeDeps): Effect.Effect<LaneRuntim
 
     const finishKilledBeforeRun = (lane: Lane, job: Job): Effect.Effect<void> =>
       settleJob(lane, job, 'killed', null, null, 'killed while queued', Date.now());
+
+    const failPendingJob = (lane: Lane, job: Job, error: string): Effect.Effect<void> =>
+      Effect.gen(function* () {
+        yield* Effect.sync(() => {
+          const index = lane.pending.indexOf(job);
+          if (index !== -1) {
+            lane.pending.splice(index, 1);
+          }
+        });
+        const state = yield* Ref.get(job.state);
+        if (state === 'kill-requested') {
+          yield* finishKilledBeforeRun(lane, job);
+          return;
+        }
+        yield* settleJob(lane, job, 'failed', null, null, error, Date.now());
+      });
 
     const settleInterruptedJob = (job: Job): Effect.Effect<void> =>
       settleJob(null, job, 'killed', null, 'SIGTERM', 'daemon shutdown', Date.now()).pipe(
@@ -800,7 +835,7 @@ export const makeLaneRuntime = (deps: LaneRuntimeDeps): Effect.Effect<LaneRuntim
         if (
           config.batchEnabled &&
           config.batchWindowMs > 0 &&
-          lane.pending.length === 0 &&
+          !lane.pending.some(isSchedulable) &&
           batchKindFor(job.intent) !== null &&
           (yield* stillQueued(job))
         ) {
@@ -899,20 +934,28 @@ export const makeLaneRuntime = (deps: LaneRuntimeDeps): Effect.Effect<LaneRuntim
         })),
       );
 
+    /**
+     * `pending` is the whole lane queue, blocked jobs included: a job waiting
+     * `--after` this candidate is one more request it releases, so the
+     * prerequisite moves up the way a dependency-closure leaf does.
+     */
     function scheduleCandidate(
       candidate: Job,
       pending: readonly Job[],
       nowMs: number,
     ) {
       let unblocks = 0;
-      if (candidate.intent.packages.length > 0) {
-        for (const other of pending) {
-          if (other === candidate || other.depClosure.size === 0) {
-            continue;
-          }
-          if (candidate.intent.packages.some((name) => other.depClosure.has(name))) {
-            unblocks += 1 + other.attachments.size;
-          }
+      for (const other of pending) {
+        if (other === candidate) {
+          continue;
+        }
+        const declared = other.waitingFor.has(candidate.ticket);
+        const compiles =
+          candidate.intent.packages.length > 0 &&
+          other.depClosure.size > 0 &&
+          candidate.intent.packages.some((name) => other.depClosure.has(name));
+        if (declared || compiles) {
+          unblocks += 1 + other.attachments.size;
         }
       }
       return {
@@ -925,12 +968,16 @@ export const makeLaneRuntime = (deps: LaneRuntimeDeps): Effect.Effect<LaneRuntim
       };
     }
 
+    /** Schedulable pending jobs in the order the lane would admit them; blocked jobs are not ahead of anything. */
     const orderedPending = (lane: Lane, nowMs: number): readonly Job[] => {
-      const remaining = [...lane.pending];
+      const remaining = lane.pending.filter(isSchedulable);
+      const blocked = lane.pending.filter((job) => !isSchedulable(job));
       const ordered: Job[] = [];
       while (remaining.length > 0) {
         const index = selectNextIndex(
-          remaining.map((candidate) => scheduleCandidate(candidate, remaining, nowMs)),
+          remaining.map((candidate) =>
+            scheduleCandidate(candidate, [...remaining, ...blocked], nowMs),
+          ),
         );
         if (index === -1) {
           break;
@@ -1032,6 +1079,7 @@ export const makeLaneRuntime = (deps: LaneRuntimeDeps): Effect.Effect<LaneRuntim
       getOrCreateLane,
       makeJob,
       enqueueJob,
+      failPendingJob,
       settleInterruptedJob,
       laneStatuses,
       requestStatusFields,

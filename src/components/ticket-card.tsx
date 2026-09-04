@@ -32,6 +32,7 @@ export const TicketCard = ({ nowMs, record, tailLines }: TicketCardProps) => {
           { label: 'Where', value: model.where },
           { label: 'Lane', value: model.lane },
           { label: 'Queue', value: model.queue },
+          { label: 'After', value: model.after },
           { label: 'Attached', value: model.attached },
           { label: 'Waited', value: model.waited },
           { label: 'Started', value: model.started },

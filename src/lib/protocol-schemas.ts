@@ -7,6 +7,7 @@ import type {
   SystemLoadReport,
   KacheStatusReport,
   LaneStatus,
+  PrerequisiteContext,
   RequestRecord,
   StatusMetrics,
   StatusReport,
@@ -42,6 +43,13 @@ const admissionHoldSchema = z.object({
   detail: z.string(),
   reason: z.enum(['memory-hard', 'heavy-profile-cap', 'memory-soft', 'load', 'cpu-stall']),
 }) satisfies z.ZodType<AdmissionHold>;
+
+const prerequisiteContextSchema = z.object({
+  elapsedMs: z.number().nonnegative().optional(),
+  estimateMs: z.number().nonnegative().optional(),
+  status: requestStatusSchema,
+  ticket: z.string(),
+}) satisfies z.ZodType<PrerequisiteContext>;
 
 // Daemon-sourced payloads deliberately STRIP unknown keys instead of
 // rejecting them (issue #4): plugin snapshots outlive daemon upgrades, and a
@@ -84,7 +92,10 @@ export const requestRecordSchema = z.object({
   holdStop: z.boolean(),
   estimateMs: z.number().nullable(),
   execArgv: z.array(z.string()).nullable(),
+  // Daemons before `--after` never send the list; an absent field is "no prerequisites".
+  after: z.array(z.string()).default([]),
   queue: queueContextSchema.optional(),
+  waitingFor: z.array(prerequisiteContextSchema).optional(),
   delayed: z.boolean().optional(),
   quietMs: z.number().nonnegative().optional(),
   admissionHold: admissionHoldSchema.optional(),
@@ -409,6 +420,22 @@ export const requestInputSchema = z
     cwd: z.string().min(1),
     session: z.string().optional(),
     host: z.string().optional(),
+    after: z
+      .array(z.string().min(1))
+      .max(50)
+      .optional()
+      .describe(
+        'Tickets (cc-N) that must finish before this request starts; it fails if any of them fails or is killed',
+      ),
+  })
+  .strict();
+
+/** Where a just-submitted request landed in its lane, from the daemon's acknowledgement. */
+export const requestQueueSchema = z
+  .object({
+    ahead: z.array(z.string()),
+    position: z.number().int().nonnegative(),
+    waitEtaMs: z.number().nonnegative().optional(),
   })
   .strict();
 
@@ -437,8 +464,10 @@ export const requestResultSchema = z
   .object({
     attribution: ticketAttributionSchema,
     operation: z.literal('request'),
+    queue: requestQueueSchema.optional(),
     summary: z.string(),
     ticket: z.string().nullable(),
+    waitingFor: z.array(z.string()).optional(),
   })
   .strict();
 
@@ -469,12 +498,17 @@ export interface ResultFetchResult {
 
 export type TicketLineage = z.infer<typeof ticketLineageSchema>;
 export type TicketAttribution = z.infer<typeof ticketAttributionSchema>;
+export type RequestQueue = z.infer<typeof requestQueueSchema>;
 
 export interface RequestSubmitResult {
   readonly attribution: TicketAttribution;
   readonly operation: 'request';
+  /** Lane placement at submission; absent when the request attached to a run or the lane was idle. */
+  readonly queue?: RequestQueue;
   readonly summary: string;
   readonly ticket: string | null;
+  /** Prerequisites (`after`) still unsettled at submission. */
+  readonly waitingFor?: readonly string[];
 }
 
 export type LimitInput = z.infer<typeof limitInputSchema>;

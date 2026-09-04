@@ -1,4 +1,9 @@
-import type { AdmissionHold, AttachMode, QueueContext } from '../daemon/protocol.js';
+import type {
+  AdmissionHold,
+  AttachMode,
+  PrerequisiteContext,
+  QueueContext,
+} from '../daemon/protocol.js';
 
 export type ProgressEvent =
   | {
@@ -6,6 +11,10 @@ export type ProgressEvent =
       readonly laneKey: string;
       readonly position: number;
       readonly ticket: string;
+      /** The tickets `position` counts, in the order the lane expects to run them. */
+      readonly ahead?: readonly string[];
+      /** Prerequisites (`--after`) the job waits for before it is schedulable. */
+      readonly waitingFor?: readonly string[];
       /** The job's own measured runtime estimate; omitted for a cold-start default. */
       readonly etaMs?: number;
       /** Work ahead in the lane before this job can start. */
@@ -38,6 +47,8 @@ export type ProgressEvent =
       readonly laneName?: string;
       readonly queue?: QueueContext;
       readonly hold?: AdmissionHold;
+      /** Prerequisites (`--after`) still unsettled; the job is queued but not schedulable. */
+      readonly waitingFor?: readonly PrerequisiteContext[];
     }
   | {
       readonly kind: 'passthrough';
@@ -63,18 +74,47 @@ const formatDuration = (ms: number): string => {
   return `${minutes}m${remainder === 0 ? '' : `${remainder}s`}`;
 };
 
+const maxNamedTickets = 3;
+
+/** `cc-1, cc-2, cc-3 +2 more`: enough to recognise a reorder without flooding the shell. */
+const ticketList = (tickets: readonly string[]): string => {
+  const named = tickets.slice(0, maxNamedTickets).join(', ');
+  const rest = tickets.length - maxNamedTickets;
+  return rest > 0 ? `${named} +${rest} more` : named;
+};
+
+/** `cc-3281 (running 2m/~5m)`, `cc-3290 (queued)`: one prerequisite a dependent waits for. */
+const prerequisiteText = (prerequisite: PrerequisiteContext): string => {
+  const progress =
+    prerequisite.elapsedMs === undefined
+      ? prerequisite.status
+      : `running ${formatDuration(prerequisite.elapsedMs)}${
+          prerequisite.estimateMs === undefined ? '' : `/~${formatDuration(prerequisite.estimateMs)}`
+        }`;
+  return `${prerequisite.ticket} (${progress})`;
+};
+
 export const formatProgressLine = (event: ProgressEvent): string => {
   switch (event.kind) {
     case 'queued': {
       const seconds = (ms: number): string => `~${Math.max(1, Math.round(ms / 1000))}s`;
+      // A blocked dependent has no lane position yet: what holds it is the
+      // prerequisite, not the queue.
+      const blocked = event.waitingFor !== undefined && event.waitingFor.length > 0;
+      const placement = blocked
+        ? ` waiting for ${ticketList(event.waitingFor ?? [])}`
+        : event.ahead === undefined || event.ahead.length === 0
+          ? ''
+          : ` behind ${ticketList(event.ahead)}`;
       const parts = [
-        `${event.position} ahead`,
-        ...(event.waitEtaMs === undefined || event.waitEtaMs <= 0
+        ...(blocked ? [] : [`${event.position} ahead`]),
+        ...(blocked || event.waitEtaMs === undefined || event.waitEtaMs <= 0
           ? []
           : [`wait ${seconds(event.waitEtaMs)}`]),
         ...(event.etaMs === undefined ? [] : [`run ${seconds(event.etaMs)}`]),
       ];
-      return `${prefix} ticket ${event.ticket} queued (${parts.join(', ')})\n`;
+      const detail = parts.length === 0 ? '' : ` (${parts.join(', ')})`;
+      return `${prefix} ticket ${event.ticket} queued${placement}${detail}\n`;
     }
     case 'attached': {
       switch (event.mode) {
@@ -97,7 +137,11 @@ export const formatProgressLine = (event: ProgressEvent): string => {
     case 'heartbeat': {
       if (event.command !== undefined) {
         const held = event.hold === undefined ? '' : ` · waiting: ${event.hold.detail}`;
-        const delayed = `${held}${event.delayed === true ? ' · wait exceeds estimate — lane busy' : ''}`;
+        const prerequisites =
+          event.waitingFor === undefined || event.waitingFor.length === 0
+            ? ''
+            : ` · waiting for ${event.waitingFor.map(prerequisiteText).join(', ')}`;
+        const delayed = `${held}${prerequisites}${event.delayed === true ? ' · wait exceeds estimate — lane busy' : ''}`;
         if (event.phase === 'queued' && event.queue !== undefined) {
           const head =
             event.queue.headTicket === undefined

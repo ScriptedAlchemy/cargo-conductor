@@ -739,9 +739,11 @@ describe('runExecClient', () => {
         timeoutMs: 5_000,
       });
       const ack = messages.find((message): message is AckMessage => message.type === 'ack');
-      // `position` counts pending jobs only; the wait also covers the running
-      // head's remaining estimate, which is what the second request sits behind.
+      // The running head counts: it is what the second request sits behind,
+      // by name on `ahead` and in the wait, which covers its remaining estimate.
       expect(ack?.ticket).not.toBe(first.ticket);
+      expect(ack?.position).toBe(1);
+      expect(ack?.ahead).toEqual([first.ticket]);
       expect(ack?.waitEtaMs).toBeGreaterThan(0);
     }));
 

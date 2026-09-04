@@ -27,6 +27,8 @@ export interface SubmitInput {
   readonly holdStop?: boolean | undefined;
   /** The caller's stdout and stderr are one file; merge the child's channels to keep its write order. */
   readonly mergeStderr?: boolean | undefined;
+  /** Tickets that must settle first (`--after`); see daemon/dependencies.ts. */
+  readonly after?: readonly string[] | undefined;
 }
 
 export interface StartedInfo {
@@ -177,6 +179,14 @@ export interface Job {
   readonly editedRecently: boolean;
   /** Workspace-internal transitive deps of this job's packages (topology, cached). */
   readonly depClosure: ReadonlySet<string>;
+  /** Prerequisite tickets declared at submission (`--after`), deduplicated. */
+  readonly after: readonly string[];
+  /**
+   * Prerequisites not yet settled. While non-empty the job is queued but not
+   * schedulable: the lane skips it for admission and batch folding. Mutated
+   * only in synchronous frames (daemon/dependencies.ts).
+   */
+  readonly waitingFor: Set<string>;
 }
 
 export type InFlightEntry =

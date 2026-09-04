@@ -49,6 +49,18 @@ export interface QueueContext {
   readonly waitEtaMs: number;
 }
 
+/**
+ * Live view of one prerequisite (`--after`) a queued request is still waiting
+ * on. Present only while the dependent is blocked; never persisted.
+ */
+export interface PrerequisiteContext {
+  readonly ticket: string;
+  readonly status: RequestStatus;
+  /** Milliseconds the prerequisite has been running, once it started. */
+  readonly elapsedMs?: number;
+  readonly estimateMs?: number;
+}
+
 /** Which admission arm is holding a lane head back from its permit. */
 export type AdmissionDeferReason =
   | 'memory-hard'
@@ -123,8 +135,12 @@ export interface RequestRecord {
   readonly background: boolean;
   readonly holdStop: boolean;
   readonly estimateMs: number | null;
+  /** Tickets this request was submitted `--after`: it stays queued until every one has settled. */
+  readonly after: readonly string[];
   /** Live queue context, present only while this request is queued. */
   readonly queue?: QueueContext;
+  /** Prerequisites still unsettled, present only while this request is blocked on them. */
+  readonly waitingFor?: readonly PrerequisiteContext[];
   /** True once queued wait exceeds max(2 × own estimate, 10 minutes). */
   readonly delayed?: boolean;
   /** Milliseconds since the running leader last emitted output, once over five minutes. */
@@ -153,6 +169,8 @@ export const execRequestSchema = z.object({
   holdStop: z.boolean().optional(),
   /** Run the child with stderr on the stdout pipe so the caller's `2>&1` keeps write order. */
   mergeStderr: z.boolean().optional(),
+  /** Tickets that must settle before this request may start; a failed or killed one fails it. */
+  after: z.array(z.string().min(1)).optional(),
 });
 
 export const attemptRequestSchema = z.object({
@@ -420,8 +438,15 @@ export interface AckMessage {
   readonly id: string;
   readonly ticket: string;
   readonly laneKey: string;
-  /** Jobs ahead of this one in its lane queue at submission time. */
+  /**
+   * Leaders expected to run before this one in its lane at submission time:
+   * the running head plus the schedulable queued jobs ahead of it.
+   */
   readonly position: number;
+  /** The tickets counted by `position`, in the order the lane expects to run them. */
+  readonly ahead?: readonly string[];
+  /** Prerequisites (`--after`) still unsettled; the request stays queued until they are. */
+  readonly waitingFor?: readonly string[];
   /** Present when the request attached to an in-flight leader instead of queueing. */
   readonly attachedTo?: string;
   readonly attachMode?: AttachMode;

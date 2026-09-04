@@ -203,6 +203,21 @@ describe('status/result contract completeness (issue #16)', () => {
     expect(legacy.quietMs).toBeUndefined();
   });
 
+  it('accepts --after prerequisites and their live wait state, defaulting older daemons to none', () => {
+    const dependent = requestRecordSchema.parse({
+      ...baseRecord,
+      after: ['cc-3', 'cc-4'],
+      status: 'queued',
+      waitingFor: [{ elapsedMs: 1_000, estimateMs: 5_000, status: 'running', ticket: 'cc-3' }],
+    });
+    expect(dependent.after).toEqual(['cc-3', 'cc-4']);
+    expect(dependent.waitingFor?.[0]?.ticket).toBe('cc-3');
+    // Daemons before `--after` send neither field.
+    const legacy = requestRecordSchema.parse(baseRecord);
+    expect(legacy.after).toEqual([]);
+    expect(legacy.waitingFor).toBeUndefined();
+  });
+
   it('accepts diagnosed records in status report active/recent lists', () => {
     const parsed = statusReportSchema.parse({
       active: [{ ...diagnosedRecord, status: 'running' }],

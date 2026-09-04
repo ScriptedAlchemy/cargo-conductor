@@ -306,6 +306,7 @@ export const makeConnectionHandler =
                   background: message.background,
                   holdStop: message.holdStop,
                   mergeStderr: message.mergeStderr,
+                  after: message.after,
                 },
                 {
                   onRegistered: (ticket) =>
@@ -369,6 +370,10 @@ export const makeConnectionHandler =
               ticket: submitted.success.ticket,
               laneKey: submitted.success.laneKey,
               position: submitted.success.position,
+              ...(submitted.success.ahead === undefined ? {} : { ahead: submitted.success.ahead }),
+              ...(submitted.success.waitingFor === undefined
+                ? {}
+                : { waitingFor: submitted.success.waitingFor }),
               ...(submitted.success.attachedTo === undefined
                 ? {}
                 : { attachedTo: submitted.success.attachedTo }),

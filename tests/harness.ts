@@ -74,6 +74,13 @@ const makeFixture = (maxConcurrent: number): Fixture => {
     CARGO_HAULER_MAX_CONCURRENT: String(maxConcurrent),
     CARGO_HAULER_BATCH_WINDOW_MS: '0',
     CARGO_HAULER_CPU_PRESSURE_THRESHOLD: '0',
+    // Hermetic tests: the host's live memory pressure must not park lane
+    // heads at the admission gate (hard PSI bypasses the concurrency floor
+    // and holds them for up to two minutes on a loaded CI box).
+    CARGO_HAULER_HEAVY_MEM_AVAILABLE_GB: '0',
+    CARGO_HAULER_MEM_AVAILABLE_MIN_GB: '0',
+    CARGO_HAULER_MEM_PRESSURE_HARD: '0',
+    CARGO_HAULER_MEM_PRESSURE_SOFT: '0',
     // Hermetic tests: no live kache priors.
     CARGO_HAULER_KACHE_INDEX: '',
   });

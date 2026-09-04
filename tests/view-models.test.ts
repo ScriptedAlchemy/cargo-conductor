@@ -20,6 +20,7 @@ import {
 const nowMs = 1_800_000_000_000;
 
 const record = (overrides: Partial<RequestRecord> = {}): RequestRecord => ({
+  after: [],
   argv: ['/home/me/.cargo/bin/cargo', 'check', '-p', 'foo'],
   attachMode: null,
   attachedTo: null,
@@ -127,6 +128,24 @@ describe('ticketCardModel', () => {
     expect(model.where).toBe('~/work/ws · cursor / conv-1');
     expect(model.queue).toBe('1 ahead behind cc-6, wait ~30.0s; waiting: 1 heavy build already running');
     expect(model.started).toBeNull();
+    expect(model.after).toBeNull();
+  });
+
+  it('shows what a dependent waits for and keeps its prerequisites on the card', () => {
+    const blocked = ticketCardModel(
+      record({
+        after: ['cc-3', 'cc-4'],
+        startedAtMs: null,
+        status: 'queued',
+        waitingFor: [{ elapsedMs: 120_000, estimateMs: 300_000, status: 'running', ticket: 'cc-3' }],
+      }),
+      nowMs,
+    );
+    expect(blocked.queue).toBe('waits for cc-3 (running 2m/~5m)');
+    expect(blocked.after).toBe('cc-3, cc-4');
+    const finished = ticketCardModel(record({ after: ['cc-3'], status: 'done' }), nowMs);
+    expect(finished.queue).toBeNull();
+    expect(finished.after).toBe('cc-3');
   });
 });
 

@@ -2,8 +2,9 @@ import {
   awaitTicketWithProgress,
   fetchTicket,
   killTicket,
-  submitBackground,
+  submitBackgroundAck,
   type AwaitProgress,
+  type BackgroundSubmitAck,
 } from '../client/tickets.js';
 import type { DaemonConfigShape } from '../daemon/config.js';
 import type { RequestRecord } from '../daemon/protocol.js';
@@ -115,20 +116,63 @@ export const killTicketResult = async (
   };
 };
 
+const formatWait = (ms: number): string => {
+  const seconds = Math.max(0, Math.round(ms / 1000));
+  return seconds >= 90 ? `~${Math.round(seconds / 60)}m` : `~${seconds}s`;
+};
+
+/**
+ * Where the ticket landed, so a reorder is visible on the acknowledgement
+ * itself: `queued behind cc-3281 (~13m)`, `waiting for cc-3281`, or
+ * `attached to cc-3281` (issue #45).
+ */
+export const describeSubmitPlacement = (ack: BackgroundSubmitAck): string | null => {
+  if (ack.attachedTo !== undefined) {
+    return `attached to ${ack.attachedTo}`;
+  }
+  if (ack.waitingFor !== undefined && ack.waitingFor.length > 0) {
+    return `waiting for ${ack.waitingFor.join(', ')}`;
+  }
+  if (ack.ahead !== undefined && ack.ahead.length > 0) {
+    const wait = ack.waitEtaMs === undefined || ack.waitEtaMs <= 0 ? '' : ` (${formatWait(ack.waitEtaMs)})`;
+    return `queued behind ${ack.ahead.join(', ')}${wait}`;
+  }
+  return null;
+};
+
 export const submitTicketRequest = async (
   input: RequestInput,
   requestContext: TicketRequestContext,
   options: TicketOptions,
 ): Promise<RequestSubmitResult> => {
   const attribution = ticketAttribution(input, requestContext);
-  const ticket = await runTicketEffect(
-    submitBackground(enrichTicketRequest(input, requestContext), options.config),
+  const ack = await runTicketEffect(
+    submitBackgroundAck(enrichTicketRequest(input, requestContext), options.config),
     options.signal,
   );
+  if (ack === null) {
+    return {
+      attribution,
+      operation: 'request',
+      summary: 'failed to submit background request',
+      ticket: null,
+    };
+  }
+  const placement = describeSubmitPlacement(ack);
   return {
     attribution,
     operation: 'request',
-    summary: ticket === null ? 'failed to submit background request' : `${ticket} submitted`,
-    ticket,
+    ...(ack.ahead === undefined
+      ? {}
+      : {
+          queue: {
+            ahead: [...ack.ahead],
+            position: ack.position,
+            ...(ack.waitEtaMs === undefined ? {} : { waitEtaMs: ack.waitEtaMs }),
+          },
+        }),
+    summary: `${ack.ticket} submitted${placement === null ? '' : `, ${placement}`}`,
+    ticket: ack.ticket,
+    ...(ack.waitingFor === undefined ? {} : { waitingFor: [...ack.waitingFor] }),
   };
 };

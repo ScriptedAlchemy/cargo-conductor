@@ -89,6 +89,59 @@ describe('formatProgressLine', () => {
     ).toBe('[cargo-hauler] cc-10 queued 1m35s — check -p cargo-hauler\n');
   });
 
+  it('names the tickets ahead and the prerequisites on the queued acknowledgement', () => {
+    expect(
+      formatProgressLine({
+        ahead: ['cc-3281', 'cc-3282'],
+        etaMs: 300_000,
+        kind: 'queued',
+        laneKey: '["/ws","/ws/target"]',
+        position: 2,
+        ticket: 'cc-3289',
+        waitEtaMs: 13 * 60_000,
+      }),
+    ).toBe('[cargo-hauler] ticket cc-3289 queued behind cc-3281, cc-3282 (2 ahead, wait ~780s, run ~300s)\n');
+    expect(
+      formatProgressLine({
+        ahead: ['cc-1', 'cc-2', 'cc-3', 'cc-4', 'cc-5'],
+        kind: 'queued',
+        laneKey: '["/ws","/ws/target"]',
+        position: 5,
+        ticket: 'cc-6',
+      }),
+    ).toBe('[cargo-hauler] ticket cc-6 queued behind cc-1, cc-2, cc-3 +2 more (5 ahead)\n');
+    expect(
+      formatProgressLine({
+        etaMs: 300_000,
+        kind: 'queued',
+        laneKey: '["/ws","/ws/target"]',
+        position: 0,
+        ticket: 'cc-3289',
+        waitingFor: ['cc-3281'],
+      }),
+    ).toBe('[cargo-hauler] ticket cc-3289 queued waiting for cc-3281 (run ~300s)\n');
+  });
+
+  it('says which prerequisite a blocked dependent is waiting for in await heartbeats', () => {
+    expect(
+      formatProgressLine({
+        command: 'test -p tracedecay --test mcp_suite',
+        elapsedMs: 130_000,
+        estimateMs: 25_000,
+        kind: 'heartbeat',
+        laneName: 'td-zg-integrate-claude',
+        phase: 'queued',
+        ticket: 'cc-3289',
+        waitingFor: [
+          { elapsedMs: 2 * 60_000, estimateMs: 5 * 60_000, status: 'running', ticket: 'cc-3281' },
+          { status: 'queued', ticket: 'cc-3290' },
+        ],
+      }),
+    ).toBe(
+      '[cargo-hauler] cc-3289 queued 2m10s (est ~25s) · waiting for cc-3281 (running 2m/~5m), cc-3290 (queued) — test -p tracedecay --test mcp_suite\n',
+    );
+  });
+
   it('names the admission arm holding a lane head at the gate', () => {
     expect(
       formatProgressLine({

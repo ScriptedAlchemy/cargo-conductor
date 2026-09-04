@@ -122,6 +122,12 @@ const fixturesFor = (
   'tool:hauler/hauler_log': { input: { limit: 5 }, inputs: [{}], resultCompat: 'additive' },
   'tool:hauler/hauler_request': {
     input: { argv: ['cargo', 'check', '-p', 'ws1'], cwd: fixture.ws1, host: 'packed-contract', session: 'packed-2' },
+    // `after` on a finished prerequisite runs at once; on the running one it
+    // queues the request until that job settles (#45).
+    inputs: [
+      { after: [tickets.finished], argv: ['cargo', 'check', '-p', 'after-done'], cwd: fixture.ws1 },
+      { after: [tickets.running], argv: ['cargo', 'check', '-p', 'after-running'], cwd: fixture.ws1 },
+    ],
     resultCompat: 'additive',
   },
   'tool:hauler/hauler_result': {
