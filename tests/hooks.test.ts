@@ -36,7 +36,7 @@ describe('beforeTool shell hook', () => {
   it('rewrites a cargo command to hauler exec with session and host', async () => {
     const result = await runBefore('cargo test -p foo');
 
-    expect(result.outcome).toBe('continue');
+    expect(result.outcome).toBe('allow');
     expect(result.updatedInput).toEqual({
       command: 'hauler exec --session sess-1 --host claude -- cargo test -p foo',
       timeout: 120,
@@ -149,7 +149,7 @@ describe('beforeTool shell hook', () => {
   it('rewrites cargo clean when the daemon is idle', async () => {
     const result = await runBefore('cargo +nightly clean -p foo');
 
-    expect(result.outcome).toBe('continue');
+    expect(result.outcome).toBe('allow');
     expect(result.updatedInput?.command).toContain('hauler exec');
     expect(result.updatedInput?.command).toContain('-- cargo +nightly clean -p foo');
   });
@@ -169,7 +169,7 @@ describe('beforeTool shell hook', () => {
       probeDaemon: () => 'busy',
     });
 
-    expect(result.outcome).toBe('continue');
+    expect(result.outcome).toBe('allow');
     expect(result.updatedInput?.command).toBe('hauler exec --session sess-1 --host claude -- cargo clean -p foo');
   });
 
@@ -191,7 +191,7 @@ describe('beforeTool shell hook', () => {
       },
     });
 
-    expect(result.outcome).toBe('continue');
+    expect(result.outcome).toBe('allow');
     expect(result.updatedInput?.command).toContain('hauler exec');
   });
 });

@@ -10,6 +10,7 @@ import { isValidElement, type ReactElement, type ReactNode } from 'react';
 import StopRoute from '../src/events/stop.js';
 import AfterToolRoute from '../src/events/tool/after.js';
 import BeforeToolRoute from '../src/events/tool/before.js';
+import { decisionValue } from '../src/lib/event-support.js';
 
 const fixturesDir = join(import.meta.dirname, 'fixtures', 'hooks');
 
@@ -110,13 +111,25 @@ describe('agent event routes', () => {
     expect(sessionStart.config).toEqual({ runtime: 'standalone', targets: hosts, timeoutMs: 5_000 });
   });
 
+  it('decisionValue drops a reason from a continue result and keeps it on allow and deny', () => {
+    // A pass-through carries no decision, so agent-bundle rejects `reason`
+    // alongside `continue`; allow and deny keep theirs.
+    expect(decisionValue({ outcome: 'continue', reason: 'ignored' })).toEqual({ outcome: 'continue' });
+    expect(decisionValue({ outcome: 'allow', reason: 'brokered', updatedInput: { command: 'x' } })).toEqual({
+      outcome: 'allow',
+      reason: 'brokered',
+      updatedInput: { command: 'x' },
+    });
+    expect(decisionValue({ outcome: 'deny', reason: 'blocked' })).toEqual({ outcome: 'deny', reason: 'blocked' });
+  });
+
   it('tool/before rewrites a cargo shell command from a Claude envelope', async () => {
     const element = await BeforeToolRoute(
       routeProps('tool/before', 'claude', 'PreToolUse', loadFixture('claude-before-cargo')),
     );
     const decision = decisionOf(element);
 
-    expect(decision.outcome).toBe('continue');
+    expect(decision.outcome).toBe('allow');
     expect(decision.reason).toBeUndefined();
     const command = decision.updatedInput?.command;
     expect(typeof command).toBe('string');
@@ -143,7 +156,7 @@ describe('agent event routes', () => {
     );
     const decision = decisionOf(element);
 
-    expect(decision.outcome).toBe('continue');
+    expect(decision.outcome).toBe('allow');
     expect(decision.updatedInput?.command).toContain('--host cursor');
     expect(decision.updatedInput?.command).toContain('--session sess-cursor');
   });

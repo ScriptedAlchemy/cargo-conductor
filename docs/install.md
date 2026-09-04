@@ -24,6 +24,13 @@ rewrite Cargo to), `bin/cargo-hauler.mjs` (the routed CLI: `status`, `log`,
 `last`, `await`, `result`, `request`, `daemon`), `mcp-apps/dashboard.html`,
 and an `INSTALL.md` with the exact compiled names.
 
+The hooks never introduce a permission prompt. The `tool/before` route answers
+`allow` only for a cargo command it has rewritten onto the hauler exec path
+(the daemon governs that command), `deny` only for a destructive cargo command
+that would race in-flight builds, and plain `continue` — no decision, the
+host's own permission flow — for every other tool call. No route returns
+`ask`.
+
 ## Install with the framework installer
 
 The packs are framework-owned and install through `agent-bundle install`; the

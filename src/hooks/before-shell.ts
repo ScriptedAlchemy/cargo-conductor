@@ -21,9 +21,18 @@ export interface BeforeShellEvent {
   readonly toolUseId?: string;
 }
 
+/**
+ * The hauler never introduces a permission prompt. `continue` is the
+ * no-decision answer for every shell call the hook does not govern (the host's
+ * own permission flow applies, exactly as without the plugin). `allow` is
+ * returned only when a cargo command has been rewritten onto the hauler exec
+ * path: the daemon governs that command, so the host is not asked again.
+ * `deny` blocks a destructive cargo command that would race in-flight builds.
+ * The hook never returns `ask`.
+ */
 export interface BeforeShellResult {
   readonly additionalContext?: string;
-  readonly outcome: 'continue' | 'deny';
+  readonly outcome: 'continue' | 'allow' | 'deny';
   readonly reason?: string;
   readonly updatedInput?: Readonly<Record<string, unknown>>;
 }
@@ -150,14 +159,17 @@ const decideBeforeShell = async (
     atMs: nowMs(),
     command,
     host,
-    outcome: 'continue',
+    outcome: 'allow',
     phase: 'beforeTool',
     rewritten,
     session,
     ...(cwd === undefined ? {} : { cwd }),
     ...(event.toolName === undefined ? {} : { toolName: event.toolName }),
   });
-  return { outcome: 'continue', updatedInput: toolInput };
+  // The rewritten command runs under the daemon's governance; an explicit
+  // allow keeps the host from prompting for it (a pass-through result carries
+  // no decision since agent-bundle#461).
+  return { outcome: 'allow', updatedInput: toolInput };
 };
 
 export const handleBeforeShell = async (
