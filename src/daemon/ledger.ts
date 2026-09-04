@@ -44,6 +44,8 @@ export interface CreateRequestInput {
   readonly background?: boolean;
   readonly holdStop?: boolean;
   readonly estimateMs?: number | null;
+  /** Prerequisite tickets (`--after`), stored so status and result can show what the row waited for. */
+  readonly after?: readonly string[];
 }
 
 export interface FinishRequestInput {
@@ -230,13 +232,13 @@ const requestColumns = `id, created_at_ms, session, host, cwd, workspace_root, t
   argv_json, intent_key, intent_json, status, queued_at_ms, started_at_ms, finished_at_ms, wait_ms,
   run_ms, exit_code, signal, output_tail, output_path, error, attached_to, attach_mode, background,
   hold_stop, estimate_ms, exec_argv_json, error_count, warning_count, diagnostics_json,
-  saved_compute_ms, saved_compute_source, saved_latency_ms`;
+  saved_compute_ms, saved_compute_source, saved_latency_ms, after_json`;
 
 const statusRequestColumns = `id, created_at_ms, session, host, cwd, workspace_root, target_dir, lane_key,
   argv_json, intent_key, intent_json, status, queued_at_ms, started_at_ms, finished_at_ms, wait_ms,
   run_ms, exit_code, signal, NULL AS output_tail, output_path, error, attached_to, attach_mode,
   background, hold_stop, estimate_ms, exec_argv_json, error_count, warning_count, diagnostics_json,
-  saved_compute_ms, saved_compute_source, saved_latency_ms`;
+  saved_compute_ms, saved_compute_source, saved_latency_ms, after_json`;
 
 const columnMigrations: readonly (readonly [column: string, ddl: string])[] = [
   ['attached_to', 'ALTER TABLE requests ADD COLUMN attached_to TEXT'],
@@ -252,6 +254,7 @@ const columnMigrations: readonly (readonly [column: string, ddl: string])[] = [
   ['saved_compute_source', 'ALTER TABLE requests ADD COLUMN saved_compute_source TEXT'],
   ['saved_latency_ms', 'ALTER TABLE requests ADD COLUMN saved_latency_ms INTEGER'],
   ['source_attempt_id', 'ALTER TABLE requests ADD COLUMN source_attempt_id TEXT'],
+  ['after_json', 'ALTER TABLE requests ADD COLUMN after_json TEXT'],
   ['output_path', 'ALTER TABLE requests ADD COLUMN output_path TEXT'],
 ];
 
@@ -343,6 +346,7 @@ const toRequestRecord = (row: Row): RequestRecord => {
       row.exec_argv_json == null
         ? null
         : (JSON.parse(toText(row.exec_argv_json)) as readonly string[]),
+    after: toNullableStringArray(row.after_json) ?? [],
   };
 };
 
@@ -580,8 +584,9 @@ export const createLedgerApi = (db: DatabaseSync): LedgerApi => {
   );
   const insertRequest = db.prepare(
     `INSERT INTO requests (created_at_ms, session, host, cwd, workspace_root, target_dir,
-       lane_key, argv_json, intent_key, intent_json, status, background, hold_stop, estimate_ms)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       lane_key, argv_json, intent_key, intent_json, status, background, hold_stop, estimate_ms,
+       after_json)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   );
   const updateQueued = db.prepare(
     'UPDATE requests SET status = ?, queued_at_ms = ? WHERE id = ?',
@@ -1043,6 +1048,9 @@ export const createLedgerApi = (db: DatabaseSync): LedgerApi => {
             input.background === true ? 1 : 0,
             input.holdStop === true ? 1 : 0,
             input.estimateMs ?? null,
+            input.after === undefined || input.after.length === 0
+              ? null
+              : JSON.stringify(input.after),
           );
           const id = Number(result.lastInsertRowid);
           recordTransition(insertTransition, id, input.createdAtMs, null, 'requested');

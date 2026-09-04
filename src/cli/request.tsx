@@ -3,6 +3,7 @@ import type { CliRouteConfig, CliRouteProps } from 'agent-bundle';
 import React from 'react';
 import { z } from 'zod';
 
+import { parseTicketList } from '../client/parse.js';
 import { RequestDocument } from '../components/documents.js';
 import { cliSurface } from '../components/surface.js';
 import { lineageModel } from '../components/view-models.js';
@@ -11,7 +12,8 @@ import { requestDaemonConfig } from '../lib/request-config.js';
 import { submitTicketRequest } from '../lib/tickets.js';
 
 export const config = {
-  description: 'Submit a background cargo request and print its ticket: hauler request -- cargo check -p foo',
+  description:
+    'Submit a background cargo request and print its ticket: hauler request [--after cc-N] -- cargo check -p foo',
   positionals: ['argv'],
 } satisfies CliRouteConfig;
 
@@ -20,18 +22,27 @@ export const inputSchema = z.object({
   cwd: z.string().min(1).optional().describe('Workspace directory (default: current directory)'),
   session: z.string().min(1).optional().describe('Agent session id for attribution'),
   host: z.string().min(1).optional().describe('Agent host name for attribution'),
+  after: z
+    .array(z.string().min(1))
+    .max(50)
+    .optional()
+    .describe(
+      'Tickets that must finish first (repeatable, or comma-separated); the request fails if one of them fails or is killed',
+    ),
 });
 
 export const resultSchema = requestResultSchema;
 
 export default async function Request({ input, signal }: CliRouteProps<typeof inputSchema>) {
   const context = await agent();
+  const after = input.after === undefined ? [] : [...parseTicketList(input.after)];
   const submitted = await submitTicketRequest(
     {
       argv: input.argv,
       cwd: input.cwd ?? process.cwd(),
       ...(input.session === undefined ? {} : { session: input.session }),
       ...(input.host === undefined ? {} : { host: input.host }),
+      ...(after.length === 0 ? {} : { after }),
     },
     context,
     { config: requestDaemonConfig(context), signal },

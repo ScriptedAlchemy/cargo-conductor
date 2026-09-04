@@ -210,4 +210,72 @@ describe('tool documents against a live daemon', () => {
           expect(JSON.stringify(full.document)).not.toContain('Output tail:');
         });
       }), 30_000);
+
+  it.live('queues a request behind its --after prerequisite and rejects an unknown one', () =>
+      Effect.gen(function* () {
+        const fixture = yield* scopedDaemon(2);
+        const ack = yield* requestOverSocket({
+          isTerminal: (message) => message.type === 'ack' || message.type === 'error',
+          message: {
+            argv: ['cargo', 'build', '-p', 'ws1'],
+            background: true,
+            cwd: fixture.ws1,
+            env: { ...fakeCargoEnv(fixture.binDir), FAKE_SLEEP: '1.5' },
+            host: 'test',
+            id: 'route-unit-after-1',
+            session: 's-2',
+            type: 'exec',
+          },
+          socketPath: fixture.config.socketPath,
+          timeoutMs: 8_000,
+        });
+        const acked = ack.find((message) => message.type === 'ack');
+        if (acked === undefined || acked.type !== 'ack') {
+          throw new Error(`daemon did not ack: ${JSON.stringify(ack)}`);
+        }
+        const prerequisite = acked.ticket;
+
+        yield* Effect.promise(async () => {
+          const daemon = await withDaemon(fixture.config);
+          const submitted = await renderRoute('tool:hauler/hauler_request', {
+            ...daemon,
+            input: {
+              after: [prerequisite],
+              argv: ['cargo', 'test', '-p', 'ws1'],
+              cwd: fixture.ws1,
+              host: 'test',
+              session: 's-2',
+            },
+          });
+          const value = submitted.result as {
+            readonly ticket: string | null;
+            readonly waitingFor?: readonly string[];
+          };
+          expect(value.ticket).toMatch(/^cc-\d+$/u);
+          expect(value.waitingFor).toEqual([prerequisite]);
+          expectDocument(submitted)
+            .toHaveStatus('success')
+            .toContainText(`${value.ticket} submitted, waiting for ${prerequisite}`)
+            .toContainMarkdown(`**Waits for:** ${prerequisite}`)
+            .toContainContext(`queued behind ${prerequisite}`);
+
+          const status = await renderRoute('tool:hauler/hauler_status', {
+            ...daemon,
+            input: { tickets: [value.ticket ?? ''] },
+          });
+          const statusValue = status.result as { readonly active: readonly RequestRecord[] };
+          const dependent = statusValue.active.find((record) => record.ticket === value.ticket);
+          expect(dependent?.status).toBe('queued');
+          expect(dependent?.after).toEqual([prerequisite]);
+          expect(dependent?.waitingFor?.map((entry) => entry.ticket)).toEqual([prerequisite]);
+          expectDocument(status).toContainMarkdown(`waits for ${prerequisite}`);
+
+          await expect(
+            renderRoute('tool:hauler/hauler_request', {
+              ...daemon,
+              input: { after: ['cc-999999'], argv: ['cargo', 'test', '-p', 'ws1'], cwd: fixture.ws1 },
+            }),
+          ).rejects.toThrow(/bad-intent.*cc-999999/u);
+        });
+      }), 30_000);
 });

@@ -55,6 +55,8 @@ export interface ExecIo {
 }
 
 export interface RunExecOptions {
+  /** Tickets that must settle before this request may start (`--after`). */
+  readonly after?: readonly string[];
   readonly argv: readonly string[];
   readonly autoSpawn?: boolean;
   readonly background?: boolean;
@@ -357,6 +359,8 @@ const handleServerMessage = (
                 laneKey: message.laneKey,
                 position: message.position,
                 ticket: message.ticket,
+                ...(message.ahead === undefined ? {} : { ahead: message.ahead }),
+                ...(message.waitingFor === undefined ? {} : { waitingFor: message.waitingFor }),
                 ...(measuredEtaMs === undefined ? {} : { etaMs: measuredEtaMs }),
                 ...(waitEtaMs > 0 ? { waitEtaMs } : {}),
               }),
@@ -626,6 +630,9 @@ const streamBrokered = (
         ...(options.workspaceRoot === undefined ? {} : { workspaceRoot: options.workspaceRoot }),
         ...(options.background === true ? { background: true } : {}),
         ...(options.mergeStderr === true ? { mergeStderr: true } : {}),
+        ...(options.after === undefined || options.after.length === 0
+          ? {}
+          : { after: [...options.after] }),
       }),
     ).pipe(Effect.mapError((error) => mapOpenError(error, config.socketPath)));
 

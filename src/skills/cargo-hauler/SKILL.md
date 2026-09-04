@@ -42,6 +42,16 @@ clippy, fmt, nextest) or is waiting on someone else's cargo.
   `hauler_result` is for a point-in-time read and includes the live output
   tail while a run is still in progress. The dashboard drawer refreshes that
   tail every three seconds.
+- Lane order is by cost, not submission: a cheap queued test starts before an
+  expensive queued build even if you submitted the build first. When a test
+  (or `cargo run`) needs an artefact another ticket produces, submit the
+  build, then the test with `--after cc-N` — `hauler exec --after cc-N --
+  cargo test …`, `hauler request --after cc-N -- …`, or `after: ["cc-N"]`
+  on `hauler_request`. The dependent stays queued until every prerequisite
+  finishes, fails with `prerequisite cc-N failed` if one fails or is
+  killed, and is rejected if the ticket is unknown. Read the acknowledgement:
+  `queued behind cc-3281 (~13m)` means something ahead of you was reordered
+  in front; `waiting for cc-3281` means the dependency is holding it.
 - Triage a red ticket from its log, never by re-running it. The stored tail
   is bounded, but every run's whole output is on disk: `hauler result cc-N`
   prints `Full output: <path> (size)` (and `--json` carries

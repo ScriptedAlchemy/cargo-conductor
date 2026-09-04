@@ -20,6 +20,7 @@ import {
 } from './broker-metrics.js';
 import { DaemonConfig } from './config.js';
 import { CostModel } from './cost.js';
+import { makeDependencyRuntime } from './dependencies.js';
 import { createSystemIoSampler } from './disk-stats.js';
 import { TailBuffer } from './executor.js';
 import { normalizeCargoIntent } from './intent-normalizer.js';
@@ -71,7 +72,12 @@ export interface AttemptInput {
 export interface SubmitResult {
   readonly ticket: string;
   readonly laneKey: string;
+  /** Leaders expected to run before this one in its lane (running head included). */
   readonly position: number;
+  /** The tickets `position` counts, in expected run order. */
+  readonly ahead?: readonly string[];
+  /** Prerequisites (`after`) not yet settled; the request is queued but not schedulable. */
+  readonly waitingFor?: readonly string[];
   readonly attachedTo?: string;
   readonly attachMode?: AttachMode;
   /** Estimated remaining runtime for queued requests or their attached leader. */
@@ -160,6 +166,12 @@ export const BrokerLive: Layer.Layer<
       topology,
     });
     const attachments = lanesRuntime.attachments;
+    const dependencies = makeDependencyRuntime({
+      daemonScope,
+      directory,
+      failPendingJob: lanesRuntime.failPendingJob,
+      ledger,
+    });
 
     const recordRejectedIntent = (
       input: SubmitInput,
@@ -209,14 +221,25 @@ export const BrokerLive: Layer.Layer<
           );
 
     const submit = (
-      input: SubmitInput,
+      rawInput: SubmitInput,
       callbacks: SubmitCallbacks,
     ): Effect.Effect<SubmitResult, CargoIntentError> =>
       Effect.gen(function* () {
         const createdAtMs = Date.now();
         const workspaceRoot = yield* Effect.sync(
-          () => input.workspaceRoot ?? locateWorkspaceRoot(input.cwd, { argv: input.argv }),
+          () => rawInput.workspaceRoot ?? locateWorkspaceRoot(rawInput.cwd, { argv: rawInput.argv }),
         );
+        // `--after` names tickets the daemon must know; a typo is rejected
+        // like an unparseable command rather than silently waiting forever.
+        const prerequisites = yield* dependencies.resolve(rawInput.after).pipe(
+          Effect.mapError((error) => new CargoIntentError({ message: error.message })),
+          Effect.tapError((error) =>
+            Effect.uninterruptible(
+              recordRejectedIntent(rawInput, workspaceRoot, createdAtMs, error.message),
+            ),
+          ),
+        );
+        const input: SubmitInput = { ...rawInput, after: prerequisites.after };
         const normalized = yield* Effect.try({
           try: () =>
             normalizeCargoIntent({
@@ -271,6 +294,7 @@ export const BrokerLive: Layer.Layer<
               background: input.background === true,
               holdStop,
               estimateMs: estimate.estimateMs,
+              after: prerequisites.after,
             });
             const attachment = makeAttachment({
               id: created.id,
@@ -285,7 +309,13 @@ export const BrokerLive: Layer.Layer<
               tail: new TailBuffer(config.outputTailBytes),
               attachedAtMs: createdAtMs,
             });
-            const registered = yield* attachments.tryRegisterAttachment(laneKey, attachment);
+            // A blocked request never rides an in-flight run: that run
+            // started before the prerequisite finished, which is exactly the
+            // result the caller asked not to get.
+            const registered =
+              prerequisites.pending.length > 0
+                ? null
+                : yield* attachments.tryRegisterAttachment(laneKey, attachment);
             if (registered !== null) {
               yield* registerOwnership(callbacks, created.ticket);
               yield* attachments.completeAttachRegistration(
@@ -321,17 +351,24 @@ export const BrokerLive: Layer.Layer<
               yield* Ref.set(job.state, 'kill-requested');
               yield* Deferred.succeed(job.killSignal, undefined);
             }
-            const position = yield* lanesRuntime.enqueueJob(lane, job);
+            // Blocked before it is visible to the lane worker, watched once
+            // it is in the queue the watcher may have to drop it from.
+            yield* dependencies.block(job, prerequisites.pending);
+            const enqueuedPosition = yield* lanesRuntime.enqueueJob(lane, job);
+            yield* dependencies.watch(lane, job);
             // The client's auto-background decision needs the whole wall
             // time, not just this job's runtime (#55).
             const queued = yield* lanesRuntime.requestStatusFields(created.ticket, Date.now());
             return {
               ticket: created.ticket,
               laneKey,
-              position,
+              position: queued.queue?.position ?? enqueuedPosition,
               etaMs: job.estimateMs,
               etaSource: job.estimateSource,
-              ...(queued.queue === undefined ? {} : { waitEtaMs: queued.queue.waitEtaMs }),
+              ...(queued.queue === undefined
+                ? {}
+                : { ahead: queued.queue.aheadTickets, waitEtaMs: queued.queue.waitEtaMs }),
+              ...(prerequisites.pending.length === 0 ? {} : { waitingFor: prerequisites.pending }),
             };
           }),
         );
@@ -365,8 +402,17 @@ export const BrokerLive: Layer.Layer<
         return Effect.succeed(record);
       }
       const liveRecord = withLiveTail(record);
-      return lanesRuntime.requestStatusFields(record.ticket, atMs).pipe(
-        Effect.map((fields) => ({ ...liveRecord, ...fields })),
+      const entry = directory.get(record.ticket);
+      const blockedOn =
+        entry?.kind === 'leader' && entry.job.waitingFor.size > 0
+          ? dependencies.waitingFor(entry.job, atMs)
+          : Effect.succeed([]);
+      return Effect.all([lanesRuntime.requestStatusFields(record.ticket, atMs), blockedOn]).pipe(
+        Effect.map(([fields, waitingFor]) => ({
+          ...liveRecord,
+          ...fields,
+          ...(waitingFor.length === 0 ? {} : { waitingFor }),
+        })),
       );
     };
 

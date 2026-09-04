@@ -1,6 +1,12 @@
 import type { AgentLineage, AgentRequestContext } from '@agent-bundle/runtime';
 
-import type { KacheStatusReport, LaneStatus, RequestRecord, SystemLoadReport } from '../daemon/protocol.js';
+import type {
+  KacheStatusReport,
+  LaneStatus,
+  PrerequisiteContext,
+  RequestRecord,
+  SystemLoadReport,
+} from '../daemon/protocol.js';
 import type { DaemonHealth } from '../lib/daemon-health.js';
 import { formatBytes, formatMs, heavyCapNote, pathBasename, relativeTime, shortenPath } from '../lib/format.js';
 import type { StatusResult } from '../lib/protocol-schemas.js';
@@ -253,6 +259,8 @@ export const lineageLine = (model: LineageModel): string => {
 // Ticket card
 
 export interface TicketCardModel {
+  /** Prerequisites the request was submitted `--after`, e.g. `cc-3, cc-4`. */
+  readonly after: string | null;
   readonly attached: string | null;
   readonly command: string;
   readonly diagnosticsSummary: string | null;
@@ -281,6 +289,20 @@ const attachText = (record: RequestRecord): string | null => {
   return `rode ${record.attachedTo}${mode}${saved}`;
 };
 
+/** `cc-3 (running 2m/~5m)` or `cc-4 (queued)`: one unsettled prerequisite. */
+const prerequisiteText = (prerequisite: PrerequisiteContext): string => {
+  const progress = prerequisite.elapsedMs === undefined
+    ? prerequisite.status
+    : `running ${formatMs(prerequisite.elapsedMs)}${prerequisite.estimateMs === undefined ? '' : `/~${formatMs(prerequisite.estimateMs)}`}`;
+  return `${prerequisite.ticket} (${progress})`;
+};
+
+/** What a queued ticket is waiting on: prerequisites first (it has no lane position while blocked), then the lane. */
+export const waitsForText = (record: RequestRecord): string | null =>
+  record.waitingFor === undefined || record.waitingFor.length === 0
+    ? null
+    : `waits for ${record.waitingFor.map(prerequisiteText).join(', ')}`;
+
 const queueText = (record: RequestRecord): string | null => {
   const queue = record.queue;
   if (record.status !== 'queued') {
@@ -290,6 +312,7 @@ const queueText = (record: RequestRecord): string | null => {
     ? ''
     : ` behind ${queue.headTicket}${queue.headElapsedMs === undefined ? '' : ` (running ${formatMs(queue.headElapsedMs)})`}`;
   const parts = [
+    waitsForText(record),
     queue === undefined ? null : `${queue.position} ahead${head}, wait ~${formatMs(queue.waitEtaMs)}`,
     record.admissionHold === undefined ? null : `waiting: ${record.admissionHold.detail}`,
     record.delayed === true ? 'wait exceeds estimate — lane busy' : null,
@@ -322,6 +345,7 @@ const ranAs = (record: RequestRecord): string | null => {
 export const ticketCardModel = (record: RequestRecord, nowMs: number): TicketCardModel => {
   const who = [record.host, record.session].filter((part) => part !== null).join(' / ');
   return {
+    after: record.after.length === 0 ? null : record.after.join(', '),
     attached: attachText(record),
     command: commandText(record),
     diagnosticsSummary: diagnosticCounts(record),

@@ -179,6 +179,16 @@ export interface RequestDocumentProps extends Omit<DocumentProps<RequestSubmitRe
   readonly lineage: LineageModel | null;
 }
 
+/** `behind cc-3281 (2 ahead, wait ~13m)`, or null when the lane was idle or the request attached. */
+const requestQueueText = (result: RequestSubmitResult): string | null => {
+  const queue = result.queue;
+  if (queue === undefined || queue.ahead.length === 0) {
+    return null;
+  }
+  const wait = queue.waitEtaMs === undefined ? '' : `, wait ~${formatMs(queue.waitEtaMs)}`;
+  return `behind ${queue.ahead.join(', ')} (${queue.position} ahead${wait})`;
+};
+
 export const RequestDocument = ({ argv, lineage, names, result }: RequestDocumentProps) => (
   <Agent.Result value={documentValue(result)}>
     <Agent.Text>{result.summary}</Agent.Text>
@@ -193,10 +203,17 @@ export const RequestDocument = ({ argv, lineage, names, result }: RequestDocumen
             { label: 'Ticket', value: result.ticket },
             { label: 'Attributed to', value: `${result.attribution.host}${result.attribution.session === null ? '' : ` / ${result.attribution.session}`}` },
             { label: 'Lineage', value: lineage === null ? null : lineageLine(lineage) },
+            { label: 'Queue', value: requestQueueText(result) },
+            {
+              label: 'Waits for',
+              value: result.waitingFor === undefined || result.waitingFor.length === 0 ? null : result.waitingFor.join(', '),
+            },
           ]}
         />
         <Agent.Context>
-          {`Ticket ${result.ticket} is running in the background. Continue other work; when the session has a hold-stop ticket the stop hook waits for it. Retrieve with ${names.result} ${result.ticket}, or block with ${names.await} ${result.ticket}.`}
+          {result.waitingFor === undefined || result.waitingFor.length === 0
+            ? `Ticket ${result.ticket} is running in the background. Continue other work; when the session has a hold-stop ticket the stop hook waits for it. Retrieve with ${names.result} ${result.ticket}, or block with ${names.await} ${result.ticket}.`
+            : `Ticket ${result.ticket} is queued behind ${result.waitingFor.join(', ')} and starts once they finish; it fails with "prerequisite cc-N failed" if one of them fails or is killed. Retrieve with ${names.result} ${result.ticket}, or block with ${names.await} ${result.ticket}.`}
         </Agent.Context>
       </>
     )}

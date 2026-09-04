@@ -5,7 +5,7 @@ import * as Effect from 'effect/Effect';
 
 import { resolveDaemonConfig } from '../daemon/config.js';
 import type { DaemonConfigShape } from '../daemon/config.js';
-import { requestExpecting, requestOverSocket } from '../daemon/control.js';
+import { requestOverSocket } from '../daemon/control.js';
 import type {
   ConnectionClosedError,
   ControlTimeoutError,
@@ -145,6 +145,7 @@ const formatAwaitedRecord = (ticket: string, record: RequestRecord): string => {
         phase: 'queued',
         queue: record.queue,
         ticket,
+        waitingFor: record.waitingFor,
       });
     case 'running':
       return formatProgressLine({
@@ -253,15 +254,40 @@ export const awaitTicket = (
     })),
   );
 
-export const submitBackground = (
-  input: {
-    readonly argv: readonly string[];
-    readonly cwd: string;
-    readonly session?: string;
-    readonly host?: string;
-  },
+export interface BackgroundSubmitInput {
+  readonly argv: readonly string[];
+  readonly cwd: string;
+  readonly session?: string;
+  readonly host?: string;
+  /** Tickets that must settle before this request may start (`--after`). */
+  readonly after?: readonly string[];
+}
+
+/** The daemon's acknowledgement of a background submission, less the wire envelope. */
+export interface BackgroundSubmitAck {
+  readonly ticket: string;
+  /** Leaders expected to run before this one in its lane (running head included). */
+  readonly position: number;
+  /** The tickets `position` counts; absent when the daemon predates the field. */
+  readonly ahead?: readonly string[];
+  readonly waitEtaMs?: number;
+  /** Prerequisites still unsettled at submission. */
+  readonly waitingFor?: readonly string[];
+  /** Set when the request rode an in-flight run instead of queueing. */
+  readonly attachedTo?: string;
+}
+
+/**
+ * Submits a background request and returns the daemon's acknowledgement, or
+ * null when the connection ended without one. A daemon `error` line (an
+ * unparseable command, an unknown `--after` ticket) fails typed as
+ * `DaemonRejected` so the caller can show the reason instead of a generic
+ * "failed to submit".
+ */
+export const submitBackgroundAck = (
+  input: BackgroundSubmitInput,
   config: DaemonConfigShape = resolveDaemonConfig(),
-): Effect.Effect<string | null, TicketSocketError> =>
+): Effect.Effect<BackgroundSubmitAck | null, TicketSocketError> =>
   // Cold daemon must not mean "failed to submit": start it like exec does.
   ensureDaemonRunning(config).pipe(
     Effect.ignore,
@@ -269,23 +295,41 @@ export const submitBackground = (
       // No `holdStop`: the daemon's default for a background request is
       // false, the same as `exec --bg --session`. Background tickets never
       // hold a stop; the two entry points used to disagree.
-      requestExpecting(
+      requestReply(
+        config,
         {
-          message: {
-            argv: [...input.argv],
-            background: true,
-            cwd: input.cwd,
-            id: shortId(),
-            type: 'exec',
-            ...(input.host === undefined ? {} : { host: input.host }),
-            ...(input.session === undefined ? {} : { session: input.session }),
-          },
-          socketPath: config.socketPath,
-          timeoutMs: 5_000,
+          argv: [...input.argv],
+          background: true,
+          cwd: input.cwd,
+          id: shortId(),
+          type: 'exec',
+          ...(input.host === undefined ? {} : { host: input.host }),
+          ...(input.session === undefined ? {} : { session: input.session }),
+          ...(input.after === undefined || input.after.length === 0
+            ? {}
+            : { after: [...input.after] }),
         },
-        (message): message is AckMessage | ErrorMessage =>
-          message.type === 'ack' || message.type === 'error',
+        5_000,
+        (message): message is AckMessage => message.type === 'ack',
       ),
     ),
-    Effect.map((message) => (message?.type === 'ack' ? message.ticket : null)),
+    Effect.map((message): BackgroundSubmitAck | null =>
+      message === undefined
+        ? null
+        : {
+            ticket: message.ticket,
+            position: message.position,
+            ...(message.ahead === undefined ? {} : { ahead: message.ahead }),
+            ...(message.waitEtaMs === undefined ? {} : { waitEtaMs: message.waitEtaMs }),
+            ...(message.waitingFor === undefined ? {} : { waitingFor: message.waitingFor }),
+            ...(message.attachedTo === undefined ? {} : { attachedTo: message.attachedTo }),
+          },
+    ),
   );
+
+/** `submitBackgroundAck` reduced to the ticket, for callers that only need the id. */
+export const submitBackground = (
+  input: BackgroundSubmitInput,
+  config: DaemonConfigShape = resolveDaemonConfig(),
+): Effect.Effect<string | null, TicketSocketError> =>
+  submitBackgroundAck(input, config).pipe(Effect.map((ack) => ack?.ticket ?? null));

@@ -20,6 +20,19 @@ describe('parseExecArgv', () => {
     });
   });
 
+  it('collects --after prerequisites, repeated or comma-separated, deduplicated', () => {
+    expect(
+      parseExecArgv(['--after', 'cc-1,cc-2', '--after', 'cc-3', '--after', 'cc-1', '--bg', '--', 'cargo', 'test']),
+    ).toEqual({
+      after: ['cc-1', 'cc-2', 'cc-3'],
+      background: true,
+      cargoArgv: ['cargo', 'test'],
+    });
+    expect(parseExecArgv(['--', 'cargo', 'test'])).not.toHaveProperty('after');
+    expect(() => parseExecArgv(['--after', '--', 'cargo', 'test'])).toThrow(/--after requires a value/u);
+    expect(() => parseExecArgv(['--after', ',', '--', 'cargo', 'test'])).toThrow(/--after requires a value/u);
+  });
+
   it('rejects a missing cargo command, a missing flag value, and an unknown flag', () => {
     expect(() => parseExecArgv([])).toThrow(ExecUsageError);
     expect(() => parseExecArgv(['--session'])).toThrow(/--session requires a value/u);

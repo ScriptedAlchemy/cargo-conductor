@@ -115,8 +115,14 @@ describe('routed CLI', () => {
   it('requires the cargo argv after -- for request', async () => {
     // The live submit path is covered in routes.test.ts against a daemon; a
     // cold submit here would spawn `daemon run` from the test runner itself.
-    const run = await invokeCli(['request', '--session', 's-1']);
+    const run = await invokeCli(['request', '--session', 's-1', '--after', 'cc-1']);
     expect(run.exitCode).toBe(2);
     expect(run.stderr).toContain('argv');
+  });
+
+  it('documents --after on the request command', async () => {
+    const help = await invokeCli(['request', '--help']);
+    expect(help.exitCode).toBe(0);
+    expect(help.stdout).toContain('--after');
   });
 });

@@ -6,6 +6,7 @@ import { formatMs, relativeTime, shortenPath } from '../lib/format.js';
 import { commandText, elapsedMs } from './headlines.js';
 import { Heading, Table } from './primitives.js';
 import { EmptyState } from './states.js';
+import { waitsForText } from './view-models.js';
 
 export interface TicketListProps {
   readonly empty?: string;
@@ -18,8 +19,13 @@ const outcome = (record: RequestRecord, nowMs: number): string => {
   const elapsed = elapsedMs(record, nowMs);
   const timing = elapsed === null ? '' : ` ${formatMs(elapsed)}`;
   switch (record.status) {
-    case 'queued':
+    case 'queued': {
+      const waits = waitsForText(record);
+      if (waits !== null) {
+        return `queued${timing} · ${waits}`;
+      }
       return record.queue === undefined ? `queued${timing}` : `queued${timing} · ${record.queue.position} ahead`;
+    }
     case 'running': {
       const estimate = record.estimateMs === null ? '' : ` / ~${formatMs(record.estimateMs)}`;
       const stalled = record.stall === undefined ? '' : ` · stalled ${formatMs(record.stall.idleMs)}`;

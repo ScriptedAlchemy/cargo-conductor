@@ -127,6 +127,21 @@ describe('hauler script', () => {
     );
   });
 
+  it('passes --after prerequisites to the exec client and documents the flag', async () => {
+    let seen: RunExecOptions | undefined;
+    const result = await run(['exec', '--after', 'cc-3281,cc-3282', '--bg', '--', 'cargo', 'test', '-p', 'alpha'], {
+      runExec: (options) => {
+        seen = options;
+        return Effect.succeed({ exitCode: 0, mode: 'brokered', ticket: 'cc-3289' });
+      },
+    });
+    expect(result.code).toBe(0);
+    expect(seen?.after).toEqual(['cc-3281', 'cc-3282']);
+    expect(seen?.background).toBe(true);
+    const usage = await run(['--help']);
+    expect(usage.text).toContain('--after');
+  });
+
   it('resolves a relative --cwd against the caller, not the daemon', async () => {
     let seen: RunExecOptions | undefined;
     await run(['exec', '--cwd', 'crates/alpha', '--', 'cargo', 'check'], {

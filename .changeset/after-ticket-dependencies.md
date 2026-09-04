@@ -1,0 +1,5 @@
+---
+'cargo-hauler': patch
+---
+
+Add `--after <ticket>[,<ticket>…]` to `hauler exec` and `hauler request` (and `after: string[]` on `hauler_request`) to declare explicit ticket dependencies: the request stays `queued` — skipped by lane admission and batch folding — until every named ticket has settled, fails with `prerequisite cc-N failed`/`killed` (exit code `null`) if one of them does, resolves at once when they already finished, and is rejected as a `bad-intent` error naming an unknown ticket. Prerequisites may live in another lane; the ledger stores them (`after` on every request record) and `hauler status`/`hauler result`/await heartbeats show `waits for cc-N (running 2m/~5m)` while a dependent is held. The `exec --bg` and `request` acknowledgements now name the tickets ahead in the lane (`queued behind cc-3281 (~13m)`, `ahead` on the ack and `queue` on the request result) so a cost-ordered reorder is visible, and `hauler request` reports the daemon's rejection reason instead of a generic submit failure. (#45)
