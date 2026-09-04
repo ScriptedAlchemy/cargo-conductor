@@ -1,10 +1,9 @@
 import { Agent } from '@agent-bundle/runtime';
 import React from 'react';
 
-import { orphanedByRestartError, type RequestRecord } from '../daemon/protocol.js';
+import { awaitCeilingMs, orphanedByRestartError, type RequestRecord } from '../daemon/protocol.js';
 import { formatMs } from '../lib/format.js';
 import { documentValue } from '../lib/json.js';
-import { awaitMaxWaitMs } from '../lib/protocol-schemas.js';
 import type {
   AwaitResult,
   KillResult,
@@ -164,7 +163,7 @@ export const AwaitDocument = ({
     {result.request === null ? null : <TicketCard nowMs={nowMs} record={result.request} />}
     {result.timedOut ? (
       <Agent.Context>
-        {`The ${formatMs(maxWaitMs)} wait expired before ${result.ticket} finished. Call ${names.await} again (each call waits up to ${formatMs(awaitMaxWaitMs)}) rather than polling ${names.result} in a tight loop.`}
+        {`The ${formatMs(maxWaitMs)} wait expired before ${result.ticket} finished. Call ${names.await} again (each call waits up to ${formatMs(awaitCeilingMs)}) rather than polling ${names.result} in a tight loop.`}
       </Agent.Context>
     ) : result.request === null ? (
       <TicketNotKnown names={names} ticket={result.ticket} />

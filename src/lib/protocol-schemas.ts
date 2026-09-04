@@ -373,28 +373,17 @@ export const daemonResultSchema = z
   .strict() satisfies z.ZodType<DaemonResult>;
 
 /**
- * Ceiling for one rendered `await` call (CLI or MCP tool). Every rendered
- * route runs inside the framework's 60 s render session
- * (`DEFAULT_AGENT_RENDER_LIMITS.maxElapsedMs`); a longer wait throws
- * `elapsed-time-exceeded` at emit and the caller loses the result it waited
- * for (#32). The margin covers the snapshot fetch before the wait and the
- * final emit after it. Callers wanting longer wait in a loop of calls; the
- * daemon-side `awaitCeilingMs` (2 h) still governs the wire and the hook
- * stop-hold, which do not render.
+ * One `await` call waits up to the daemon's own ceiling (`awaitCeilingMs`,
+ * 2 h): the rendered routes declare a matching `config.render.maxElapsedMs`
+ * (agent-bundle#454), so the wire is the only bound. Callers wanting longer
+ * call again.
  */
-export const awaitMaxWaitMs = 55_000;
+export const awaitMaxWaitMessage = `maxWaitMs is capped at ${awaitCeilingMs} ms (2 h) per call — the daemon's await ceiling; call await again to keep waiting`;
 
 export const ticketInputSchema = z
   .object({
     ticket: z.string().min(1),
-    maxWaitMs: z
-      .number()
-      .int()
-      .min(0)
-      .max(awaitMaxWaitMs, {
-        message: `maxWaitMs is capped at ${awaitMaxWaitMs} ms (55 s) per call — the rendered-route budget; call await again to keep waiting`,
-      })
-      .optional(),
+    maxWaitMs: z.number().int().min(0).max(awaitCeilingMs, { message: awaitMaxWaitMessage }).optional(),
   })
   .strict();
 
@@ -474,8 +463,9 @@ export const ticketLineageSchema = z
     depth: z.number().int().nonnegative(),
     parent: z.string().optional(),
     // Mirrors the runtime's AgentLineageResolution; `confirmed` is a registry
-    // edge the host itself named (Claude's Agent PostToolUse, agent-bundle#486).
-    resolution: z.enum(['native', 'registry', 'confirmed', 'inferred']),
+    // edge the host itself named (Claude's Agent PostToolUse, agent-bundle#486),
+    // `transcript` one read back from the host's transcript (agent-bundle#457).
+    resolution: z.enum(['native', 'registry', 'confirmed', 'transcript', 'inferred']),
     root: z.string(),
   })
   .strict();

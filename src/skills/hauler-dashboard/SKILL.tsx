@@ -1,3 +1,4 @@
+import { version } from 'agent-bundle/meta';
 import React from 'react';
 
 import { cliSurface, mcpSurface } from '../../components/surface.js';
@@ -6,10 +7,8 @@ import { APP_RESOURCE_URI } from '../../constants.js';
 /**
  * Rendered skill: the build turns this component into `skills/hauler-dashboard/SKILL.md`
  * for every host. It is computed from the same sources the plugin ships — the
- * MCP App resource URI and the tool and CLI spellings — so the document cannot
- * drift from the surface it describes. (The release version is deliberately
- * not printed: the Skill renderer evaluates this module outside the compiler,
- * where `agent-bundle/meta` is unavailable — agent-bundle#440.)
+ * release version, the MCP App resource URI, and the tool and CLI spellings —
+ * so the document cannot drift from the surface it describes.
  */
 export const frontmatter = {
   description:
@@ -23,8 +22,8 @@ export default () => (
   <>
     <h1>hauler-dashboard</h1>
     <p>
-      Use the dashboard for machine-wide fleet state. Use the <code>cargo-hauler</code> Skill for submitting,
-      scoping, or waiting on work.
+      Use the dashboard for machine-wide fleet state (cargo-hauler {version}). Use the <code>cargo-hauler</code>{' '}
+      Skill for submitting, scoping, or waiting on work.
     </p>
     <h2>Open it</h2>
     <ul>
@@ -34,10 +33,10 @@ export default () => (
         badge, admission meter, lane board, in-flight and recent tickets, and kache summary.
       </li>
       <li>
-        <strong>Plain browser:</strong> from the plugin checkout run <code>pnpm run dev</code> and open the
-        Workbench's MCP page. It binds a session to the generated <code>hauler</code> server and previews{' '}
-        <code>{APP_RESOURCE_URI}</code> over that session, so the panels show the daemon's own data and poll
-        every five seconds.
+        <strong>Plain browser:</strong> run <code>hauler dashboard</code>. It serves the App standalone against
+        the plugin's own <code>hauler</code> server, opens it, and stays in the foreground until Ctrl-C; the panels
+        show the daemon's own data and poll every five seconds. From the plugin checkout, <code>pnpm run dev</code>{' '}
+        and the Workbench's MCP page preview <code>{APP_RESOURCE_URI}</code> the same way.
       </li>
     </ul>
     <h2>Read the panels</h2>

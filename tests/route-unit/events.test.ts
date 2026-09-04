@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'effect-rstest';
-import { expectDocument, renderRoute } from 'agent-bundle/test';
-import type { AgentEventRouteProps, CanonicalAgentEvent } from 'agent-bundle';
+import { createEventRouteInput, expectDocument, renderRoute } from 'agent-bundle/test';
+import type { CanonicalAgentEvent } from 'agent-bundle';
 import * as Effect from 'effect/Effect';
 
 import { scopedDaemon } from '../harness.js';
@@ -14,22 +14,24 @@ import { withIsolatedStateDir, withStateDir } from './support.js';
  * the event surface) and must never fail a session over a missing daemon.
  */
 
-/** The `{ canonical, native }` props an event route receives, as the harness spells them. */
-const eventInput = (
-  event: CanonicalAgentEvent,
+/** The envelope fields every host sends on every hook (and every tool hook), beside what a case names. */
+const baseEnvelope = (event: CanonicalAgentEvent): Record<string, unknown> => ({
+  cwd: '/tmp/ws',
+  transcript_path: '/tmp/transcript.json',
+  ...(event.startsWith('tool/') ? { tool_use_id: 'toolu_route_unit' } : {}),
+});
+
+/**
+ * The `{ canonical, native }` props an event route receives: the envelope
+ * validated and projected onto the family's canonical payload exactly as the
+ * generated wrapper does it (agent-bundle#466).
+ */
+const eventInput = <E extends CanonicalAgentEvent>(
+  event: E,
   host: 'claude' | 'cursor',
   nativeEvent: string,
   native: Record<string, unknown>,
-): Omit<AgentEventRouteProps, 'signal'> => ({
-  canonical: {
-    event,
-    idempotencyKey: `route-unit-${event}-${host}`,
-    observedAt: '2026-09-03T00:00:00.000Z',
-    provenance: { host, hostContractRevision: 'route-unit', nativeEvent, source: 'native' },
-    sequence: 1,
-  },
-  native,
-});
+) => createEventRouteInput(event, { ...baseEnvelope(event), ...native }, { host, nativeEvent });
 
 describe('session/start daemon notice', () => {
   it('tells a new session the daemon is stopped and how it starts', async () => {
@@ -214,6 +216,7 @@ describe('tool/before cargo nudge', () => {
         input: eventInput('stop', 'claude', 'Stop', {
           cwd: '/tmp/ws',
           hook_event_name: 'Stop',
+          last_assistant_message: 'done',
           session_id: 'sess-8',
           stop_hook_active: false,
         }),

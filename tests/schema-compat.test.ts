@@ -1,11 +1,9 @@
-import { DEFAULT_AGENT_RENDER_LIMITS } from '@agent-bundle/runtime';
 import { describe, expect, it } from 'effect-rstest';
 
 import { inputSchema as cliAwaitInputSchema } from '../src/cli/await.js';
 import { inputSchema as cliStatusInputSchema } from '../src/cli/status.js';
-import { requestStatuses } from '../src/daemon/protocol.js';
+import { awaitCeilingMs, requestStatuses } from '../src/daemon/protocol.js';
 import {
-  awaitMaxWaitMs,
   awaitResultSchema,
   requestRecordSchema,
   resultFetchResultSchema,
@@ -615,22 +613,13 @@ describe('schema forward compatibility (issue #4)', () => {
 });
 
 describe('await wait ceiling (issues #3, #32)', () => {
-  it('bounds one rendered await under the framework render session budget', () => {
-    // Every rendered route (CLI and MCP) runs inside a 60 s render session;
-    // a wait past it throws `elapsed-time-exceeded` at emit and the caller
-    // loses the result it waited for (#32). Leave margin for the snapshot
-    // fetch and the final emit.
-    expect(awaitMaxWaitMs).toBeLessThanOrEqual(DEFAULT_AGENT_RENDER_LIMITS.maxElapsedMs - 5_000);
-    expect(ticketInputSchema.parse({ maxWaitMs: awaitMaxWaitMs, ticket: 'cc-1' }).maxWaitMs).toBe(
-      awaitMaxWaitMs,
-    );
-    expect(() => ticketInputSchema.parse({ maxWaitMs: awaitMaxWaitMs + 1, ticket: 'cc-1' })).toThrow();
-  });
-
-  it('applies the same ceiling to the CLI await route', () => {
-    expect(cliAwaitInputSchema.parse({ maxWaitMs: awaitMaxWaitMs, ticket: 'cc-1' }).maxWaitMs).toBe(
-      awaitMaxWaitMs,
-    );
-    expect(() => cliAwaitInputSchema.parse({ maxWaitMs: 90_000, ticket: 'cc-1' })).toThrow();
+  it('bounds one await at the daemon ceiling on the MCP and CLI routes alike', () => {
+    // The routes declare their own render budget (agent-bundle#454), so the
+    // daemon's wire ceiling is the only bound on one call; `tests/await-budget.test.ts`
+    // holds the budget to it.
+    expect(ticketInputSchema.parse({ maxWaitMs: awaitCeilingMs, ticket: 'cc-1' }).maxWaitMs).toBe(awaitCeilingMs);
+    expect(() => ticketInputSchema.parse({ maxWaitMs: awaitCeilingMs + 1, ticket: 'cc-1' })).toThrow();
+    expect(cliAwaitInputSchema.parse({ maxWaitMs: awaitCeilingMs, ticket: 'cc-1' }).maxWaitMs).toBe(awaitCeilingMs);
+    expect(() => cliAwaitInputSchema.parse({ maxWaitMs: awaitCeilingMs + 1, ticket: 'cc-1' })).toThrow();
   });
 });

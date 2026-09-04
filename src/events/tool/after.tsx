@@ -3,7 +3,7 @@ import type { AgentEventRouteConfig, AgentEventRouteProps } from 'agent-bundle';
 import React from 'react';
 
 import { handleAfterShell } from '../../hooks/after-shell.js';
-import { afterShellEventFrom, decisionValue, hookContextFrom } from '../../lib/event-support.js';
+import { decisionValue, shellEventFrom } from '../../lib/event-support.js';
 
 export const config = {
   // The portable playground target defines no hooks; events ship with the plugin hosts.
@@ -14,8 +14,9 @@ export const config = {
   tools: ['shell'],
 } satisfies AgentEventRouteConfig;
 
-export default async function AfterShellTool({ canonical, native }: AgentEventRouteProps) {
-  const result = await handleAfterShell(afterShellEventFrom(native), hookContextFrom(canonical, native));
+export default async function AfterShellTool({ canonical }: AgentEventRouteProps<'tool/after'>) {
+  const { host, nativeEvent } = canonical.provenance;
+  const result = await handleAfterShell(shellEventFrom(canonical.payload), { nativeEvent, target: host });
   return (
     <Agent.Result value={decisionValue(result)}>
       {result.additionalContext === undefined ? null : <Agent.Context>{result.additionalContext}</Agent.Context>}

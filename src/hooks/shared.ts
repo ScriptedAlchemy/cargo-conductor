@@ -10,7 +10,6 @@ export { isRecord, countWord };
 
 export interface HookContext {
   readonly nativeEvent?: string;
-  readonly nativeInput?: Readonly<Record<string, unknown>>;
   readonly target?: string;
 }
 

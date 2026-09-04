@@ -9,9 +9,8 @@ import { agentBundleRstest } from 'agent-bundle/rstest';
  * with the package identity instead of raising `AB4760`.
  *
  * Only that alias is adopted. The preset's `react-server` pool conditions are
- * for the route-unit level (`rstest.route-unit.config.ts`); this pool also
- * runs the compiler in-process (`tests/workbench-surface.test.ts`), whose
- * rendered-skill pass needs React's client build.
+ * for the route-unit level (`rstest.route-unit.config.ts`), which also hosts
+ * the workbench-surface proof.
  */
 const { resolve } = await agentBundleRstest();
 
