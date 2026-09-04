@@ -105,6 +105,19 @@ export interface MetricsWindowsReport {
   readonly all: MetricsWindowReport;
 }
 
+export interface LedgerRetentionOptions {
+  readonly nowMs: number;
+  /** Terminal rows finished (or created) more than this many days ago are deleted; 0 disables. */
+  readonly retentionDays: number;
+  /** Oldest terminal rows beyond this many total rows are deleted; 0 disables. */
+  readonly maxRows: number;
+}
+
+export interface LedgerRetentionReport {
+  readonly requests: number;
+  readonly transitions: number;
+}
+
 export interface LedgerApi {
   readonly createRequest: (
     input: CreateRequestInput,
@@ -150,6 +163,13 @@ export interface LedgerApi {
   readonly activeStatusRequests: () => Effect.Effect<readonly RequestRecord[]>;
   readonly transitionsFor: (id: number) => Effect.Effect<readonly TransitionRecord[]>;
   readonly reapOrphans: (atMs: number, error: string) => Effect.Effect<number>;
+  /**
+   * Startup retention pass: deletes terminal requests past the age or row
+   * limit and the transitions that no longer have a request, in one transaction.
+   */
+  readonly pruneRetention: (
+    options: LedgerRetentionOptions,
+  ) => Effect.Effect<LedgerRetentionReport>;
   readonly attachmentSavings: () => Effect.Effect<AttachmentSavingsReport>;
   readonly metricsWindow: (sinceMs: number | null) => Effect.Effect<MetricsWindowReport>;
   /** One cached scan supplies all dashboard windows. */
@@ -227,6 +247,8 @@ const columnMigrations: readonly (readonly [column: string, ddl: string])[] = [
 ];
 
 const activeStatusFilter = "status IN ('requested', 'queued', 'running')";
+const terminalStatusFilter =
+  "status IN ('done', 'failed', 'killed', 'denied', 'passthrough')";
 
 /**
  * Terminal rows are never reopened. Attach and running writes can trail a
@@ -355,39 +377,76 @@ const selectRequestById = (statement: StatementSync, id: number): RequestRecord 
 };
 
 /**
+ * Runs `body` inside `BEGIN IMMEDIATE … COMMIT`, rolling back on any throw.
+ * Nested calls join the enclosing transaction so callers can compose writes.
+ */
+const inTransaction = <A>(db: DatabaseSync, body: () => A): A => {
+  if (db.isTransaction) {
+    return body();
+  }
+  db.exec('BEGIN IMMEDIATE');
+  let result: A;
+  try {
+    result = body();
+  } catch (error) {
+    try {
+      db.exec('ROLLBACK');
+    } catch {
+      // The failure that reached us is the one worth reporting.
+    }
+    throw error;
+  }
+  db.exec('COMMIT');
+  return result;
+};
+
+/**
+ * `PRAGMA user_version` of a ledger whose one-time data migrations have run.
+ * Version 1: attachment savings backfilled for riders settled before the
+ * savings columns existed.
+ */
+export const ledgerUserVersion = 1;
+
+const readUserVersion = (db: DatabaseSync): number =>
+  toNumber(db.prepare('PRAGMA user_version').get()?.user_version ?? 0);
+
+/**
+ * Leader lookup goes through the rowid index (`l.id = CAST(substr(...))`)
+ * rather than `'cc-' || l.id = f.attached_to`, which forced a full scan of
+ * `l` for every rider.
+ */
+export const backfillAttachmentSavingsSelect = `SELECT f.id,
+       f.attach_mode,
+       f.estimate_ms,
+       f.created_at_ms,
+       f.finished_at_ms,
+       l.run_ms AS leader_run_ms
+FROM requests f
+LEFT JOIN requests l ON l.id = CAST(substr(f.attached_to, 4) AS INTEGER)
+WHERE f.attached_to IS NOT NULL
+  AND f.saved_compute_ms IS NULL
+  AND f.status IN ('done', 'failed')
+  AND f.finished_at_ms IS NOT NULL
+  AND f.estimate_ms IS NOT NULL
+  AND f.attach_mode IN ('identity', 'coverage', 'batch')`;
+
+/**
  * Older ledgers predate settlement-time savings columns. Their served rider
  * rows still contain the same counterfactual inputs, so backfill once instead
- * of showing zero forever after an upgrade.
+ * of showing zero forever after an upgrade. Gated on `user_version` so the
+ * scan runs a single time per database, not on every open.
  */
 const backfillAttachmentSavings = (db: DatabaseSync): void => {
-  const rows = db
-    .prepare(
-      `SELECT f.id,
-              f.attach_mode,
-              f.estimate_ms,
-              f.created_at_ms,
-              f.finished_at_ms,
-              l.run_ms AS leader_run_ms
-       FROM requests f
-       LEFT JOIN requests l ON ('cc-' || l.id) = f.attached_to
-       WHERE f.attached_to IS NOT NULL
-         AND f.saved_compute_ms IS NULL
-         AND f.status IN ('done', 'failed')
-         AND f.finished_at_ms IS NOT NULL
-         AND f.estimate_ms IS NOT NULL
-         AND f.attach_mode IN ('identity', 'coverage', 'batch')`,
-    )
-    .all() as readonly Row[];
-  if (rows.length === 0) {
+  if (readUserVersion(db) >= ledgerUserVersion) {
     return;
   }
-  const update = db.prepare(
-    `UPDATE requests
-     SET saved_compute_ms = ?, saved_compute_source = ?, saved_latency_ms = ?
-     WHERE id = ? AND saved_compute_ms IS NULL`,
-  );
-  db.exec('BEGIN IMMEDIATE');
-  try {
+  inTransaction(db, () => {
+    const rows = db.prepare(backfillAttachmentSavingsSelect).all() as readonly Row[];
+    const update = db.prepare(
+      `UPDATE requests
+       SET saved_compute_ms = ?, saved_compute_source = ?, saved_latency_ms = ?
+       WHERE id = ? AND saved_compute_ms IS NULL`,
+    );
     for (const row of rows) {
       const savings = calculateServedSavings(
         toText(row.attach_mode) as AttachMode,
@@ -403,11 +462,8 @@ const backfillAttachmentSavings = (db: DatabaseSync): void => {
         toNumber(row.id),
       );
     }
-    db.exec('COMMIT');
-  } catch (error) {
-    db.exec('ROLLBACK');
-    throw error;
-  }
+    db.exec(`PRAGMA user_version = ${ledgerUserVersion}`);
+  });
 };
 
 /**
@@ -667,6 +723,38 @@ export const createLedgerApi = (db: DatabaseSync): LedgerApi => {
   const updateOrphan = db.prepare(
     'UPDATE requests SET status = ?, finished_at_ms = ?, error = ? WHERE id = ?',
   );
+  // A row finishes after it is created, so the indexed created_at_ms bound
+  // never changes the result; it only lets the planner skip newer rows.
+  const deleteExpiredRequests = db.prepare(
+    `DELETE FROM requests
+     WHERE ${terminalStatusFilter}
+       AND created_at_ms < ?
+       AND COALESCE(finished_at_ms, created_at_ms) < ?`,
+  );
+  // The M-th newest row bounds what stays; NULL (fewer than M rows) matches nothing.
+  const deleteSurplusRequests = db.prepare(
+    `DELETE FROM requests
+     WHERE ${terminalStatusFilter}
+       AND id < (SELECT id FROM requests ORDER BY id DESC LIMIT 1 OFFSET ?)`,
+  );
+  const deleteOrphanedTransitions = db.prepare(
+    'DELETE FROM transitions WHERE request_id NOT IN (SELECT id FROM requests)',
+  );
+
+  const pruneRetention = (options: LedgerRetentionOptions): LedgerRetentionReport =>
+    inTransaction(db, () => {
+      let requests = 0;
+      if (Number.isFinite(options.retentionDays) && options.retentionDays > 0) {
+        const cutoffMs = options.nowMs - options.retentionDays * 86_400_000;
+        requests += Number(deleteExpiredRequests.run(cutoffMs, cutoffMs).changes);
+      }
+      if (Number.isInteger(options.maxRows) && options.maxRows > 0) {
+        requests += Number(deleteSurplusRequests.run(options.maxRows - 1).changes);
+      }
+      const transitions =
+        requests === 0 ? 0 : Number(deleteOrphanedTransitions.run().changes);
+      return { requests, transitions };
+    });
 
   const withAllModes = (
     rows: readonly AttachmentSavingsModeReport[],
@@ -897,9 +985,8 @@ export const createLedgerApi = (db: DatabaseSync): LedgerApi => {
         const parsed = parsePassthroughSpoolRecord(line);
         return parsed === null ? [] : [parsed];
       });
-    let inserted = 0;
-    db.exec('BEGIN IMMEDIATE');
-    try {
+    const inserted = inTransaction(db, () => {
+      let count = 0;
       for (const record of records) {
         if (selectAttemptBySource.get(record.id) !== undefined) {
           continue;
@@ -914,103 +1001,115 @@ export const createLedgerApi = (db: DatabaseSync): LedgerApi => {
           sourceAttemptId: record.id,
           status: 'passthrough',
         });
-        inserted += 1;
+        count += 1;
       }
-      db.exec('COMMIT');
-    } catch (cause) {
-      db.exec('ROLLBACK');
-      throw cause;
-    }
+      return count;
+    });
     rmSync(drainPath, { force: true });
     return inserted;
   };
 
+  // Every status change is a request row write plus a transitions row; the
+  // pair commits or rolls back together so a crash between them cannot leave
+  // a request whose history disagrees with its status.
   return {
     createRequest: (input) =>
-      Effect.sync(() => {
-        const result = insertRequest.run(
-          input.createdAtMs,
-          input.session,
-          input.host,
-          input.cwd,
-          input.workspaceRoot,
-          input.targetDir,
-          input.laneKey,
-          JSON.stringify(input.argv),
-          input.intentKey,
-          input.intentJson,
-          'requested',
-          input.background === true ? 1 : 0,
-          input.holdStop === true ? 1 : 0,
-          input.estimateMs ?? null,
-        );
-        const id = Number(result.lastInsertRowid);
-        recordTransition(insertTransition, id, input.createdAtMs, null, 'requested');
-        return { id, ticket: formatTicket(id) };
-      }),
+      Effect.sync(() =>
+        inTransaction(db, () => {
+          const result = insertRequest.run(
+            input.createdAtMs,
+            input.session,
+            input.host,
+            input.cwd,
+            input.workspaceRoot,
+            input.targetDir,
+            input.laneKey,
+            JSON.stringify(input.argv),
+            input.intentKey,
+            input.intentJson,
+            'requested',
+            input.background === true ? 1 : 0,
+            input.holdStop === true ? 1 : 0,
+            input.estimateMs ?? null,
+          );
+          const id = Number(result.lastInsertRowid);
+          recordTransition(insertTransition, id, input.createdAtMs, null, 'requested');
+          return { id, ticket: formatTicket(id) };
+        }),
+      ),
 
     markQueued: (id, atMs) =>
-      Effect.sync(() => {
-        updateQueued.run('queued', atMs, id);
-        recordTransition(insertTransition, id, atMs, 'requested', 'queued');
-      }),
+      Effect.sync(() =>
+        inTransaction(db, () => {
+          updateQueued.run('queued', atMs, id);
+          recordTransition(insertTransition, id, atMs, 'requested', 'queued');
+        }),
+      ),
 
     markRunning: (id, atMs, execArgv) =>
-      Effect.sync(() => {
-        const result = updateRunning.run(
-          'running',
-          atMs,
-          atMs,
-          atMs,
-          execArgv === undefined ? null : JSON.stringify(execArgv),
-          id,
-        );
-        if (result.changes > 0) {
-          recordTransition(insertTransition, id, atMs, 'queued', 'running');
-        }
-      }),
+      Effect.sync(() =>
+        inTransaction(db, () => {
+          const result = updateRunning.run(
+            'running',
+            atMs,
+            atMs,
+            atMs,
+            execArgv === undefined ? null : JSON.stringify(execArgv),
+            id,
+          );
+          if (result.changes > 0) {
+            recordTransition(insertTransition, id, atMs, 'queued', 'running');
+          }
+        }),
+      ),
 
     markAttached: (id, input) =>
-      Effect.sync(() => {
-        const fromStatus = readStatus(selectStatus, id);
-        const result = updateAttached.run(input.leaderTicket, input.mode, id);
-        if (result.changes > 0 && fromStatus !== 'queued') {
-          recordTransition(insertTransition, id, input.atMs, fromStatus, 'queued');
-        }
-      }),
+      Effect.sync(() =>
+        inTransaction(db, () => {
+          const fromStatus = readStatus(selectStatus, id);
+          const result = updateAttached.run(input.leaderTicket, input.mode, id);
+          if (result.changes > 0 && fromStatus !== 'queued') {
+            recordTransition(insertTransition, id, input.atMs, fromStatus, 'queued');
+          }
+        }),
+      ),
 
     markRequeued: (id, atMs) =>
-      Effect.sync(() => {
-        const fromStatus = readStatus(selectStatus, id);
-        updateRequeued.run(atMs, id);
-        recordTransition(insertTransition, id, atMs, fromStatus, 'queued');
-      }),
+      Effect.sync(() =>
+        inTransaction(db, () => {
+          const fromStatus = readStatus(selectStatus, id);
+          updateRequeued.run(atMs, id);
+          recordTransition(insertTransition, id, atMs, fromStatus, 'queued');
+        }),
+      ),
 
     markFinished: (id, input) =>
-      Effect.sync(() => {
-        const fromStatus = readStatus(selectStatus, id);
-        updateFinished.run(
-          input.status,
-          input.atMs,
-          input.atMs,
-          input.exitCode ?? null,
-          input.signal ?? null,
-          input.outputTail ?? null,
-          input.error ?? null,
-          input.errorCount ?? null,
-          input.warningCount ?? null,
-          input.diagnostics == null ? null : JSON.stringify(input.diagnostics),
-          input.savedComputeMs ?? null,
-          input.savedComputeSource ?? null,
-          input.savedLatencyMs ?? null,
-          id,
-        );
-        recordTransition(insertTransition, id, input.atMs, fromStatus, input.status);
-      }),
+      Effect.sync(() =>
+        inTransaction(db, () => {
+          const fromStatus = readStatus(selectStatus, id);
+          updateFinished.run(
+            input.status,
+            input.atMs,
+            input.atMs,
+            input.exitCode ?? null,
+            input.signal ?? null,
+            input.outputTail ?? null,
+            input.error ?? null,
+            input.errorCount ?? null,
+            input.warningCount ?? null,
+            input.diagnostics == null ? null : JSON.stringify(input.diagnostics),
+            input.savedComputeMs ?? null,
+            input.savedComputeSource ?? null,
+            input.savedLatencyMs ?? null,
+            id,
+          );
+          recordTransition(insertTransition, id, input.atMs, fromStatus, input.status);
+        }),
+      ),
 
     markDetached: (id) => Effect.sync(() => toNumber(updateDetached.run(id).changes) > 0),
 
-    recordAttempt: (input) => Effect.sync(() => insertAttempt(input)),
+    recordAttempt: (input) => Effect.sync(() => inTransaction(db, () => insertAttempt(input))),
 
     ingestPassthroughSpool: (stateDir) => Effect.sync(() => ingestPassthroughSpool(stateDir)),
 
@@ -1073,21 +1172,25 @@ export const createLedgerApi = (db: DatabaseSync): LedgerApi => {
       Effect.sync(() => selectTransitions.all(id).map(toTransitionRecord)),
 
     reapOrphans: (atMs, error) =>
-      Effect.sync(() => {
-        const orphans = selectOrphans.all();
-        for (const row of orphans) {
-          const id = toNumber(row.id);
-          updateOrphan.run('killed', atMs, error, id);
-          recordTransition(
-            insertTransition,
-            id,
-            atMs,
-            toText(row.status) as RequestStatus,
-            'killed',
-          );
-        }
-        return orphans.length;
-      }),
+      Effect.sync(() =>
+        inTransaction(db, () => {
+          const orphans = selectOrphans.all();
+          for (const row of orphans) {
+            const id = toNumber(row.id);
+            updateOrphan.run('killed', atMs, error, id);
+            recordTransition(
+              insertTransition,
+              id,
+              atMs,
+              toText(row.status) as RequestStatus,
+              'killed',
+            );
+          }
+          return orphans.length;
+        }),
+      ),
+
+    pruneRetention: (options) => Effect.sync(() => pruneRetention(options)),
 
     attachmentSavings: () => Effect.sync(() => attachmentSavings()),
 
@@ -1107,6 +1210,18 @@ export const LedgerLive: Layer.Layer<Ledger, never, DaemonConfig> = Layer.effect
           database.close();
         }),
     );
-    return createLedgerApi(db);
+    const ledger = createLedgerApi(db);
+    // Retention runs once per daemon start; the ledger only grows between them.
+    const pruned = yield* ledger.pruneRetention({
+      nowMs: Date.now(),
+      retentionDays: config.ledgerRetentionDays,
+      maxRows: config.ledgerMaxRows,
+    });
+    if (pruned.requests > 0) {
+      yield* Effect.logInfo(
+        `ledger retention removed ${pruned.requests} requests and ${pruned.transitions} transitions`,
+      );
+    }
+    return ledger;
   }),
 );

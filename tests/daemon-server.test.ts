@@ -130,6 +130,70 @@ describe('daemon connection output buffering', () => {
   });
 });
 
+describe('daemon connection line cap', () => {
+  it.live('replies bad-message and closes the connection when a line exceeds the cap', () =>
+    Effect.gen(function* () {
+      const replies: ServerMessage[] = [];
+      let readPumpFailed = false;
+      let chunksAfterOverflow = 0;
+      const chunks = [
+        Buffer.from(`${JSON.stringify({ type: 'ping', id: 'ping-1' })}\n`),
+        Buffer.from('{"type":"exec","env":{"HUGE":"'),
+        Buffer.from('x'.repeat(200)),
+        Buffer.from('"}}\n'),
+      ];
+      const socket = {
+        [Socket.TypeId]: Socket.TypeId,
+        writer: Effect.succeed((chunk: Uint8Array | string) =>
+          Effect.sync(() => {
+            const text = typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('utf8');
+            for (const line of text.split('\n')) {
+              if (line.length > 0) {
+                replies.push(JSON.parse(line) as ServerMessage);
+              }
+            }
+          }),
+        ),
+        run: (handler: (chunk: Uint8Array) => Effect.Effect<unknown, unknown> | void) =>
+          Effect.gen(function* () {
+            for (const chunk of chunks) {
+              if (readPumpFailed) {
+                chunksAfterOverflow += 1;
+                continue;
+              }
+              const handled = handler(chunk);
+              if (Effect.isEffect(handled)) {
+                const exit = yield* Effect.exit(handled);
+                if (exit._tag === 'Failure') {
+                  readPumpFailed = true;
+                }
+              }
+            }
+            // The real pump flushes queued replies before the scope closes.
+            yield* Effect.sleep('50 millis');
+          }),
+        runRaw: () => Effect.void,
+      } as unknown as Socket.Socket;
+      const shutdownLatch = yield* Deferred.make<void>();
+      yield* makeConnectionHandler({
+        broker: brokerWith(),
+        maxLineBytes: 128,
+        shutdownLatch,
+        startedAtMs: 0,
+        version: 'test',
+      })(socket);
+
+      // The complete line before the flood was still served.
+      expect(replies.some((reply) => reply.type === 'pong' && reply.id === 'ping-1')).toBe(true);
+      const error = replies.find((reply) => reply.type === 'error');
+      expect(error).toMatchObject({ type: 'error', id: null, code: 'bad-message' });
+      expect(error?.type === 'error' ? error.message : '').toMatch(/exceeds 128 bytes/u);
+      expect(readPumpFailed).toBe(true);
+      // Nothing after the overflow is parsed: the connection is closed.
+      expect(chunksAfterOverflow).toBe(1);
+    }));
+});
+
 describe('daemon connection detach', () => {
   it.live('marks the ticket detached in the ledger so the afterTool hook reports it', () =>
     Effect.gen(function* () {

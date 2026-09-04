@@ -5,7 +5,12 @@ import { describe, expect, it } from 'effect-rstest';
 import * as Effect from 'effect/Effect';
 import type * as Scope from 'effect/Scope';
 
-import { createLedgerApi, openLedgerDatabase } from '../src/daemon/ledger.js';
+import {
+  backfillAttachmentSavingsSelect,
+  createLedgerApi,
+  ledgerUserVersion,
+  openLedgerDatabase,
+} from '../src/daemon/ledger.js';
 import type { CreateRequestInput, LedgerApi } from '../src/daemon/ledger.js';
 import { scopedDatabase, scopedTempDir } from './harness.js';
 
@@ -724,7 +729,196 @@ describe('reapOrphans', () => {
     }));
 });
 
+describe('ledger retention', () => {
+  const day = 86_400_000;
+
+  it.effect('deletes terminal rows older than the retention window with their transitions', () =>
+    Effect.gen(function* () {
+      const ledger = yield* scopedLedger;
+      const nowMs = 100 * day;
+      // Old and finished: pruned.
+      yield* settleLeader(ledger, {
+        createdAtMs: nowMs - 40 * day,
+        startedAtMs: nowMs - 40 * day + 100,
+        finishedAtMs: nowMs - 40 * day + 200,
+        status: 'done',
+      });
+      // Old but still active: never pruned by age.
+      const active = yield* ledger.createRequest(makeInput({ createdAtMs: nowMs - 40 * day }));
+      yield* ledger.markQueued(active.id, nowMs - 40 * day + 50);
+      // Recent and finished: kept.
+      yield* settleLeader(ledger, {
+        createdAtMs: nowMs - 2 * day,
+        startedAtMs: nowMs - 2 * day + 100,
+        finishedAtMs: nowMs - 2 * day + 200,
+        status: 'failed',
+      });
+
+      const report = yield* ledger.pruneRetention({ nowMs, retentionDays: 30, maxRows: 0 });
+      // requested -> running -> done for the pruned leader.
+      expect(report).toEqual({ requests: 1, transitions: 3 });
+      expect(yield* ledger.getRequest(1)).toBeNull();
+      expect(yield* ledger.transitionsFor(1)).toEqual([]);
+      expect((yield* ledger.getRequest(active.id))?.status).toBe('queued');
+      expect((yield* ledger.transitionsFor(active.id)).length).toBe(2);
+      expect((yield* ledger.getRequest(3))?.status).toBe('failed');
+    }));
+
+  it.effect('caps the ledger at the newest rows without touching active work', () =>
+    Effect.gen(function* () {
+      const ledger = yield* scopedLedger;
+      const nowMs = 100 * day;
+      // Oldest row of all, yet still running: survives the cap.
+      const running = yield* ledger.createRequest(makeInput({ createdAtMs: nowMs - 60_000 }));
+      yield* ledger.markQueued(running.id, nowMs - 59_000);
+      yield* ledger.markRunning(running.id, nowMs - 58_000);
+      for (let index = 0; index < 6; index += 1) {
+        yield* settleLeader(ledger, {
+          createdAtMs: nowMs - (10 - index) * 1_000,
+          startedAtMs: nowMs - (10 - index) * 1_000 + 10,
+          finishedAtMs: nowMs - (10 - index) * 1_000 + 20,
+          status: 'done',
+        });
+      }
+
+      const report = yield* ledger.pruneRetention({ nowMs, retentionDays: 0, maxRows: 4 });
+      expect(report.requests).toBe(2);
+      expect(
+        (yield* ledger.recentRequests(100)).map((row) => row.id).sort((a, b) => a - b),
+      ).toEqual([1, 4, 5, 6, 7]);
+      expect((yield* ledger.getRequest(running.id))?.status).toBe('running');
+    }));
+
+  it.effect('is a no-op when both limits are disabled', () =>
+    Effect.gen(function* () {
+      const ledger = yield* scopedLedger;
+      yield* settleLeader(ledger, {
+        createdAtMs: 1_000,
+        startedAtMs: 1_100,
+        finishedAtMs: 1_200,
+        status: 'done',
+      });
+      const report = yield* ledger.pruneRetention({
+        nowMs: 1_000 * day,
+        retentionDays: 0,
+        maxRows: 0,
+      });
+      expect(report).toEqual({ requests: 0, transitions: 0 });
+      expect((yield* ledger.getRequest(1))?.status).toBe('done');
+    }));
+});
+
+describe('ledger transactions', () => {
+  const failTransitionsTo = (db: DatabaseSync, toStatus: string): void => {
+    db.exec(
+      `CREATE TEMP TRIGGER fail_transition BEFORE INSERT ON transitions
+       WHEN NEW.to_status = '${toStatus}'
+       BEGIN SELECT RAISE(ABORT, 'transition rejected'); END`,
+    );
+  };
+
+  it.effect('rolls back markFinished when its transition cannot be recorded', () =>
+    Effect.gen(function* () {
+      const directory = yield* scopedTempDir('cc-ledger-tx-finish-');
+      const db = yield* scopedDatabase(() => openLedgerDatabase(join(directory, 'ledger.db')));
+      const ledger = createLedgerApi(db);
+      yield* ledger.createRequest(makeInput());
+      yield* ledger.markQueued(1, 1_100);
+      yield* ledger.markRunning(1, 1_200);
+      failTransitionsTo(db, 'done');
+
+      const exit = yield* Effect.exit(
+        ledger.markFinished(1, { atMs: 2_000, exitCode: 0, status: 'done' }),
+      );
+      expect(exit._tag).toBe('Failure');
+      expect(db.isTransaction).toBe(false);
+      const record = yield* ledger.getRequest(1);
+      expect(record?.status).toBe('running');
+      expect(record?.finishedAtMs).toBeNull();
+    }));
+
+  it.effect('rolls back createRequest so no request row exists without its transition', () =>
+    Effect.gen(function* () {
+      const directory = yield* scopedTempDir('cc-ledger-tx-create-');
+      const db = yield* scopedDatabase(() => openLedgerDatabase(join(directory, 'ledger.db')));
+      const ledger = createLedgerApi(db);
+      failTransitionsTo(db, 'requested');
+
+      const exit = yield* Effect.exit(ledger.createRequest(makeInput()));
+      expect(exit._tag).toBe('Failure');
+      expect(db.isTransaction).toBe(false);
+      expect(yield* ledger.recentRequests(10)).toEqual([]);
+    }));
+
+  it.effect('reaps orphans atomically', () =>
+    Effect.gen(function* () {
+      const directory = yield* scopedTempDir('cc-ledger-tx-reap-');
+      const db = yield* scopedDatabase(() => openLedgerDatabase(join(directory, 'ledger.db')));
+      const ledger = createLedgerApi(db);
+      yield* ledger.createRequest(makeInput({ createdAtMs: 1_000 }));
+      yield* ledger.createRequest(makeInput({ createdAtMs: 2_000 }));
+      failTransitionsTo(db, 'killed');
+
+      const exit = yield* Effect.exit(ledger.reapOrphans(9_000, 'daemon restarted'));
+      expect(exit._tag).toBe('Failure');
+      expect(db.isTransaction).toBe(false);
+      expect((yield* ledger.activeRequests()).map((row) => row.status)).toEqual([
+        'requested',
+        'requested',
+      ]);
+    }));
+});
+
 describe('ledger migrations', () => {
+  it.effect('joins riders to leaders through the rowid index during the savings backfill', () =>
+    Effect.gen(function* () {
+      const directory = yield* scopedTempDir('cc-ledger-backfill-plan-');
+      const db = yield* scopedDatabase(() => openLedgerDatabase(join(directory, 'ledger.db')));
+      const plan = db
+        .prepare(`EXPLAIN QUERY PLAN ${backfillAttachmentSavingsSelect}`)
+        .all()
+        .map((row) => String(row.detail));
+      expect(plan.some((detail) => /^SCAN l\b/u.test(detail))).toBe(false);
+      expect(plan.some((detail) => /^SEARCH l USING INTEGER PRIMARY KEY/u.test(detail))).toBe(
+        true,
+      );
+    }));
+
+  it.effect('runs the savings backfill once and records it in user_version', () =>
+    Effect.gen(function* () {
+      const directory = yield* scopedTempDir('cc-ledger-backfill-once-');
+      const databasePath = join(directory, 'ledger.db');
+      yield* Effect.scoped(
+        Effect.gen(function* () {
+          const initial = yield* scopedDatabase(() => openLedgerDatabase(databasePath));
+          expect(initial.prepare('PRAGMA user_version').get()?.user_version).toBe(
+            ledgerUserVersion,
+          );
+          const ledger = createLedgerApi(initial);
+          const leader = yield* ledger.createRequest(
+            makeInput({ createdAtMs: 1_000, estimateMs: 900 }),
+          );
+          yield* ledger.markRunning(leader.id, 1_100);
+          yield* ledger.markFinished(leader.id, { atMs: 2_000, status: 'done' });
+          const follower = yield* ledger.createRequest(
+            makeInput({ createdAtMs: 1_200, estimateMs: 600 }),
+          );
+          yield* ledger.markAttached(follower.id, {
+            atMs: 1_250,
+            leaderTicket: leader.ticket,
+            mode: 'identity',
+          });
+          yield* ledger.markRunning(follower.id, 1_100);
+          // Settled without savings on a database already past the backfill:
+          // reopening must not retroactively invent them.
+          yield* ledger.markFinished(follower.id, { atMs: 2_000, status: 'done' });
+        }),
+      );
+      const reopened = yield* scopedDatabase(() => openLedgerDatabase(databasePath));
+      const record = yield* createLedgerApi(reopened).getRequest(2);
+      expect(record?.savedComputeMs).toBeNull();
+    }));
+
   it.effect('backfills savings for riders settled before savings columns were populated', () =>
     Effect.gen(function* () {
       const directory = yield* scopedTempDir('cc-ledger-savings-backfill-');
@@ -751,6 +945,8 @@ describe('ledger migrations', () => {
           yield* ledger.markRunning(follower.id, 1_100);
           // Simulates an older daemon that settled the rider without savings.
           yield* ledger.markFinished(follower.id, { atMs: 2_000, status: 'done' });
+          // Older daemons never stamped user_version, so the backfill is due.
+          initial.exec('PRAGMA user_version = 0');
           return follower.id;
         }),
       );
@@ -762,6 +958,9 @@ describe('ledger migrations', () => {
           savedComputeSource: 'exact',
           savedLatencyMs: -200,
         }),
+      );
+      expect(reopened.prepare('PRAGMA user_version').get()?.user_version).toBe(
+        ledgerUserVersion,
       );
     }));
 

@@ -9,6 +9,7 @@ import type * as Scope from 'effect/Scope';
 import type * as Socket from 'effect/unstable/socket/Socket';
 
 import { isRecord } from '../lib/guards.js';
+import { LineBufferOverflowError } from '../lib/ndjson.js';
 
 import type { BrokerApi } from './broker.js';
 import type {
@@ -24,6 +25,8 @@ export interface ConnectionHandlerOptions {
   readonly shutdownLatch: Deferred.Deferred<void>;
   readonly startedAtMs: number;
   readonly version: string;
+  /** Largest NDJSON line accepted from a client before the connection is closed (default 16 MiB). */
+  readonly maxLineBytes?: number;
 }
 
 export interface ConnectionOutputBufferOptions {
@@ -537,9 +540,37 @@ export const makeConnectionHandler =
           );
         };
 
-        const lineBuffer = new LineBuffer();
+        const lineBuffer = new LineBuffer({ maxLineBytes: options.maxLineBytes });
+        // An endless line is a protocol violation, not a request: tell the
+        // peer once, then fail the read pump so the connection scope closes
+        // the socket (the daemon never buffers the rest).
+        const rejectOversizeLine = (
+          overflow: LineBufferOverflowError,
+        ): Effect.Effect<never, LineBufferOverflowError> =>
+          write(
+            encodeServerMessage({
+              type: 'error',
+              id: null,
+              code: 'bad-message',
+              message: `${overflow.message}; closing connection`,
+            }),
+          ).pipe(Effect.ignore, Effect.andThen(Effect.fail(overflow)));
+        const readChunk = (
+          chunk: Uint8Array,
+        ): Effect.Effect<void, LineBufferOverflowError, Scope.Scope> =>
+          Effect.suspend(() => {
+            let lines: readonly string[];
+            try {
+              lines = lineBuffer.push(chunk);
+            } catch (cause) {
+              return cause instanceof LineBufferOverflowError
+                ? rejectOversizeLine(cause)
+                : Effect.die(cause);
+            }
+            return Effect.forEach(lines, handleLine, { discard: true });
+          });
         yield* socket
-          .run((chunk) => Effect.forEach(lineBuffer.push(chunk), handleLine, { discard: true }))
+          .run(readChunk)
           .pipe(
             // Abrupt disconnects are routine (agent shells die mid-build).
             Effect.ignore,
