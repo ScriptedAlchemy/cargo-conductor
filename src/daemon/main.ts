@@ -1,5 +1,6 @@
 import { rmSync } from 'node:fs';
 import { rename } from 'node:fs/promises';
+import { dirname, join } from 'node:path';
 
 import { NodeServices, NodeSocketServer } from '@effect/platform-node';
 import { version } from 'agent-bundle/meta';
@@ -70,6 +71,16 @@ export interface BoundDaemonSocket {
  * the inode-guarded `removeSocketIfOwned` stays the sole remover of the
  * canonical path.
  */
+/**
+ * The temporary name the daemon listens on before the rename. It lives in
+ * the same directory (rename must not cross filesystems) and is never longer
+ * than the canonical `daemon.sock`: `sun_path` allows 103 bytes on macOS, and
+ * `daemonSocketPath` already sized the canonical path to fit, so a longer
+ * suffix (`daemon.sock.<pid>`) failed to bind with EINVAL on deep temp roots.
+ */
+export const socketListenPath = (socketPath: string, pid: number): string =>
+  join(dirname(socketPath), `.${pid}.s`);
+
 export const bindDaemonSocket = (
   socketPath: string,
 ): Effect.Effect<
@@ -84,7 +95,7 @@ export const bindDaemonSocket = (
       const server = yield* NodeSocketServer.make({ path: socketPath });
       return { identity: null, server };
     }
-    const listenPath = `${socketPath}.${process.pid}`;
+    const listenPath = socketListenPath(socketPath, process.pid);
     yield* Effect.sync(() => rmSync(listenPath, { force: true }));
     const server = yield* NodeSocketServer.make({ path: listenPath });
     // Stat before the rename: the inode is ours for certain, whereas the

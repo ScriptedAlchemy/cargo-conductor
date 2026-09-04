@@ -2,7 +2,7 @@ import { existsSync } from 'node:fs';
 import { mkdtemp, rename, rm, stat, unlink, writeFile } from 'node:fs/promises';
 import { connect } from 'node:net';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 
 import { describe, expect, it } from 'effect-rstest';
 import * as Effect from 'effect/Effect';
@@ -18,7 +18,7 @@ import {
   runForegroundDaemon,
   stopDaemon,
 } from '../src/daemon/lifecycle.js';
-import { bindDaemonSocket } from '../src/daemon/main.js';
+import { bindDaemonSocket, socketListenPath } from '../src/daemon/main.js';
 import {
   monitorSocketOwnership,
   readSocketIdentity,
@@ -136,6 +136,16 @@ describe('signal shutdown lifecycle', () => {
         [],
       );
     }), 30_000);
+});
+
+describe('socket listen path', () => {
+  it('is never longer than the canonical socket path so it fits sun_path wherever the canonical one does', () => {
+    const canonical = `/private/var/folders/d8/${'x'.repeat(30)}/T/cargo-hauler-socket-rename-cjiTJc/daemon.sock`;
+    const listen = socketListenPath(canonical, 5226);
+    expect(dirname(listen)).toBe(dirname(canonical));
+    expect(Buffer.byteLength(listen)).toBeLessThanOrEqual(Buffer.byteLength(canonical));
+    expect(socketListenPath(canonical, 9_999_999).length).toBeLessThanOrEqual(canonical.length);
+  });
 });
 
 describe('socket ownership lifecycle', () => {
