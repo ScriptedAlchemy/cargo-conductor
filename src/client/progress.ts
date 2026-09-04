@@ -48,7 +48,16 @@ export type ProgressEvent =
       readonly estimateMs: number | null;
       readonly ticket: string;
       /** Set when a synchronous request was converted because its estimate exceeds the host cap. */
-      readonly auto?: { readonly capMs: number; readonly host: string };
+      readonly auto?: {
+        readonly capMs: number;
+        readonly host: string;
+        /**
+         * The caller's stdout is not a terminal (`cargo test > out.log`): the
+         * redirect will hold only this notice, never the command's output,
+         * so the notice must say where that output can be read (#68).
+         */
+        readonly stdoutRedirected: boolean;
+      };
     };
 
 const prefix = '[cargo-hauler]';
@@ -133,7 +142,10 @@ export const formatProgressLine = (event: ProgressEvent): string => {
       if (event.auto === undefined) {
         return `${prefix} ticket ${event.ticket} submitted in background${eta}\n${retrieve}`;
       }
-      return `${prefix} ticket ${event.ticket} estimate${eta} exceeds the ${event.auto.host} shell cap (${formatDuration(event.auto.capMs)}); submitted in background, not run yet (exit 75)\n${retrieve}`;
+      const redirected = event.auto.stdoutRedirected
+        ? `; your redirected stdout receives no output; read it with \`hauler result ${event.ticket} --full\``
+        : '';
+      return `${prefix} ticket ${event.ticket} estimate${eta} exceeds the ${event.auto.host} shell cap (${formatDuration(event.auto.capMs)}); submitted in background, not run yet (exit 75)${redirected}\n${retrieve}`;
     }
     default: {
       const exhaustive: never = event;

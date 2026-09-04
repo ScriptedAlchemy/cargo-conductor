@@ -94,6 +94,24 @@ describe('routed CLI', () => {
     expect(run.stderr).toContain('daemon unreachable');
   });
 
+  it('accepts result --full as a flag and still needs the ticket', async () => {
+    const help = await invokeCli(['result', '--help']);
+    expect(help.exitCode).toBe(0);
+    expect(help.stdout).toContain('--full');
+
+    // Parsed as a flag (not a usage error); the lookup itself needs the daemon.
+    const full = await invokeCli(['result', 'cc-1', '--full']);
+    expect(full.exitCode).toBe(1);
+    expect(full.stderr).toContain('daemon unreachable');
+
+    const withValue = await invokeCli(['result', 'cc-1', '--full=yes']);
+    expect(withValue.exitCode).toBe(2);
+
+    const missingTicket = await invokeCli(['result', '--full']);
+    expect(missingTicket.exitCode).toBe(2);
+    expect(missingTicket.stderr).toContain('ticket');
+  });
+
   it('requires the cargo argv after -- for request', async () => {
     // The live submit path is covered in routes.test.ts against a daemon; a
     // cold submit here would spawn `daemon run` from the test runner itself.

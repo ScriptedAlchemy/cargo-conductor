@@ -28,6 +28,7 @@ import type {
 } from './protocol.js';
 import { passthroughSpoolFileName } from './protocol.js';
 import { calculateServedSavings } from './savings.js';
+import { sweepTicketLogs } from './ticket-log.js';
 
 export interface CreateRequestInput {
   readonly createdAtMs: number;
@@ -123,11 +124,16 @@ export interface LedgerApi {
     input: CreateRequestInput,
   ) => Effect.Effect<{ readonly id: number; readonly ticket: string }>;
   readonly markQueued: (id: number, atMs: number) => Effect.Effect<void>;
-  /** `execArgv` records the invocation actually spawned (demux flag, batch -p folds). */
+  /**
+   * `execArgv` records the invocation actually spawned (demux flag, batch -p
+   * folds). `outputPath` is the full-output log: the leader's own file, or
+   * for an attached follower the path of the leader's log it shares.
+   */
   readonly markRunning: (
     id: number,
     atMs: number,
     execArgv?: readonly string[],
+    outputPath?: string | null,
   ) => Effect.Effect<void>;
   readonly markAttached: (id: number, input: AttachRequestInput) => Effect.Effect<void>;
   readonly markRequeued: (id: number, atMs: number) => Effect.Effect<void>;
@@ -143,6 +149,8 @@ export interface LedgerApi {
   ) => Effect.Effect<{ readonly id: number; readonly ticket: string }>;
   readonly ingestPassthroughSpool: (stateDir: string) => Effect.Effect<number>;
   readonly getRequest: (id: number) => Effect.Effect<RequestRecord | null>;
+  /** Whether a row with this id exists at all, in any status. */
+  readonly hasRequest: (id: number) => Effect.Effect<boolean>;
   readonly getRequestByTicket: (ticket: string) => Effect.Effect<RequestRecord | null>;
   /** Newest-first run durations of completed non-attached runs of one intent. */
   readonly recentDurations: (
@@ -220,15 +228,15 @@ CREATE INDEX IF NOT EXISTS transitions_request_id_idx ON transitions (request_id
 
 const requestColumns = `id, created_at_ms, session, host, cwd, workspace_root, target_dir, lane_key,
   argv_json, intent_key, intent_json, status, queued_at_ms, started_at_ms, finished_at_ms, wait_ms,
-  run_ms, exit_code, signal, output_tail, error, attached_to, attach_mode, background, hold_stop,
-  estimate_ms, exec_argv_json, error_count, warning_count, diagnostics_json, saved_compute_ms,
-  saved_compute_source, saved_latency_ms`;
+  run_ms, exit_code, signal, output_tail, output_path, error, attached_to, attach_mode, background,
+  hold_stop, estimate_ms, exec_argv_json, error_count, warning_count, diagnostics_json,
+  saved_compute_ms, saved_compute_source, saved_latency_ms`;
 
 const statusRequestColumns = `id, created_at_ms, session, host, cwd, workspace_root, target_dir, lane_key,
   argv_json, intent_key, intent_json, status, queued_at_ms, started_at_ms, finished_at_ms, wait_ms,
-  run_ms, exit_code, signal, NULL AS output_tail, error, attached_to, attach_mode, background, hold_stop,
-  estimate_ms, exec_argv_json, error_count, warning_count, diagnostics_json, saved_compute_ms,
-  saved_compute_source, saved_latency_ms`;
+  run_ms, exit_code, signal, NULL AS output_tail, output_path, error, attached_to, attach_mode,
+  background, hold_stop, estimate_ms, exec_argv_json, error_count, warning_count, diagnostics_json,
+  saved_compute_ms, saved_compute_source, saved_latency_ms`;
 
 const columnMigrations: readonly (readonly [column: string, ddl: string])[] = [
   ['attached_to', 'ALTER TABLE requests ADD COLUMN attached_to TEXT'],
@@ -244,6 +252,7 @@ const columnMigrations: readonly (readonly [column: string, ddl: string])[] = [
   ['saved_compute_source', 'ALTER TABLE requests ADD COLUMN saved_compute_source TEXT'],
   ['saved_latency_ms', 'ALTER TABLE requests ADD COLUMN saved_latency_ms INTEGER'],
   ['source_attempt_id', 'ALTER TABLE requests ADD COLUMN source_attempt_id TEXT'],
+  ['output_path', 'ALTER TABLE requests ADD COLUMN output_path TEXT'],
 ];
 
 const activeStatusFilter = "status IN ('requested', 'queued', 'running')";
@@ -317,6 +326,7 @@ const toRequestRecord = (row: Row): RequestRecord => {
     exitCode: toNullableNumber(row.exit_code),
     signal: toNullableText(row.signal),
     outputTail: toNullableText(row.output_tail),
+    outputPath: toNullableText(row.output_path),
     error: toNullableText(row.error),
     errorCount: toNullableNumber(row.error_count),
     warningCount: toNullableNumber(row.warning_count),
@@ -557,6 +567,7 @@ export const createLedgerApi = (db: DatabaseSync): LedgerApi => {
     'INSERT INTO transitions (request_id, at_ms, from_status, to_status) VALUES (?, ?, ?, ?)',
   );
   const selectStatus = db.prepare('SELECT status FROM requests WHERE id = ?');
+  const selectExists = db.prepare('SELECT 1 AS present FROM requests WHERE id = ?');
   const selectRequest = db.prepare(`SELECT ${requestColumns} FROM requests WHERE id = ?`);
   const insertAttemptStatement = db.prepare(
     `INSERT OR IGNORE INTO requests (
@@ -584,7 +595,8 @@ export const createLedgerApi = (db: DatabaseSync): LedgerApi => {
            WHEN queued_at_ms IS NULL THEN NULL
            ELSE MAX(0, ? - queued_at_ms)
          END,
-         exec_argv_json = ?
+         exec_argv_json = ?,
+         output_path = ?
      WHERE id = ? AND ${notTerminalFilter}`,
   );
   const updateAttached = db.prepare(
@@ -1046,7 +1058,7 @@ export const createLedgerApi = (db: DatabaseSync): LedgerApi => {
         }),
       ),
 
-    markRunning: (id, atMs, execArgv) =>
+    markRunning: (id, atMs, execArgv, outputPath) =>
       Effect.sync(() =>
         inTransaction(db, () => {
           const result = updateRunning.run(
@@ -1055,6 +1067,7 @@ export const createLedgerApi = (db: DatabaseSync): LedgerApi => {
             atMs,
             atMs,
             execArgv === undefined ? null : JSON.stringify(execArgv),
+            outputPath ?? null,
             id,
           );
           if (result.changes > 0) {
@@ -1114,6 +1127,8 @@ export const createLedgerApi = (db: DatabaseSync): LedgerApi => {
     ingestPassthroughSpool: (stateDir) => Effect.sync(() => ingestPassthroughSpool(stateDir)),
 
     getRequest: (id) => Effect.sync(() => selectRequestById(selectRequest, id)),
+
+    hasRequest: (id) => Effect.sync(() => selectExists.get(id) !== undefined),
 
     getRequestByTicket: (ticket) =>
       Effect.sync(() => {
@@ -1221,6 +1236,13 @@ export const LedgerLive: Layer.Layer<Ledger, never, DaemonConfig> = Layer.effect
       yield* Effect.logInfo(
         `ledger retention removed ${pruned.requests} requests and ${pruned.transitions} transitions`,
       );
+    }
+    // The on-disk ticket logs follow their rows: the ones retention just
+    // pruned, and any left behind without a row (a reset ledger, a crash
+    // between the log open and the running write).
+    const sweptLogs = yield* sweepTicketLogs(config.ticketLogDir, ledger);
+    if (sweptLogs > 0) {
+      yield* Effect.logInfo(`removed ${sweptLogs} ticket logs without a ledger row`);
     }
     return ledger;
   }),

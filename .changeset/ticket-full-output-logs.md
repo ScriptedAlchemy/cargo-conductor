@@ -1,0 +1,5 @@
+---
+'cargo-hauler': patch
+---
+
+Keep every ticket's whole output on disk and make it readable after the fact. The daemon writes a leader run's combined stdout+stderr, as emitted (rendered diagnostics for demultiplexed runs, ANSI as captured), to `<state dir>/tickets/<ticket>.log`, bounded by the new `CARGO_HAULER_TICKET_LOG_MAX_BYTES` (default 64 MiB, then one truncation line; `0` disables). The ledger gains `output_path`, exposed as `outputPath` on every request record (attached followers carry their leader's path); the startup retention pass removes the logs of pruned rows and any log without a row. `hauler result <ticket>` now shows `Full output: <path> (size)` and `--json` carries `request.outputPath`; `hauler result <ticket> --full` and `hauler_result { ticket, full: true }` render the whole log as the document body (the last ~768 KiB when it does not fit, with the path for the rest). When a synchronous command is auto-backgrounded and the caller's stdout is not a terminal, the exit-75 notice adds that the redirect receives no output and to read it with `hauler result cc-N --full`. (#68)
