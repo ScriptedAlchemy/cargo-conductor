@@ -59,6 +59,7 @@ import type {
   HeavyAdmissionReport,
   LaneStatus,
   QueueContext,
+  StallReport,
 } from './protocol.js';
 import { ReplayBuffer } from './replay.js';
 import {
@@ -157,6 +158,8 @@ export interface LaneRuntime {
     readonly delayed?: true;
     readonly quietMs?: number;
     readonly admissionHold?: AdmissionHold;
+    readonly stall?: StallReport;
+    readonly orphaned?: true;
   }>;
   readonly interruptWorkers: () => Effect.Effect<void>;
   /** Heavy-cap state for status; null when the cap is disabled. */
@@ -233,6 +236,10 @@ export const makeLaneRuntime = (deps: LaneRuntimeDeps): Effect.Effect<LaneRuntim
           startedAtMs: null,
           lastOutputAtMs: null,
           admissionHold: null,
+          pid: null,
+          stall: null,
+          ownerGone: false,
+          killReason: null,
           editedRecently,
           depClosure,
         };
@@ -627,6 +634,10 @@ export const makeLaneRuntime = (deps: LaneRuntimeDeps): Effect.Effect<LaneRuntim
           // The broker-side tail (fed by emitChunk) is authoritative: in
           // demux mode the executor's own tail would capture raw JSON.
           tailBytes: 0,
+          onSpawn: (pid) =>
+            Effect.sync(() => {
+              job.pid = pid;
+            }),
           onOutput: (channel, data) => attachments.emitChunk(job, channel, data),
           // The JSON demux owns stdout, so a merged pipe is only honoured for
           // runs that stream raw output (`cargo run`, `cargo test`, ...).
@@ -648,13 +659,15 @@ export const makeLaneRuntime = (deps: LaneRuntimeDeps): Effect.Effect<LaneRuntim
             outcome: result.outcome,
           });
         }
+        // A broker-initiated kill (stall auto-kill) names its reason on the
+        // job; the executor only knows a signal arrived.
         yield* settleJob(
           lane,
           job,
           result.outcome,
           result.exitCode,
           result.signal,
-          result.error,
+          result.outcome === 'killed' ? (result.error ?? job.killReason) : result.error,
           finishedAtMs,
         );
       }).pipe(
@@ -971,7 +984,13 @@ export const makeLaneRuntime = (deps: LaneRuntimeDeps): Effect.Effect<LaneRuntim
         const leader = entry.kind === 'leader' ? entry.job : entry.leader;
         if (leader.startedAtMs !== null) {
           const quietMs = quietMsSinceOutput(leader.lastOutputAtMs, atMs);
-          return quietMs === undefined ? {} : { quietMs };
+          // Riders share the leader's process, so its stall is theirs too;
+          // orphaning is per ticket (only the leader's owner is tracked).
+          return {
+            ...(quietMs === undefined ? {} : { quietMs }),
+            ...(leader.stall === null ? {} : { stall: leader.stall }),
+            ...(entry.kind === 'leader' && entry.job.ownerGone ? { orphaned: true } : {}),
+          };
         }
 
         const ownCreatedAtMs =

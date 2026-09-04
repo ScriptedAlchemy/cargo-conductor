@@ -55,10 +55,24 @@ const defaultRecentLimit = 50;
  */
 const statusTimeoutMs = 5_000;
 
+/**
+ * `hauler result` / `hauler_result` guidance for a running ticket the daemon
+ * has flagged stalled (#46): name the idle window and the one command that
+ * releases the lane. Riders share the leader's process, so the kill names
+ * the leader.
+ */
+export const stalledGuidance = (
+  request: Pick<RequestRecord, 'ticket' | 'status'> & Partial<Pick<RequestRecord, 'attachedTo' | 'stall'>>,
+): string | null =>
+  request.status === 'running' && request.stall !== undefined
+    ? `ticket looks stalled (no CPU for ${Math.floor(request.stall.idleMs / 60_000)}m) — hauler kill ${request.attachedTo ?? request.ticket}`
+    : null;
+
 export const describeRequestRecord = (
   ticket: string,
   request:
-    | Pick<RequestRecord, 'ticket' | 'status' | 'errorCount' | 'warningCount'>
+    | (Pick<RequestRecord, 'ticket' | 'status' | 'errorCount' | 'warningCount'> &
+        Partial<Pick<RequestRecord, 'attachedTo' | 'stall'>>)
     | null,
 ): string => {
   if (request === null) {
@@ -68,7 +82,8 @@ export const describeRequestRecord = (
     request.errorCount === null || request.warningCount === null
       ? ''
       : ` (${countWord(request.errorCount, 'error')}, ${countWord(request.warningCount, 'warning')})`;
-  return `${request.ticket} ${request.status}${counts}`;
+  const stalled = stalledGuidance(request);
+  return `${request.ticket} ${request.status}${counts}${stalled === null ? '' : ` — ${stalled}`}`;
 };
 
 /**

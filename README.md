@@ -367,10 +367,12 @@ own `-j` flag or `CARGO_BUILD_JOBS` always wins over both.
 | Scheduling | EWMA estimates, optional kache priors, fan-out, dependency topology, recent edits, and request age determine lane order. |
 | Persistence | Tickets, output tails, timings, outcomes, and savings are stored in SQLite; every leader run's whole combined output is kept on disk as `<state dir>/tickets/<ticket>.log`. |
 | Caller output and status | Output streams to attached callers; late callers receive buffered replay. After 30 seconds without output, the client emits a progress heartbeat every 15 seconds with lane queue position, the lane-head ticket, and an aggregate wait ETA. |
-| Wait escalation | A queued request waiting longer than the larger of twice its own estimate and ten minutes is flagged as delayed; running jobs silent for more than five minutes show a quiet-duration hint. Nothing is killed automatically. |
+| Wait escalation | A queued request waiting longer than the larger of twice its own estimate and ten minutes is flagged as delayed; running jobs silent for more than five minutes show a quiet-duration hint. A running job past three times its estimate whose process tree has burned no CPU and printed nothing for ten minutes is flagged `stalled`; only a stalled job whose submitting connection is gone is killed automatically. |
 | Daemon status | `running`, `stopped`, or `unresponsive`: a socket that exists but does not answer within its budget is reported as unresponsive, never as stopped. |
 
 ### Tickets and long-running requests
+
+![cargo-hauler dashboard detail drawer streaming a running ticket's live output](docs/media/dashboard-live-output.png)
 
 Every request has a durable ticket (`cc-<n>`). Its status, exit code, output
 tail, estimate, and timestamps are stored in SQLite and can be read from later
@@ -409,6 +411,28 @@ cargo's, `128 + signal` for a signaled run, or `1` when the daemon could not
 start cargo at all. If the connection drops after the ticket was accepted, the
 client prints `connection to daemon lost; ticket cc-N continues — hauler
 result cc-N` and exits `1`; the daemon finishes the ticket on its own.
+
+A deadlocked test binary holds its lane for ever at 0% CPU with nothing on
+stdout, and neither the estimate overrun nor the output silence alone can
+tell it from a slow build. The daemon therefore samples the CPU time of every
+running ticket's process tree every 30 seconds (`/proc` on Linux, `ps` on
+macOS; other platforms do not detect stalls). A ticket is flagged `stalled`
+when its elapsed time exceeds `CARGO_HAULER_STALL_ESTIMATE_FACTOR` (3) times
+its estimate, the tree's CPU time has not changed for
+`CARGO_HAULER_STALL_IDLE_MS` (ten minutes), and it printed nothing in that
+window. `hauler status`, `hauler_status`, and the dashboard show `stalled`
+with the idle duration; `hauler result` and `hauler_result` answer `ticket
+looks stalled (no CPU for Nm) — hauler kill cc-N`; `hauler await` heartbeats
+say the same. Riders of a stalled leader report the leader's stall and its
+ticket, since killing a rider only detaches it. A stalled ticket whose
+submitting connection is still open is only flagged. When that connection has
+disconnected (a dead agent shell, a killed hook), the ticket is marked
+orphaned, and once it is also stalled the daemon kills it through the normal
+`hauler kill` path — riders settle or requeue as for any kill — with the
+error `stalled: no CPU for Nm after owner disconnected; killed automatically`.
+`CARGO_HAULER_STALL_AUTO_KILL=0` keeps the flag and never kills. Background
+tickets (`--bg`, `hauler_request`) have no streaming connection and are only
+ever flagged.
 
 The `tool/after` route checks the session's background tickets — `--bg`,
 `hauler_request`, and synchronous requests the client converted to a ticket
@@ -501,6 +525,9 @@ is reported as unavailable and never rejects a request.
 | `CARGO_HAULER_BATCH` | Enabled | `0`, `false`, `off`, or `no` disables the batch composer. |
 | `CARGO_HAULER_BATCH_WINDOW_MS` | `150` | Delay applied to a batchable lane head so nearby requests can fold; `0` disables. |
 | `CARGO_HAULER_KILL_GRACE_MS` | `8000` | Time between SIGTERM and SIGKILL when the daemon stops a Cargo process. |
+| `CARGO_HAULER_STALL_ESTIMATE_FACTOR` | `3` | A running ticket becomes a stall candidate once its elapsed time exceeds this multiple of its estimate. |
+| `CARGO_HAULER_STALL_IDLE_MS` | `600000` | Window with no process-tree CPU time and no output after which a stall candidate is flagged `stalled`; `0` or `off` disables stall detection. |
+| `CARGO_HAULER_STALL_AUTO_KILL` | Enabled | Kill a stalled ticket automatically once the connection that submitted it has disconnected. `0`, `false`, `off`, or `no` only flags it. |
 | `CARGO_HAULER_STOP_WAIT_MS` | `30000` | Maximum wait for one stop-hook invocation; values above the 7200000 ms await ceiling are clamped. |
 | `CARGO_HAULER_LEDGER_RETENTION_DAYS` | `30` | Finished ledger rows older than this many days are deleted when the daemon starts; `0` disables the age limit. |
 | `CARGO_HAULER_LEDGER_MAX_ROWS` | `50000` | Total ledger rows beyond which the oldest finished rows are deleted when the daemon starts; `0` disables the row cap. Pruned rows take their `tickets/<ticket>.log` files with them. |

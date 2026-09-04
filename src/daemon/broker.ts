@@ -46,6 +46,7 @@ import type {
   StatusReport,
 } from './protocol.js';
 import { memoryClampState } from './scheduler.js';
+import { StallProbe, makeStallMonitor } from './stall.js';
 import { makeTicketDirectory } from './ticket-directory.js';
 import { Topology } from './topology.js';
 import { findConfiguredTargetDir, locateWorkspaceRoot } from './workspace.js';
@@ -82,6 +83,8 @@ export interface SubmitResult {
 
 export interface KillOptions {
   readonly onlyIfQueued?: boolean;
+  /** Ledger `error` for a running leader killed by the daemon itself (stall auto-kill). */
+  readonly reason?: string;
 }
 
 export class CargoIntentError extends Data.TaggedError('CargoIntentError')<{
@@ -102,6 +105,12 @@ export interface BrokerApi {
     input: AttemptInput,
   ) => Effect.Effect<{ readonly ticket: string }>;
   readonly kill: (ticket: string, options?: KillOptions) => Effect.Effect<boolean>;
+  /**
+   * Record that the connection owning a running leader is gone (#46): the
+   * run continues, but a later stall verdict may kill it automatically.
+   * False for riders, queued work, and unknown tickets.
+   */
+  readonly markOwnerGone: (ticket: string) => Effect.Effect<boolean>;
   /** Record that the submitting client stopped streaming the ticket; false when the ticket is unknown. */
   readonly detach: (ticket: string) => Effect.Effect<boolean>;
   readonly report: (recentLimit?: number) => Effect.Effect<StatusReport>;
@@ -476,19 +485,19 @@ export const BrokerLive: Layer.Layer<
           yield* Deferred.succeed(job.killSignal, undefined);
           return true;
         }
-        const signal = yield* Ref.modify(
+        const claim = yield* Ref.modify(
           job.state,
-          (state): readonly [boolean, JobState] => {
+          (state): readonly [{ readonly signal: boolean; readonly inFlight: boolean }, JobState] => {
             switch (state) {
               case 'queued':
-                return [true, 'kill-requested'];
+                return [{ signal: true, inFlight: false }, 'kill-requested'];
               case 'starting':
               case 'running':
-                return [true, state];
+                return [{ signal: true, inFlight: true }, state];
               case 'kill-requested':
-                return [true, state];
+                return [{ signal: true, inFlight: false }, state];
               case 'finished':
-                return [false, state];
+                return [{ signal: false, inFlight: false }, state];
               default: {
                 const exhaustive: never = state;
                 return exhaustive;
@@ -496,11 +505,41 @@ export const BrokerLive: Layer.Layer<
             }
           },
         );
-        if (signal) {
+        if (claim.inFlight && options?.reason !== undefined && job.killReason === null) {
+          yield* Effect.sync(() => {
+            job.killReason = options.reason ?? null;
+          });
+        }
+        if (claim.signal) {
           yield* Deferred.succeed(job.killSignal, undefined);
         }
-        return signal;
+        return claim.signal;
       });
+
+    const markOwnerGone = (ticket: string): Effect.Effect<boolean> =>
+      Effect.sync(() => {
+        const entry = directory.get(ticket);
+        if (entry === undefined || entry.kind !== 'leader') {
+          return false;
+        }
+        const state = Ref.getUnsafe(entry.job.state);
+        if (state !== 'starting' && state !== 'running') {
+          return false;
+        }
+        entry.job.ownerGone = true;
+        return true;
+      });
+
+    const stallProbe = yield* StallProbe;
+    yield* Effect.forkIn(
+      makeStallMonitor({
+        config,
+        directory,
+        probe: stallProbe,
+        kill: (ticket, reason) => kill(ticket, { reason }),
+      }),
+      daemonScope,
+    );
 
     const report = (recentLimit = 50): Effect.Effect<StatusReport> =>
       Effect.gen(function* () {
@@ -666,6 +705,7 @@ export const BrokerLive: Layer.Layer<
       submit,
       recordAttempt,
       kill,
+      markOwnerGone,
       detach,
       report,
       getTicket,

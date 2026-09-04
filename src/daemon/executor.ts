@@ -34,6 +34,8 @@ export interface ExecuteCargoOptions {
    * byte then arrives on `stdout`. Mutually exclusive with `onStdoutLine`.
    */
   readonly mergeStderr?: boolean;
+  /** Called once with the child's pid right after it is spawned (stall sampling root). */
+  readonly onSpawn?: (pid: number) => Effect.Effect<void>;
 }
 
 export interface ExecutionResult {
@@ -288,6 +290,9 @@ export const executeCargo = (
         onFailure: (error) => Effect.succeed(spawnFailure(error.message)),
         onSuccess: (child) =>
           Effect.gen(function* () {
+            if (options.onSpawn !== undefined) {
+              yield* options.onSpawn(child.pid);
+            }
             const onStdoutLine = options.onStdoutLine;
             const consume = (channel: 'stdout' | 'stderr') => {
               if (channel === 'stdout' && onStdoutLine !== undefined) {

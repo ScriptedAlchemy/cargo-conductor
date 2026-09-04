@@ -38,6 +38,8 @@ export type ProgressEvent =
       readonly laneName?: string;
       readonly queue?: QueueContext;
       readonly hold?: AdmissionHold;
+      /** The daemon flagged the run stalled: idle window and the ticket whose kill frees the lane. */
+      readonly stalled?: { readonly idleMs: number; readonly killTicket: string };
     }
   | {
       readonly kind: 'passthrough';
@@ -127,7 +129,11 @@ export const formatProgressLine = (event: ProgressEvent): string => {
           event.estimateMs === undefined || event.estimateMs === null
             ? ''
             : ` (est ~${formatDuration(event.estimateMs)})`;
-        return `${prefix} ${event.ticket} ${event.phase} ${formatDuration(event.elapsedMs)}${estimate}${delayed} — ${event.command}\n`;
+        const stalled =
+          event.stalled === undefined
+            ? ''
+            : ` · looks stalled (no CPU for ${formatDuration(event.stalled.idleMs)}) — hauler kill ${event.stalled.killTicket}`;
+        return `${prefix} ${event.ticket} ${event.phase} ${formatDuration(event.elapsedMs)}${estimate}${delayed}${stalled} — ${event.command}\n`;
       }
       return `${prefix} ticket ${event.ticket} still ${event.phase} (${Math.floor(event.elapsedMs / 1000)}s)\n`;
     }

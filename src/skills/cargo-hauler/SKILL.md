@@ -13,6 +13,16 @@ clippy, fmt, nextest) or is waiting on someone else's cargo.
   ticket. If a ticket is genuinely stuck (a deadlocked test, an owner session
   that is gone), stop it through the broker — `hauler kill cc-N` or
   `hauler_kill` — so riders, the lane, and the ledger settle correctly.
+- `stalled` on a running ticket (status, the dashboard, `hauler result`'s
+  `ticket looks stalled (no CPU for Nm) — hauler kill cc-N`, or an await
+  heartbeat) means the daemon measured it: the run is past three times its
+  estimate, its whole process tree has used no CPU for ten minutes, and it
+  printed nothing in that window — a deadlock, not a slow link. A long,
+  silent build that is still burning CPU is never flagged, so trust the flag:
+  run the `hauler kill cc-N` it names (the leader's ticket, even when yours
+  is a rider), then resubmit. If the session that submitted a stalled ticket
+  has already disconnected the daemon kills it itself and records
+  `stalled: … killed automatically` as the error; resubmit in that case too.
 - Scope work with `-p <crate>` instead of workspace-wide `--all-features` when
   a single crate answers the question.
 - Prefer `hauler status`, `hauler last`, and the `hauler_status` MCP

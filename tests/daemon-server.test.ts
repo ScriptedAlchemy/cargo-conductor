@@ -13,6 +13,7 @@ const brokerWith = (overrides: Partial<BrokerApi> = {}): BrokerApi => ({
   detach: () => Effect.succeed(true),
   getTicket: () => Effect.succeed(null),
   kill: () => Effect.succeed(true),
+  markOwnerGone: () => Effect.succeed(false),
   recordAttempt: () => Effect.succeed({ ticket: 'cc-attempt' }),
   report: () => Effect.die(new Error('status exploded')),
   sessionCompleted: () => Effect.succeed([]),
@@ -213,6 +214,44 @@ describe('daemon connection detach', () => {
       // `detached` reports whether this connection owned the ticket; a detach
       // for a ticket it never streamed is still recorded but answers false.
       expect(replies).toContainEqual({ type: 'detach-result', id: 'detach-1', ticket: 'cc-9', detached: false });
+    }));
+});
+
+describe('daemon connection disconnect cleanup (#46)', () => {
+  it.live('marks a still-running owned ticket orphaned once the connection is gone', () =>
+    Effect.gen(function* () {
+      const killed: { ticket: string; onlyIfQueued: boolean | undefined }[] = [];
+      const orphaned: string[] = [];
+      yield* runMessages(
+        [
+          `${JSON.stringify({
+            type: 'exec',
+            id: 'exec-1',
+            argv: ['cargo', 'test', '-p', 'sealed'],
+            cwd: '/tmp/workspace',
+          })}\n`,
+        ],
+        brokerWith({
+          kill: (ticket, options) =>
+            Effect.sync(() => {
+              killed.push({ onlyIfQueued: options?.onlyIfQueued, ticket });
+              // Already running: the queued-only kill declines.
+              return false;
+            }),
+          markOwnerGone: (ticket) =>
+            Effect.sync(() => {
+              orphaned.push(ticket);
+              return true;
+            }),
+          submit: (_input, callbacks) =>
+            (callbacks.onRegistered ?? (() => Effect.succeed(true)))('cc-3062').pipe(
+              Effect.as({ laneKey: 'lane', position: 0, ticket: 'cc-3062' }),
+            ),
+        }),
+      );
+
+      expect(killed).toEqual([{ onlyIfQueued: true, ticket: 'cc-3062' }]);
+      expect(orphaned).toEqual(['cc-3062']);
     }));
 });
 

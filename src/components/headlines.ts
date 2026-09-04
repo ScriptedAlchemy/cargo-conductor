@@ -42,7 +42,11 @@ export const ticketHeadline = (record: RequestRecord, nowMs: number): string => 
     record.exitCode === null || record.status === 'done' ? '' : ` exit=${record.exitCode}`;
   const counts = diagnosticCounts(record);
   const outcome = counts === null ? '' : ` — ${counts}`;
-  return `${record.ticket} ${record.status}${timing}${estimate}${exit}${outcome} — ${commandText(record)}`;
+  const stalled =
+    record.status === 'running' && record.stall !== undefined
+      ? ` · stalled ${formatMs(record.stall.idleMs)}`
+      : '';
+  return `${record.ticket} ${record.status}${timing}${estimate}${stalled}${exit}${outcome} — ${commandText(record)}`;
 };
 
 export const requestCountHeadline = (count: number, noun: string): string =>

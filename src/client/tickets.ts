@@ -153,6 +153,9 @@ const formatAwaitedRecord = (ticket: string, record: RequestRecord): string => {
         estimateMs: record.estimateMs,
         kind: 'heartbeat',
         phase: 'running',
+        ...(record.stall === undefined
+          ? {}
+          : { stalled: { idleMs: record.stall.idleMs, killTicket: record.attachedTo ?? ticket } }),
         ticket,
       });
     default:

@@ -94,6 +94,22 @@ export interface DaemonConfigShape {
    * startup (CARGO_HAULER_LEDGER_MAX_ROWS; 0 disables the row cap).
    */
   readonly ledgerMaxRows: number;
+  /**
+   * A running leader is a stall candidate once its elapsed time exceeds
+   * this multiple of its estimate (CARGO_HAULER_STALL_ESTIMATE_FACTOR).
+   */
+  readonly stallEstimateFactor: number;
+  /**
+   * Window with no process-tree CPU time and no output after which a stall
+   * candidate is flagged `stalled` (CARGO_HAULER_STALL_IDLE_MS; `0` or `off`
+   * disables stall detection entirely).
+   */
+  readonly stallIdleMs: number | null;
+  /**
+   * Kill a stalled leader automatically when its owning connection is gone
+   * (CARGO_HAULER_STALL_AUTO_KILL; `0`/`off` only flags it).
+   */
+  readonly stallAutoKill: boolean;
 }
 
 export class DaemonConfig extends Context.Service<DaemonConfig, DaemonConfigShape>()(
@@ -113,6 +129,8 @@ const defaultHeavyMemAvailableGb = 16;
 const defaultHeavyMaxConcurrent = 1;
 const defaultLedgerRetentionDays = 30;
 const defaultLedgerMaxRows = 50_000;
+const defaultStallEstimateFactor = 3;
+const defaultStallIdleMs = 10 * 60_000;
 const gibibyte = 1024 ** 3;
 const defaultTicketLogMaxBytes = 64 * 1024 * 1024;
 
@@ -404,6 +422,15 @@ export const resolveDaemonConfigWithWarnings = (
       integer: true,
       min: 0,
     }),
+    stallEstimateFactor: number(
+      pick(env, 'CARGO_HAULER_STALL_ESTIMATE_FACTOR'),
+      defaultStallEstimateFactor,
+      { min: 0 },
+    ),
+    stallIdleMs: optionalNumber(pick(env, 'CARGO_HAULER_STALL_IDLE_MS'), defaultStallIdleMs, {
+      integer: true,
+    }),
+    stallAutoKill: flag(pick(env, 'CARGO_HAULER_STALL_AUTO_KILL'), true),
   };
   return { config, warnings };
 };

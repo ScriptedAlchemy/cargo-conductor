@@ -39,6 +39,29 @@ describe('ticket summaries', () => {
       }),
     ).toBe('cc-10 done');
   });
+
+  it('tells a poller how to release a stalled running ticket (#46)', () => {
+    expect(
+      describeRequestRecord('cc-3062', {
+        attachedTo: null,
+        errorCount: null,
+        stall: { cpuMs: 2_700, idleMs: 42 * 60_000 + 10_000, since: 1 },
+        status: 'running',
+        ticket: 'cc-3062',
+        warningCount: null,
+      }),
+    ).toBe('cc-3062 running — ticket looks stalled (no CPU for 42m) — hauler kill cc-3062');
+    expect(
+      describeRequestRecord('cc-3063', {
+        attachedTo: 'cc-3062',
+        errorCount: null,
+        stall: { cpuMs: 2_700, idleMs: 42 * 60_000, since: 1 },
+        status: 'running',
+        ticket: 'cc-3063',
+        warningCount: null,
+      }),
+    ).toBe('cc-3063 running — ticket looks stalled (no CPU for 42m) — hauler kill cc-3062');
+  });
 });
 
 const esc = '\u001b';

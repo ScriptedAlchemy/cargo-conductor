@@ -8,7 +8,13 @@ import { cargoJsonDemuxFlag } from '../lib/argv.js';
 import { hasLibKind } from './cargo-json.js';
 import type { TailBuffer } from './executor.js';
 import type { NormalizedCargoIntent } from './intent-normalizer.js';
-import type { AdmissionHold, AttachMode, EstimateSource, FinishedStatus } from './protocol.js';
+import type {
+  AdmissionHold,
+  AttachMode,
+  EstimateSource,
+  FinishedStatus,
+  StallReport,
+} from './protocol.js';
 import type { ReplayAudience, ReplayBuffer, ReplayChunk } from './replay.js';
 import type { TicketLogWriter } from './ticket-log.js';
 
@@ -180,6 +186,14 @@ export interface Job {
   lastOutputAtMs: number | null;
   /** Set while an admission arm holds this lane head back from its permit. */
   admissionHold: AdmissionHold | null;
+  /** Pid of the spawned cargo (process-group leader) once it exists; the stall sampler's root. */
+  pid: number | null;
+  /** Stall verdict from the last sampler pass; null while the run shows progress. */
+  stall: StallReport | null;
+  /** True once the connection that submitted this leader disconnected while it was running. */
+  ownerGone: boolean;
+  /** Ledger `error` for a kill of the running process when the executor reports none (auto-kill). */
+  killReason: string | null;
   /** Fail-fast signal captured at submission (topology stat, cached). */
   readonly editedRecently: boolean;
   /** Workspace-internal transitive deps of this job's packages (topology, cached). */
