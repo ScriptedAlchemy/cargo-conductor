@@ -15,6 +15,7 @@ import type {
 } from '../daemon/control.js';
 import type { PongMessage } from '../daemon/protocol.js';
 import { resolveHaulerArgv } from '../hooks/paths.js';
+import { isHaulerInternalEnvironmentVariable } from '../lib/cargo-env.js';
 
 export class SpawnDaemonError extends Data.TaggedError('SpawnDaemonError')<{
   readonly cause: unknown;
@@ -108,6 +109,59 @@ const defaultDaemonEntry = (): string => {
   return script ?? process.argv[1] ?? '';
 };
 
+const spawnEnvExactNames = new Set([
+  'ALL_PROXY',
+  'CARGO_HOME',
+  'HOME',
+  'HTTPS_PROXY',
+  'HTTP_PROXY',
+  'LANG',
+  'LOGNAME',
+  'NO_PROXY',
+  'PATH',
+  'RUSTUP_HOME',
+  'SHELL',
+  'TMPDIR',
+  'USER',
+  'all_proxy',
+  'http_proxy',
+  'https_proxy',
+  'no_proxy',
+]);
+
+const spawnEnvPrefixes = ['LC_', 'SSL_CERT_', 'XDG_'];
+
+/**
+ * The environment the detached daemon starts with. The daemon lays every
+ * request's transported env over its own when it spawns cargo, so whatever
+ * the first client's shell exported — `RUSTFLAGS`, `CARGO_TARGET_DIR`,
+ * `RUSTC_WRAPPER`, a fd-based `MAKEFLAGS` jobserver — would otherwise become
+ * the base of every other session's builds until the daemon restarts (#55).
+ * Only the daemon's own settings (`CARGO_HAULER_*` and the legacy tuning
+ * aliases), toolchain locations, locale, temp/cache paths, and network knobs
+ * for crate fetches survive.
+ */
+export const daemonSpawnEnv = (
+  env: Readonly<Record<string, string | undefined>>,
+  stateDir: string,
+): Record<string, string> => {
+  const curated: Record<string, string> = {};
+  for (const [name, value] of Object.entries(env)) {
+    if (value === undefined) {
+      continue;
+    }
+    if (
+      spawnEnvExactNames.has(name) ||
+      isHaulerInternalEnvironmentVariable(name) ||
+      spawnEnvPrefixes.some((prefix) => name.startsWith(prefix))
+    ) {
+      curated[name] = value;
+    }
+  }
+  curated.CARGO_HAULER_STATE_DIR = stateDir;
+  return curated;
+};
+
 export const spawnDetachedDaemon = (
   config: DaemonConfigShape,
   entryPath: string = defaultDaemonEntry(),
@@ -124,12 +178,15 @@ export const spawnDetachedDaemon = (
     (logFd) =>
       Effect.try({
         try: () => {
+          // cwd is the state dir, not the client's directory: a relative path
+          // the daemon resolves must not depend on who happened to start it.
           const child = dependencies.spawnProcess(
             process.execPath,
             [entryPath, 'daemon', 'run'],
             {
+              cwd: config.stateDir,
               detached: true,
-              env: { ...process.env, CARGO_HAULER_STATE_DIR: config.stateDir },
+              env: daemonSpawnEnv(process.env, config.stateDir),
               stdio: ['ignore', logFd, logFd],
             },
           );

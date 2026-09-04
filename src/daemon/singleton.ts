@@ -1,4 +1,5 @@
-import { mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
+import { uptime } from 'node:os';
 
 import * as Data from 'effect/Data';
 import * as Deferred from 'effect/Deferred';
@@ -10,7 +11,6 @@ import { lock } from 'proper-lockfile';
 
 import { isRecord } from '../lib/guards.js';
 
-import { DaemonConfig } from './config.js';
 import type { DaemonConfigShape } from './config.js';
 import { pingDaemon } from './control.js';
 import { armSharedJobserver, releaseSharedJobserver } from './jobserver.js';
@@ -30,9 +30,20 @@ class LockAttemptError extends Data.TaggedError('LockAttemptError')<{
 const staleMs = 15_000;
 const properLockfileStaleMs = 2_147_000_000;
 const forcedExitDelayMs = 5_000;
+/**
+ * A held lock is re-examined at this cadence for `staleMs + recoveryMarginMs`:
+ * long enough for an uncleanly killed daemon's lock (mtime refreshed every
+ * `staleMs / 2`) to age past `staleMs`, so recovery no longer depends on the
+ * first look happening to land after that.
+ */
+const recoveryPollMs = 1_000;
+const recoveryMarginMs = 5_000;
+const maxAcquireAttempts = 64;
 
-const isLockedError = (cause: unknown): boolean =>
-  isRecord(cause) && cause.code === 'ELOCKED';
+const hasErrorCode = (cause: unknown, code: string): boolean =>
+  isRecord(cause) && cause.code === code;
+
+const isLockedError = (cause: unknown): boolean => hasErrorCode(cause, 'ELOCKED');
 
 export interface SingletonCompromiseDependencies {
   readonly writeStderr: (message: string) => void;
@@ -104,35 +115,68 @@ export const makeSingletonCompromiseController = (
 
 type ReleaseSingletonLock = () => Promise<void>;
 
+/**
+ * `kill(pid, 0)` cannot always answer: EPERM means a process exists that we
+ * may not signal, which is not evidence it is our daemon.
+ */
+export type ProcessLiveness = 'alive' | 'dead' | 'unknown';
+
+/** Whether this starter removed the stale lock, or another starter beat it. */
+export type StaleLockClaim = 'claimed' | 'lost';
+
 export interface SingletonLockDependencies {
   readonly acquire: (
     lockTargetPath: string,
     onCompromised: (error: Error) => void,
   ) => Promise<ReleaseSingletonLock>;
+  /** Wall-clock time this machine booted; a lock older than it is stale. */
+  readonly bootTimeMs: () => number;
   readonly currentPid: number;
-  readonly isProcessAlive: (pid: number) => boolean;
   readonly lockMtimeMs: (lockTargetPath: string) => Promise<number>;
   readonly now: () => number;
   readonly prepare: (stateDir: string, lockTargetPath: string) => Promise<void>;
+  readonly processLiveness: (pid: number) => ProcessLiveness;
   readonly readPid: (lockTargetPath: string) => Promise<string>;
   readonly removeOwnPid: (lockTargetPath: string, pid: number) => Promise<void>;
-  readonly removeStaleLock: (lockTargetPath: string) => Promise<void>;
+  readonly removeStaleLock: (lockTargetPath: string, pid: number) => Promise<StaleLockClaim>;
   readonly socketAnswers: (socketPath: string) => Effect.Effect<boolean>;
   readonly writePid: (lockTargetPath: string, pid: number) => Promise<void>;
 }
 
-const processIsAlive = (pid: number): boolean => {
+const processLiveness = (pid: number): ProcessLiveness => {
   try {
     process.kill(pid, 0);
-    return true;
+    return 'alive';
   } catch (cause) {
-    return !(
-      typeof cause === 'object' &&
-      cause !== null &&
-      'code' in cause &&
-      cause.code === 'ESRCH'
-    );
+    return hasErrorCode(cause, 'ESRCH') ? 'dead' : 'unknown';
   }
+};
+
+/**
+ * Remove a stale proper-lockfile directory so that exactly one of several
+ * concurrent starters succeeds. Two starters that both judged the lock stale
+ * and both `rm -rf` it would let the second remove the first's fresh lock
+ * and start two daemons; renaming the directory to a claimant-unique name
+ * first is atomic, so the loser sees `ENOENT` and yields.
+ */
+export const claimStaleLock = async (
+  lockTargetPath: string,
+  pid: number,
+): Promise<StaleLockClaim> => {
+  const lockDir = `${lockTargetPath}.lock`;
+  const claimDir = `${lockDir}.reclaim-${pid}`;
+  // A leftover claim from an earlier crash of this pid would block the rename.
+  await rm(claimDir, { recursive: true, force: true });
+  try {
+    await rename(lockDir, claimDir);
+  } catch (cause) {
+    if (hasErrorCode(cause, 'ENOENT')) {
+      return 'lost';
+    }
+    throw cause;
+  }
+  await rm(claimDir, { recursive: true, force: true });
+  return 'claimed';
 };
 
 const defaultLockDependencies: SingletonLockDependencies = {
@@ -145,14 +189,15 @@ const defaultLockDependencies: SingletonLockDependencies = {
       update: staleMs / 2,
       onCompromised,
     }),
+  bootTimeMs: () => Date.now() - uptime() * 1_000,
   currentPid: process.pid,
-  isProcessAlive: processIsAlive,
   lockMtimeMs: async (lockTargetPath) => (await stat(`${lockTargetPath}.lock`)).mtimeMs,
   now: Date.now,
   prepare: async (stateDir, lockTargetPath) => {
     await mkdir(stateDir, { recursive: true });
     await writeFile(lockTargetPath, '', { flag: 'a' });
   },
+  processLiveness,
   readPid: (lockTargetPath) => readFile(lockTargetPath, 'utf8'),
   removeOwnPid: async (lockTargetPath, pid) => {
     const recorded = await readFile(lockTargetPath, 'utf8').catch(() => '');
@@ -160,8 +205,7 @@ const defaultLockDependencies: SingletonLockDependencies = {
       await rm(lockTargetPath, { force: true });
     }
   },
-  removeStaleLock: (lockTargetPath) =>
-    rm(`${lockTargetPath}.lock`, { recursive: true, force: true }),
+  removeStaleLock: claimStaleLock,
   socketAnswers: (socketPath) =>
     pingDaemon(socketPath, 500).pipe(
       Effect.as(true),
@@ -178,6 +222,143 @@ const parsePid = (text: string): number | null => {
 const singletonFailure = (message: string, cause?: unknown): SingletonLockError =>
   new SingletonLockError({
     cause: cause === undefined ? new Error(message) : new Error(message, { cause }),
+  });
+
+type HeldLockVerdict =
+  /** The lock directory vanished between the attempt and the inspection. */
+  | { readonly kind: 'gone' }
+  /** Recently refreshed and written since boot: its daemon may still be starting. */
+  | { readonly kind: 'fresh' }
+  /** Nobody can be refreshing it: aged past `staleMs`, or older than this boot. */
+  | { readonly kind: 'stale' }
+  /** Aged past `staleMs`, yet its recorded pid exists (or cannot be ruled out). */
+  | { readonly kind: 'owner-present'; readonly liveness: ProcessLiveness; readonly pid: number };
+
+const inspectHeldLock = (
+  config: DaemonConfigShape,
+  dependencies: SingletonLockDependencies,
+): Effect.Effect<HeldLockVerdict, SingletonLockError> =>
+  Effect.gen(function* () {
+    const mtime = yield* Effect.result(
+      Effect.tryPromise({
+        try: () => dependencies.lockMtimeMs(config.lockTargetPath),
+        catch: (cause) => new LockAttemptError({ cause }),
+      }),
+    );
+    if (Result.isFailure(mtime)) {
+      if (hasErrorCode(mtime.failure.cause, 'ENOENT')) {
+        return { kind: 'gone' } as const;
+      }
+      return yield* singletonFailure(
+        'unable to inspect the held singleton lock',
+        mtime.failure.cause,
+      );
+    }
+    const lockMtimeMs = mtime.success;
+    // The state dir persists across reboots while pids do not: a lock written
+    // before this boot cannot have a live owner, whatever its recorded pid now
+    // names.
+    if (lockMtimeMs < dependencies.bootTimeMs()) {
+      return { kind: 'stale' } as const;
+    }
+    if (lockMtimeMs >= dependencies.now() - staleMs) {
+      return { kind: 'fresh' } as const;
+    }
+    const recordedPid = yield* Effect.tryPromise({
+      try: () => dependencies.readPid(config.lockTargetPath),
+      catch: (cause) => singletonFailure('unable to read the singleton owner pid', cause),
+    }).pipe(Effect.map(parsePid));
+    if (recordedPid === null) {
+      return { kind: 'stale' } as const;
+    }
+    const liveness = dependencies.processLiveness(recordedPid);
+    switch (liveness) {
+      case 'dead':
+        return { kind: 'stale' } as const;
+      case 'alive':
+      case 'unknown':
+        return { kind: 'owner-present', liveness, pid: recordedPid } as const;
+      default: {
+        const exhaustive: never = liveness;
+        return yield* Effect.die(new Error(`Unhandled liveness: ${String(exhaustive)}`));
+      }
+    }
+  });
+
+/**
+ * Take the lock, recovering from a stale one. A held lock is re-checked
+ * (ping, mtime, owner liveness) about once a second for `staleMs` plus a
+ * margin rather than judged once: an uncleanly killed daemon's lock still
+ * looks fresh for up to `staleMs`, and a starter that gave up on it would
+ * leave the daemon down until someone removed the lock by hand.
+ */
+const acquireWithRecovery = (
+  config: DaemonConfigShape,
+  dependencies: SingletonLockDependencies,
+  onCompromised: (error: Error) => void,
+): Effect.Effect<ReleaseSingletonLock, DaemonAlreadyRunningError | SingletonLockError> =>
+  Effect.gen(function* () {
+    const acquireOnce = Effect.tryPromise({
+      try: () => dependencies.acquire(config.lockTargetPath, onCompromised),
+      catch: (cause) => new LockAttemptError({ cause }),
+    });
+    const deadlineMs = dependencies.now() + staleMs + recoveryMarginMs;
+    let attempts = 0;
+    while (true) {
+      attempts += 1;
+      if (attempts > maxAcquireAttempts) {
+        // Only reachable if the lock keeps changing hands between every
+        // attempt and inspection; the timed path below is the normal bound.
+        return yield* singletonFailure(
+          `singleton lock could not be acquired after ${maxAcquireAttempts} attempts`,
+        );
+      }
+      const attempt = yield* Effect.result(acquireOnce);
+      if (Result.isSuccess(attempt)) {
+        return attempt.success;
+      }
+      const lockCause = attempt.failure.cause;
+      if (!isLockedError(lockCause)) {
+        return yield* new SingletonLockError({ cause: lockCause });
+      }
+      if (yield* dependencies.socketAnswers(config.socketPath)) {
+        return yield* new DaemonAlreadyRunningError({ lockTargetPath: config.lockTargetPath });
+      }
+      const verdict = yield* inspectHeldLock(config, dependencies);
+      switch (verdict.kind) {
+        case 'gone':
+          // Released between the attempt and the inspection: try again now.
+          break;
+        case 'stale':
+          // 'lost' means a competing starter claimed it first; the next
+          // attempt then finds that starter's fresh lock and waits on it.
+          yield* Effect.tryPromise({
+            try: () =>
+              dependencies.removeStaleLock(config.lockTargetPath, dependencies.currentPid),
+            catch: (cause) =>
+              singletonFailure('unable to remove the stale singleton lock', cause),
+          });
+          break;
+        case 'owner-present':
+          return yield* singletonFailure(
+            verdict.liveness === 'alive'
+              ? `singleton lock owner pid ${verdict.pid} is alive but its socket is not answering`
+              : `singleton lock owner pid ${verdict.pid} cannot be signalled and its socket is not answering`,
+          );
+        case 'fresh':
+          if (dependencies.now() >= deadlineMs) {
+            return yield* singletonFailure(
+              'singleton lock is held but its daemon is not yet answering',
+            );
+          }
+          yield* Effect.sleep(recoveryPollMs);
+          break;
+        default: {
+          const exhaustive: never = verdict;
+          return yield* Effect.die(new Error(`Unhandled lock verdict: ${String(exhaustive)}`));
+        }
+      }
+    }
   });
 
 export const acquireSingletonLockWith = (
@@ -219,55 +400,7 @@ export const acquireSingletonLockWith = (
     catch: (cause) => new SingletonLockError({ cause }),
   });
 
-  const acquireOnce = Effect.tryPromise({
-    try: () => dependencies.acquire(config.lockTargetPath, compromise.onCompromised),
-    catch: (cause) => new LockAttemptError({ cause }),
-  });
-  const firstAttempt = yield* Effect.result(acquireOnce);
-  let release: ReleaseSingletonLock;
-  if (Result.isSuccess(firstAttempt)) {
-    release = firstAttempt.success;
-  } else {
-    const lockCause = firstAttempt.failure.cause;
-    if (!isLockedError(lockCause)) {
-      return yield* new SingletonLockError({ cause: lockCause });
-    }
-    if (yield* dependencies.socketAnswers(config.socketPath)) {
-      return yield* new DaemonAlreadyRunningError({ lockTargetPath: config.lockTargetPath });
-    }
-    const lockMtimeMs = yield* Effect.tryPromise({
-      try: () => dependencies.lockMtimeMs(config.lockTargetPath),
-      catch: (cause) =>
-        singletonFailure('unable to inspect the held singleton lock', cause),
-    });
-    if (lockMtimeMs >= dependencies.now() - staleMs) {
-      return yield* singletonFailure(
-        'singleton lock is held but its daemon is not yet answering',
-      );
-    }
-    const recordedPid = yield* Effect.tryPromise({
-      try: () => dependencies.readPid(config.lockTargetPath),
-      catch: (cause) => singletonFailure('unable to read the singleton owner pid', cause),
-    }).pipe(Effect.map(parsePid));
-    if (recordedPid !== null && dependencies.isProcessAlive(recordedPid)) {
-      return yield* singletonFailure(
-        `singleton lock owner pid ${recordedPid} is alive but its socket is not answering`,
-      );
-    }
-    yield* Effect.tryPromise({
-      try: () => dependencies.removeStaleLock(config.lockTargetPath),
-      catch: (cause) =>
-        singletonFailure('unable to remove the stale singleton lock', cause),
-    });
-    release = yield* acquireOnce.pipe(
-      Effect.mapError((error) =>
-        singletonFailure(
-          'unable to acquire the singleton after stale-lock recovery',
-          error.cause,
-        ),
-      ),
-    );
-  }
+  const release = yield* acquireWithRecovery(config, dependencies, compromise.onCompromised);
 
   yield* Effect.acquireRelease(
     Effect.succeed(release),
@@ -299,13 +432,4 @@ export const acquireSingletonLockWith = (
     Effect.sync(() => armSharedJobserver({ stateDir: config.stateDir })),
     () => Effect.sync(() => releaseSharedJobserver()),
   );
-});
-
-export const acquireSingletonLock: Effect.Effect<
-  void,
-  DaemonAlreadyRunningError | SingletonLockError,
-  DaemonConfig | Scope.Scope
-> = Effect.gen(function* () {
-  const config = yield* DaemonConfig;
-  yield* acquireSingletonLockWith(config);
 });

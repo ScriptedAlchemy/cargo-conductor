@@ -379,6 +379,9 @@ export const makeConnectionHandler =
               ...(submitted.success.etaSource === undefined
                 ? {}
                 : { etaSource: submitted.success.etaSource }),
+              ...(submitted.success.waitEtaMs === undefined
+                ? {}
+                : { waitEtaMs: submitted.success.waitEtaMs }),
             });
           });
 

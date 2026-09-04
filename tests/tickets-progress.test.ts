@@ -2,9 +2,15 @@ import { describe, expect, it } from 'effect-rstest';
 import * as Effect from 'effect/Effect';
 
 import { runExecClient } from '../src/client/exec.js';
-import { awaitTicketWithProgress, fetchTicket } from '../src/client/tickets.js';
+import {
+  awaitTicket,
+  awaitTicketWithProgress,
+  fetchTicket,
+  submitBackground,
+} from '../src/client/tickets.js';
+import { awaitCeilingMs } from '../src/daemon/protocol.js';
 
-import { scopedDaemon } from './harness.js';
+import { fakeCargoEnv, scopedDaemon, scopedEnv } from './harness.js';
 
 const silentIo = {
   writeStderr: () => undefined,
@@ -90,5 +96,51 @@ describe('awaitTicketWithProgress', () => {
       expect(polls).toBeGreaterThanOrEqual(3);
       expect(lines.join('')).not.toContain('is not known to the daemon');
       expect(lines.join('')).not.toContain('transient status timeout');
+    }));
+});
+
+describe('awaitTicket', () => {
+  it.live('fails fast on a daemon error reply instead of waiting out the full timeout', () =>
+    Effect.gen(function* () {
+      const fixture = yield* scopedDaemon(5);
+      const startedAt = Date.now();
+      // Over the wire ceiling: the daemon answers `error` with this request's
+      // id at once; the client used to wait maxWaitMs + 2 s for an
+      // `await-result` that would never come.
+      const error = yield* Effect.flip(awaitTicket('cc-1', awaitCeilingMs + 1, fixture.config));
+      expect(error._tag).toBe('DaemonRejected');
+      expect(Date.now() - startedAt).toBeLessThan(5_000);
+    }));
+});
+
+describe('submitBackground', () => {
+  it.live('does not hold the stop hook, like exec --bg with the same session', () =>
+    Effect.gen(function* () {
+      const fixture = yield* scopedDaemon(5);
+      // `request` ships no caller env: the in-process daemon must find the
+      // fake cargo through its own environment.
+      yield* scopedEnv({ CARGO_HAULER_CARGO_BIN: `${fixture.binDir}/cargo` });
+      const viaRequest = yield* submitBackground(
+        { argv: ['cargo', 'build', '-p', 'via-request'], cwd: fixture.ws1, session: 's1' },
+        fixture.config,
+      );
+      const viaExec = yield* runExecClient({
+        argv: ['cargo', 'build', '-p', 'via-exec'],
+        autoSpawn: false,
+        background: true,
+        config: fixture.config,
+        cwd: fixture.ws1,
+        env: fakeCargoEnv(fixture),
+        io: silentIo,
+        session: 's1',
+      });
+      const [requested, executed] = yield* Effect.all([
+        fetchTicket(viaRequest ?? '', fixture.config),
+        fetchTicket(viaExec.ticket ?? '', fixture.config),
+      ]);
+      // Background tickets never hold a stop; the two entry points used to
+      // disagree, so `hauler request --session` blocked the agent's stop.
+      expect(requested?.holdStop).toBe(false);
+      expect(executed?.holdStop).toBe(false);
     }));
 });

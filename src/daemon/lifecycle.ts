@@ -222,8 +222,13 @@ export const runForegroundDaemon = (
   const shutdown = makeSignalShutdownController(interrupt);
   const onSigint = (): void => shutdown.onSignal('SIGINT');
   const onSigterm = (): void => shutdown.onSignal('SIGTERM');
-  process.once('SIGINT', onSigint);
-  process.once('SIGTERM', onSigterm);
+  // `on`, not `once`: a repeated Ctrl-C during teardown must be swallowed by
+  // the controller's `signaled` guard. With `once` the second signal reaches
+  // Node's default handler, which exits without running finalizers and
+  // leaves the lock and socket behind. The bounded force exit the controller
+  // arms is the escape hatch for a hung teardown.
+  process.on('SIGINT', onSigint);
+  process.on('SIGTERM', onSigterm);
   return Effect.runPromise(Fiber.await(fiber)).then((exit) => {
     process.removeListener('SIGINT', onSigint);
     process.removeListener('SIGTERM', onSigterm);

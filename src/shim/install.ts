@@ -16,6 +16,10 @@ export interface InstallShimOptions extends RenderShimOptions {
 
 export interface InstallShimResult {
   readonly path: string;
+  /** The hauler entry the shim embeds (a script path, or a PATH command name). */
+  readonly haulerScript: string;
+  /** The absolute cargo the shim falls back to. */
+  readonly realCargo: string;
 }
 
 const shellQuote = (value: string): string => {
@@ -28,9 +32,22 @@ const shellQuote = (value: string): string => {
   return `'${value.replaceAll("'", `'\\''`)}'`;
 };
 
+/**
+ * The hauler entry the shim depends on: the script when the argv is
+ * `node …/hauler.mjs`, otherwise the command name to look up on PATH.
+ */
+export const shimHaulerEntry = (haulerArgv: readonly string[]): string =>
+  haulerArgv[1] ?? haulerArgv[0] ?? 'hauler';
+
 export const renderCargoShim = (options: RenderShimOptions): string => {
   const hauler = options.haulerArgv.map(shellQuote).join(' ');
   const cargo = shellQuote(options.realCargo);
+  // The embedded entry is a versioned plugin directory: an upgrade that
+  // replaces it would otherwise turn every `cargo` on PATH into "No such
+  // file". Losing the broker for a while beats losing cargo.
+  const entry = shellQuote(shimHaulerEntry(options.haulerArgv));
+  const guard =
+    options.haulerArgv.length >= 2 ? `[ -f ${entry} ]` : `command -v ${entry} >/dev/null 2>&1`;
   // --host shim: unlike hook rewrites, the shim has no agent identity, but the
   // ledger should still say where a request entered. CARGO_HAULER_INSIDE
   // marks cargo spawned by the daemon itself; the legacy guard remains a
@@ -42,6 +59,8 @@ export const renderCargoShim = (options: RenderShimOptions): string => {
 if [ -n "\${CARGO_HAULER_INSIDE:-}" ] || [ -n "\${CARGO_CONDUCTOR_INSIDE:-}" ]; then
   exec ${cargo} "$@"
 fi
+# Re-run \`hauler install-shim --force\` after an upgrade moves the hauler entry.
+${guard} || exec ${cargo} "$@"
 exec ${hauler} exec --host shim -- ${cargo} "$@"
 `;
 };
@@ -146,5 +165,5 @@ export const installCargoShim = (options: InstallShimOptions): InstallShimResult
   const realCargo = resolveRealCargo(options.realCargo, destDir);
   writeFileSync(path, renderCargoShim({ ...options, realCargo }));
   chmodSync(path, 0o755);
-  return { path };
+  return { haulerScript: shimHaulerEntry(options.haulerArgv), path, realCargo };
 };

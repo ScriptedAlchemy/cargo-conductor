@@ -6,7 +6,10 @@ export type ProgressEvent =
       readonly laneKey: string;
       readonly position: number;
       readonly ticket: string;
+      /** The job's own measured runtime estimate; omitted for a cold-start default. */
       readonly etaMs?: number;
+      /** Work ahead in the lane before this job can start. */
+      readonly waitEtaMs?: number;
     }
   | {
       readonly kind: 'attached';
@@ -63,9 +66,15 @@ const formatDuration = (ms: number): string => {
 export const formatProgressLine = (event: ProgressEvent): string => {
   switch (event.kind) {
     case 'queued': {
-      const eta =
-        event.etaMs === undefined ? '' : `, eta ~${Math.max(1, Math.round(event.etaMs / 1000))}s`;
-      return `${prefix} ticket ${event.ticket} queued (${event.position} ahead${eta})\n`;
+      const seconds = (ms: number): string => `~${Math.max(1, Math.round(ms / 1000))}s`;
+      const parts = [
+        `${event.position} ahead`,
+        ...(event.waitEtaMs === undefined || event.waitEtaMs <= 0
+          ? []
+          : [`wait ${seconds(event.waitEtaMs)}`]),
+        ...(event.etaMs === undefined ? [] : [`run ${seconds(event.etaMs)}`]),
+      ];
+      return `${prefix} ticket ${event.ticket} queued (${parts.join(', ')})\n`;
     }
     case 'attached': {
       switch (event.mode) {

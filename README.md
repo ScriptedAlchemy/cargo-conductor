@@ -216,7 +216,7 @@ executable beside it (`dist/bin/cargo-hauler.js` in the package,
 
 | Command | Behavior |
 | --- | --- |
-| `hauler exec [--session ID] [--host HOST] [--cwd DIR] [--bg] -- <cargo …>` | Submit Cargo through the daemon and stream output; hooks rewrite commands to this form. |
+| `hauler exec [--session ID] [--host HOST] [--cwd DIR] [--bg] -- <cargo …>` | Submit Cargo through the daemon and stream output; hooks rewrite commands to this form. A relative `--cwd` is resolved against the caller's directory. Exits with cargo's code; `130`/`143` after a SIGINT/SIGTERM (the ticket is killed first); `75` when auto-backgrounded. |
 | `hauler status [--limit N] [--cwd DIR] [--session ID] [--lane KEY] [--ticket ID …] [--status S …] [--command-contains TEXT]` | Queue, active runs, lanes, admission, kache, optionally filtered. |
 | `hauler log [--limit N]` | Recent requests from the ledger. |
 | `hauler last` | The most recent request. |
@@ -378,11 +378,23 @@ immediately. A synchronous request also switches to background mode when a
 *measured* estimate — EWMA history or kache priors, never the cold-start
 default — exceeds the host's shell-tool cap (nine minutes for Claude, ten for
 Codex, fourteen for Cursor; the PATH shim uses `CARGO_HAULER_HOST` when it is
-exported, otherwise the Claude cap). That conversion exits `75`
-(`EX_TEMPFAIL`) with the ticket on stderr, so `cargo build && …` chains and
-scripts cannot mistake "submitted" for "built"; explicit `--bg` keeps exit
+exported, otherwise the Claude cap). The estimate that is compared is the
+whole wait: the work queued ahead in the lane plus the job's own runtime,
+which the queued line reports as `wait ~Ns, run ~Ns`. That conversion exits
+`75` (`EX_TEMPFAIL`) with the ticket on stderr, so `cargo build && …` chains
+and scripts cannot mistake "submitted" for "built"; explicit `--bg` keeps exit
 `0`. Failed runs feed the estimate history too, so a broken build is not
 re-estimated cold on every retry.
+
+A foreground `hauler exec` that receives SIGINT or SIGTERM (Ctrl-C, or a
+`timeout N …` wrapper) asks the daemon to kill its ticket, waits for the
+answer, and exits `130` or `143`; in a direct run it terminates the cargo
+process group the same way. A ticket that ends other than `done` is reported
+on stderr as `ticket cc-N <status>[ (signal)][: reason]`, and its exit code is
+cargo's, `128 + signal` for a signaled run, or `1` when the daemon could not
+start cargo at all. If the connection drops after the ticket was accepted, the
+client prints `connection to daemon lost; ticket cc-N continues — hauler
+result cc-N` and exits `1`; the daemon finishes the ticket on its own.
 
 The `tool/after` route checks the session's background tickets — `--bg`,
 `hauler_request`, and synchronous requests the client converted to a ticket
@@ -408,7 +420,11 @@ When the daemon starts Cargo it sets `CARGO_HAULER_INSIDE=1`, and the shim then
 invokes the embedded Cargo directly, so the daemon's own Cargo never returns
 through the broker. The shim is POSIX-only; its directory must appear before
 rustup's Cargo directory on `PATH`; replacing an existing destination requires
-`--force`.
+`--force`. The embedded `hauler` entry lives in a versioned plugin directory:
+when that file no longer exists (an upgrade replaced the directory), the shim
+runs the embedded Cargo directly instead of failing, and `install-shim` says
+so — re-run `hauler install-shim --force` after such an upgrade to route
+scripted Cargo through the broker again.
 
 ### Caller environment
 
@@ -421,9 +437,23 @@ Cargo, so `FOO=bar cargo build` reaches `build.rs`, `env!()`, `cargo run`, and
 for coalescing is digested from the build-relevant subset only (`CARGO_*`,
 `RUST*`, `CC`/`CXX`/`AR`/`CFLAGS`/`CXXFLAGS`/`LDFLAGS` with target-suffixed
 forms, and `PKG_CONFIG_PATH`); pass knobs a `build.rs` reads through
-`--config 'env.FOO="bar"'` when they must also split identity.
+`--config 'env.FOO="bar"'` when they must also split identity. One value is
+filtered rather than forwarded: a `MAKEFLAGS`, `MFLAGS`, or `CARGO_MAKEFLAGS`
+carrying a descriptor-based jobserver (`--jobserver-auth=R,W`,
+`--jobserver-fds=R,W`) names file descriptors that exist only in the caller,
+so it is dropped and the daemon's shared FIFO jobserver applies; a
+`fifo:PATH` jobserver travels as-is.
 `hauler request` and `hauler_request` submit without a caller environment;
 their Cargo processes run with the daemon's environment.
+
+The daemon's own environment is deliberately small. When a client starts it,
+the daemon receives only `PATH`, `HOME`, `USER`, `LOGNAME`, `SHELL`, `TMPDIR`,
+`LANG` and `LC_*`, `XDG_*`, `CARGO_HOME`, `RUSTUP_HOME`, `SSL_CERT_*`, the
+`*_proxy` variables, and every `CARGO_HAULER_*` setting, with the state
+directory as its working directory. The starting shell's `RUSTFLAGS`,
+`CARGO_TARGET_DIR`, `RUSTC_WRAPPER`, `CARGO_BUILD_*`, `MAKEFLAGS`, `CC`, and
+similar build knobs are not inherited, so they cannot become the silent base of
+every other session's builds.
 
 ### Kache integration
 
@@ -440,7 +470,7 @@ is reported as unavailable and never rejects a request.
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `CARGO_HAULER_STATE_DIR` | Per-user cache directory | Unix socket or Windows named pipe source, SQLite ledger, daemon log, pid lock, `hook-state.json`, and `hook-events.jsonl`. No legacy alias. |
-| `CARGO_HAULER_CARGO_BIN` | `$CARGO_HOME/bin/cargo` | Cargo binary for daemon-started work; bare `cargo` is the last fallback. Never resolved through `PATH`. |
+| `CARGO_HAULER_CARGO_BIN` | `$CARGO_HOME/bin/cargo` | Cargo binary for daemon-started work; bare `cargo` is the last fallback. Never resolved through `PATH`. Read from the daemon's own environment (export it where the daemon starts, or before `hauler daemon start`); clients do not forward it. |
 | `CARGO_HAULER_MAX_CONCURRENT` | `5` | Global admission permits for Cargo processes across all lanes; an integer >= 1. |
 | `CARGO_HAULER_JOBS_GRANT` | `max(4, cores / max concurrent)` | `CARGO_BUILD_JOBS` added to each Cargo process only while the shared jobserver FIFO is not armed; an armed daemon injects `MAKEFLAGS` instead and leaves `CARGO_BUILD_JOBS` unset. `0` disables injection. |
 | `CARGO_HAULER_LOAD_THRESHOLD` | Disabled | Per-core one-minute load threshold for deferring new admissions. |
@@ -483,7 +513,8 @@ unset, the daemon reads kache's configured local store from
   command through, and a client that cannot reach the daemon makes one
   auto-start attempt and then invokes Cargo directly. A daemon that is alive
   but too loaded to accept within 2 seconds is not treated as absent: `exec`
-  retries for up to 60 seconds before falling back to a direct run.
+  retries for up to 60 seconds, then runs Cargo directly without a start
+  attempt or a second retry cycle.
 - The plugin's own documents never fail open: `hauler_result` and
   `hauler_await` fail loudly when the daemon is unreachable instead of
   reporting a ticket as not found; `hauler_status`, `hauler_log`, and
