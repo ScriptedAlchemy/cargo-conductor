@@ -44,6 +44,39 @@ describe('beforeTool shell hook', () => {
     expect(result.reason).toBeUndefined();
   });
 
+  it('does not approve a rewrite that leaves ungoverned segments beside cargo', async () => {
+    // The cargo half is brokered, but `allow` would also approve the rest of
+    // the input; `continue` leaves the rewritten command to the host's own flow.
+    const mixed = await runBefore('cargo test -p foo && rm -rf target');
+    expect(mixed.outcome).toBe('continue');
+    expect(mixed.reason).toBeUndefined();
+    expect(mixed.updatedInput?.command).toBe(
+      'hauler exec --session sess-1 --host claude -- cargo test -p foo && rm -rf target',
+    );
+
+    const piped = await runBefore('cargo test -p a 2>&1 | tail -20');
+    expect(piped.outcome).toBe('continue');
+    expect(piped.updatedInput?.command).toBe('hauler exec --session sess-1 --host claude -- cargo test -p a 2>&1 | tail -20');
+
+    const chdir = await runBefore('cd crates/foo && cargo build');
+    expect(chdir.outcome).toBe('continue');
+    expect(chdir.updatedInput?.command).toBe('cd crates/foo && hauler exec --session sess-1 --host claude -- cargo build');
+  });
+
+  it('approves a list whose every segment is brokered, including an already-wrapped half', async () => {
+    const list = await runBefore('cargo check && cargo test');
+    expect(list.outcome).toBe('allow');
+
+    const partial = await runBefore('hauler exec --session sess-1 --host claude -- cargo build && cargo test');
+    expect(partial.outcome).toBe('allow');
+    expect(partial.updatedInput?.command).toBe(
+      'hauler exec --session sess-1 --host claude -- cargo build && hauler exec --session sess-1 --host claude -- cargo test',
+    );
+
+    const prefixed = await runBefore('timeout -k 10 600 cargo test -p a');
+    expect(prefixed.outcome).toBe('allow');
+  });
+
   it('keeps env-prefix assignments on the rewritten hauler invocation', async () => {
     const result = await runBefore('CARGO_TARGET_DIR=tmp cargo test');
 

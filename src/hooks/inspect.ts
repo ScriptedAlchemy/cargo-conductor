@@ -77,6 +77,14 @@ export interface InspectedCommand {
   readonly alreadyWrapped: boolean;
   readonly destructive: boolean;
   readonly hasCargo: boolean;
+  /**
+   * At least one simple command is neither a cargo invocation the rewrite
+   * brokers nor an already-brokered `hauler exec` — `cd crates/foo && cargo
+   * build`, `cargo test | tail -20`, `cargo check; rm -rf target`. The daemon
+   * governs only the cargo segments, so such an input is never `allow`ed as a
+   * whole; the host's own permission flow decides the rewritten command.
+   */
+  readonly ungoverned: boolean;
 }
 
 const asWord = (text: string): BashWord => ({
@@ -372,6 +380,7 @@ export const prepareShellCommand = (command: string): PreparedShellCommand => {
   let alreadyWrapped = false;
   let destructive = false;
   let hasCargo = false;
+  let ungoverned = false;
   walkSimpleCommands(ast, (simple) => {
     const argv = commandWords(simple).map((word) => word.text);
     if (isAlreadyWrapped(argv)) {
@@ -380,6 +389,11 @@ export const prepareShellCommand = (command: string): PreparedShellCommand => {
     }
     const cargoIndex = findCargoIndex(argv);
     if (cargoIndex === -1) {
+      // A bare assignment (`FOO=1`) has no words; anything else is a command
+      // the daemon will not govern.
+      if (argv.length > 0) {
+        ungoverned = true;
+      }
       return;
     }
     hasCargo = true;
@@ -388,7 +402,7 @@ export const prepareShellCommand = (command: string): PreparedShellCommand => {
     }
   });
   return {
-    inspection: { alreadyWrapped, destructive, hasCargo },
+    inspection: { alreadyWrapped, destructive, hasCargo, ungoverned },
     rewrite: (options) => {
       if (!hasCargo || !roundTrips(command, print(ast))) {
         return command;

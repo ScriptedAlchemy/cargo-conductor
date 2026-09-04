@@ -120,6 +120,26 @@ describe('tool/before cargo nudge', () => {
     });
   });
 
+  it('rewrites but does not approve a cargo command beside an ungoverned segment', async () => {
+    await withIsolatedStateDir(async () => {
+      const rendered = await renderRoute('event:tool/before', {
+        input: eventInput('tool/before', 'claude', 'PreToolUse', {
+          hook_event_name: 'PreToolUse',
+          session_id: 'sess-9',
+          tool_input: { command: 'cargo test -p foo && rm -rf target' },
+          tool_name: 'Bash',
+        }),
+      });
+      // Brokered, but the host decides the whole rewritten command: `allow`
+      // here would approve `rm -rf target` because cargo shares the input.
+      expect(rendered.document.value).toMatchObject({
+        outcome: 'continue',
+        updatedInput: { command: expect.stringContaining('-- cargo test -p foo && rm -rf target') },
+      });
+      expect(rendered.document.value).not.toHaveProperty('reason');
+    });
+  });
+
   it('leaves non-cargo commands alone with no decision', async () => {
     await withIsolatedStateDir(async () => {
       const rendered = await renderRoute('event:tool/before', {

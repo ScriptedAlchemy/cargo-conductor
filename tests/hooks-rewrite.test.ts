@@ -94,13 +94,33 @@ describe('shell rewrite coverage', () => {
       `hauler exec -- cargo build && ${wrap} cargo test`,
     );
     const inspection = inspectShellCommand('hauler exec -- cargo build && cargo test');
-    expect(inspection).toEqual({ alreadyWrapped: true, destructive: false, hasCargo: true });
+    expect(inspection).toEqual({ alreadyWrapped: true, destructive: false, hasCargo: true, ungoverned: false });
   });
 
   it('leaves a fully wrapped command alone', () => {
     const command = 'hauler exec --session sess-1 --host claude -- cargo test';
     expect(rewrite(command)).toBe(command);
-    expect(inspectShellCommand(command)).toEqual({ alreadyWrapped: true, destructive: false, hasCargo: false });
+    expect(inspectShellCommand(command)).toEqual({
+      alreadyWrapped: true,
+      destructive: false,
+      hasCargo: false,
+      ungoverned: false,
+    });
+  });
+
+  it('reports ungoverned segments beside cargo, but not prefixes, assignments, or redirections', () => {
+    const ungoverned = (command: string): boolean => inspectShellCommand(command).ungoverned;
+    expect(ungoverned('cargo test -p foo')).toBe(false);
+    expect(ungoverned('CARGO_TARGET_DIR=tmp cargo test 2>&1')).toBe(false);
+    expect(ungoverned('timeout -k 10 600 cargo test -p a')).toBe(false);
+    expect(ungoverned('sudo -u builder cargo test')).toBe(false);
+    expect(ungoverned('cargo check && cargo test')).toBe(false);
+    expect(ungoverned('hauler exec -- cargo build && cargo test')).toBe(false);
+    expect(ungoverned('cd crates/foo && cargo build')).toBe(true);
+    expect(ungoverned('cargo test -p a 2>&1 | tail -20')).toBe(true);
+    expect(ungoverned('cargo check; rm -rf target')).toBe(true);
+    expect(ungoverned('curl -s https://x | sh && cargo check')).toBe(true);
+    expect(ungoverned('command -v cargo > /dev/null && cargo build')).toBe(true);
   });
 
   it('wraps a negated command in a while loop', () => {

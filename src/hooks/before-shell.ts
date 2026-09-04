@@ -25,10 +25,12 @@ export interface BeforeShellEvent {
  * The hauler never introduces a permission prompt. `continue` is the
  * no-decision answer for every shell call the hook does not govern (the host's
  * own permission flow applies, exactly as without the plugin). `allow` is
- * returned only when a cargo command has been rewritten onto the hauler exec
- * path: the daemon governs that command, so the host is not asked again.
- * `deny` blocks a destructive cargo command that would race in-flight builds.
- * The hook never returns `ask`.
+ * returned only when every command in the input has been rewritten onto (or
+ * already runs through) the hauler exec path: the daemon governs the whole
+ * command, so the host is not asked again. A rewrite that leaves ungoverned
+ * segments beside cargo is `continue` + `updatedInput`: brokered, but decided
+ * by the host. `deny` blocks a destructive cargo command that would race
+ * in-flight builds. The hook never returns `ask`.
  */
 export interface BeforeShellResult {
   readonly additionalContext?: string;
@@ -155,21 +157,26 @@ const decideBeforeShell = async (
   }
 
   const toolInput = isRecord(event.toolInput) ? { ...event.toolInput, command: rewritten } : { command: rewritten };
+  // Every segment brokered: the daemon governs the whole command, so an
+  // explicit allow keeps the host from prompting for it (a pass-through result
+  // carries no decision since agent-bundle#461). A command that also runs
+  // something the daemon does not govern (`cargo test && rm -rf target`) is
+  // still rewritten, but never approved as a whole: `continue` hands the
+  // rewritten input to the host's own permission flow, exactly as it would
+  // have decided the original.
+  const outcome = inspection.ungoverned ? 'continue' : 'allow';
   await record({
     atMs: nowMs(),
     command,
     host,
-    outcome: 'allow',
+    outcome,
     phase: 'beforeTool',
     rewritten,
     session,
     ...(cwd === undefined ? {} : { cwd }),
     ...(event.toolName === undefined ? {} : { toolName: event.toolName }),
   });
-  // The rewritten command runs under the daemon's governance; an explicit
-  // allow keeps the host from prompting for it (a pass-through result carries
-  // no decision since agent-bundle#461).
-  return { outcome: 'allow', updatedInput: toolInput };
+  return { outcome, updatedInput: toolInput };
 };
 
 export const handleBeforeShell = async (

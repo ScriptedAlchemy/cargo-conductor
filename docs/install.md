@@ -25,11 +25,15 @@ rewrite Cargo to), `bin/cargo-hauler.mjs` (the routed CLI: `status`, `log`,
 and an `INSTALL.md` with the exact compiled names.
 
 The hooks never introduce a permission prompt. The `tool/before` route answers
-`allow` only for a cargo command it has rewritten onto the hauler exec path
-(the daemon governs that command), `deny` only for a destructive cargo command
-that would race in-flight builds, and plain `continue` — no decision, the
-host's own permission flow — for every other tool call. No route returns
-`ask`.
+`allow` only when every command in the input is a cargo invocation it has
+rewritten onto the hauler exec path (or already runs through it) — the daemon
+governs the whole command. A cargo command beside something the daemon does
+not govern (`cd crates/foo && cargo build`, `cargo test | tail -20`) is still
+rewritten but returned as `continue`, so the host's own permission flow
+decides the rewritten command exactly as it would have decided the original.
+`deny` is returned only for a destructive cargo command that would race
+in-flight builds, and plain `continue` — no decision — for every other tool
+call. No route returns `ask`.
 
 ## Install with the framework installer
 
