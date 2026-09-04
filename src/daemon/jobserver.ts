@@ -67,7 +67,86 @@ export interface ArmJobserverOptions {
   readonly stateDir: string;
   /** Token count; defaults to `max(1, cores - 1)`. */
   readonly tokens?: number;
+  /** Policy from `CARGO_HAULER_JOBSERVER`; defaults to `auto`. */
+  readonly mode?: JobserverModeSetting;
+  /** `make --version` output, or null when make is not installed; defaults to running it. */
+  readonly makeVersion?: () => string | null;
 }
+
+export type JobserverModeSetting = 'auto' | 'fifo' | 'off';
+export type JobserverMode = 'fifo' | 'off';
+
+/** Parses `CARGO_HAULER_JOBSERVER`; unknown values warn and fall back to `auto`. */
+export const parseJobserverModeSetting = (
+  value: string | undefined,
+  warn: (message: string) => void,
+): JobserverModeSetting => {
+  const setting = value?.trim().toLowerCase();
+  switch (setting) {
+    case undefined:
+    case '':
+    case 'auto':
+      return 'auto';
+    case 'fifo':
+    case '1':
+    case 'on':
+      return 'fifo';
+    case 'off':
+    case '0':
+    case 'false':
+      return 'off';
+    default:
+      warn(`CARGO_HAULER_JOBSERVER=${value} is not auto, fifo, or off; using auto`);
+      return 'auto';
+  }
+};
+
+/**
+ * Cargo forwards the jobserver to build scripts through `MAKEFLAGS`, and a
+ * `-sys` crate that shells out to `make` hands it straight to the host make.
+ * Only GNU make 4.4+ understands `--jobserver-auth=fifo:PATH`; 4.3 (Ubuntu
+ * 22.04) and 3.81 (macOS) abort with "invalid --jobserver-auth string", so
+ * every jemalloc/openssl-style build fails under the daemon (#76).
+ */
+export const makeSupportsFifoJobserver = (versionOutput: string): boolean => {
+  const match = /^GNU Make (\d+)\.(\d+)/u.exec(versionOutput.trim());
+  if (match === null) {
+    return false;
+  }
+  const major = Number(match[1]);
+  const minor = Number(match[2]);
+  return major > 4 || (major === 4 && minor >= 4);
+};
+
+const readMakeVersion = (): string | null => {
+  const result = spawnSync('make', ['--version'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
+  return result.error === undefined && typeof result.stdout === 'string' ? result.stdout : null;
+};
+
+/**
+ * `auto` arms the FIFO when the host has no `make` (nothing can hand it a
+ * fifo auth) or a fifo-capable one, and stays off otherwise so build
+ * scripts keep working; `fifo`/`off` are explicit.
+ */
+export const resolveJobserverMode = (
+  setting: JobserverModeSetting,
+  makeVersion: () => string | null,
+): JobserverMode => {
+  switch (setting) {
+    case 'fifo':
+      return 'fifo';
+    case 'off':
+      return 'off';
+    case 'auto': {
+      const version = makeVersion();
+      return version === null || makeSupportsFifoJobserver(version) ? 'fifo' : 'off';
+    }
+    default: {
+      const exhaustive: never = setting;
+      return exhaustive;
+    }
+  }
+};
 
 /**
  * Creates (if needed), drains, and seeds the shared FIFO, retaining an open
@@ -78,6 +157,9 @@ export interface ArmJobserverOptions {
 export const armSharedJobserver = (options: ArmJobserverOptions): boolean => {
   if (armed !== null) {
     return true;
+  }
+  if (resolveJobserverMode(options.mode ?? 'auto', options.makeVersion ?? readMakeVersion) === 'off') {
+    return false;
   }
   const tokens = options.tokens ?? Math.max(1, availableParallelism() - 1);
   const path = join(options.stateDir, jobserverFifoFileName);

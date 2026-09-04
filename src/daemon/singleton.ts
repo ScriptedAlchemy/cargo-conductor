@@ -429,7 +429,7 @@ export const acquireSingletonLockWith = (
   // tokens live exactly as long as this retained descriptor. Arming is a
   // best-effort optimization: on failure every spawn behaves as before.
   yield* Effect.acquireRelease(
-    Effect.sync(() => armSharedJobserver({ stateDir: config.stateDir })),
+    Effect.sync(() => armSharedJobserver({ mode: config.jobserverMode, stateDir: config.stateDir })),
     () => Effect.sync(() => releaseSharedJobserver()),
   );
 });

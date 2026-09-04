@@ -86,6 +86,9 @@ const makeFixture = (
     CARGO_HAULER_HEAVY_MEM_AVAILABLE_GB: 'off',
     // Hermetic tests: no live kache priors.
     CARGO_HAULER_KACHE_INDEX: '',
+    // The fake cargo never runs make, so exercise the fifo pool regardless of
+    // the host's make version.
+    CARGO_HAULER_JOBSERVER: 'fifo',
     ...env,
   });
   return { config, root, binDir, ws1: makeWorkspace('ws1'), ws2: makeWorkspace('ws2') };

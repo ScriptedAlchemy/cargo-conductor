@@ -52,6 +52,7 @@ const configAt = (stateDir: string): DaemonConfigShape => ({
   heavyMaxConcurrent: 1,
   ledgerRetentionDays: 0,
   ledgerMaxRows: 0,
+  jobserverMode: 'auto',
   stallEstimateFactor: 3,
   stallIdleMs: null,
   stallAutoKill: true,

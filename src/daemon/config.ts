@@ -6,6 +6,7 @@ import * as Effect from 'effect/Effect';
 import * as Layer from 'effect/Layer';
 
 import { daemonSocketPath, defaultKacheIndexPath, resolveStateDir } from '../status.js';
+import { parseJobserverModeSetting, type JobserverModeSetting } from './jobserver.js';
 
 import { ticketLogDirFor } from './ticket-log.js';
 
@@ -94,6 +95,12 @@ export interface DaemonConfigShape {
    * startup (CARGO_HAULER_LEDGER_MAX_ROWS; 0 disables the row cap).
    */
   readonly ledgerMaxRows: number;
+  /**
+   * Shared fifo jobserver policy (CARGO_HAULER_JOBSERVER): `auto` arms it
+   * only when the host `make` can speak `--jobserver-auth=fifo:` (4.4+, or
+   * no make at all), `fifo` forces it, `off` disables it.
+   */
+  readonly jobserverMode: JobserverModeSetting;
   /**
    * A running leader is a stall candidate once its elapsed time exceeds
    * this multiple of its estimate (CARGO_HAULER_STALL_ESTIMATE_FACTOR).
@@ -422,6 +429,9 @@ export const resolveDaemonConfigWithWarnings = (
       integer: true,
       min: 0,
     }),
+    jobserverMode: parseJobserverModeSetting(pick(env, 'CARGO_HAULER_JOBSERVER').raw, (warning) =>
+      warnings.push(warning),
+    ),
     stallEstimateFactor: number(
       pick(env, 'CARGO_HAULER_STALL_ESTIMATE_FACTOR'),
       defaultStallEstimateFactor,
