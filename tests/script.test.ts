@@ -208,6 +208,12 @@ describe('hauler script', () => {
     }
   });
 
+  it('documents daemon restart and rejects unknown daemon subcommands by name', async () => {
+    const usage = await run(['--help']);
+    expect(usage.text).toContain('daemon <run|start|stop|status|restart>');
+    await expect(run(['daemon', 'reload'])).rejects.toThrow('run, start, stop, status, restart');
+  });
+
   it('refuses install-shim with an unknown flag instead of installing anyway', async () => {
     const root = mkdtempSync(join(tmpdir(), 'cc-script-shim-'));
     try {

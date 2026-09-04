@@ -20,6 +20,7 @@ import type { DaemonConfigShape } from './config.js';
 import { CostModelLive } from './cost.js';
 import { KacheStatusLive } from './kache-status.js';
 import { Ledger, LedgerLive } from './ledger.js';
+import { orphanedByRestartError } from './protocol.js';
 import { makeConnectionHandler } from './server.js';
 import type { SingletonLockError } from './singleton.js';
 import { acquireSingletonLockWith } from './singleton.js';
@@ -125,7 +126,7 @@ const daemonProgram = Effect.gen(function* () {
     : Effect.sync(() => rmSync(config.socketPath, { force: true }));
   yield* removeStaleSocket;
   const ledger = yield* Ledger;
-  const reaped = yield* ledger.reapOrphans(Date.now(), 'orphaned by daemon restart');
+  const reaped = yield* ledger.reapOrphans(Date.now(), orphanedByRestartError);
   const broker = yield* Broker;
   const shutdownLatch = yield* Deferred.make<void>();
   const { identity, server } = yield* bindDaemonSocket(config.socketPath);

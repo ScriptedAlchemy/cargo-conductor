@@ -9,7 +9,7 @@ import * as Effect from 'effect/Effect';
 import { buildTransportedEnv } from '../client/env.js';
 import { runExecClient, type RunExecOptions, type RunExecResult } from '../client/exec.js';
 import { ExecUsageError, parseExecArgv } from '../client/parse.js';
-import { parseDaemonSubcommand, runDaemonControl } from '../daemon/lifecycle.js';
+import { daemonExitCode, parseDaemonSubcommand, runDaemonControl } from '../daemon/lifecycle.js';
 import { resolveHaulerArgv } from '../hooks/paths.js';
 import {
   defaultShimDir,
@@ -31,8 +31,9 @@ Commands:
   exec [--session ID] [--host HOST] [--cwd DIR] [--bg] [--after TICKET[,TICKET…]] -- <cargo command>
       Run cargo through the hauler daemon; --after queues it until those
       tickets finish (it fails if one of them fails or is killed)
-  daemon <run|start|stop|status>
-      Control the hauler daemon
+  daemon <run|start|stop|status|restart>
+      Control the hauler daemon; restart replaces a daemon left running from
+      an older install (in-flight tickets end as "orphaned by daemon restart")
   install-shim [--dir DIR] [--real-cargo PATH] [--force]
       Install an optional PATH cargo shim
   status | log | last | await <ticket> | result <ticket> | request [--after TICKET] -- <cargo command>
@@ -201,19 +202,7 @@ const runDaemonCommand = async (
 ): Promise<number> => {
   const result = await runDaemonControl(parseDaemonSubcommand(rest));
   write(`${JSON.stringify(result)}\n`);
-  switch (result.subcommand) {
-    case 'run':
-      return result.message === 'completed' || result.message === 'already-running' ? 0 : 1;
-    case 'start':
-    case 'status':
-      return result.running ? 0 : 1;
-    case 'stop':
-      return 0;
-    default: {
-      const exhaustive: never = result.subcommand;
-      return exhaustive;
-    }
-  }
+  return daemonExitCode(result);
 };
 
 /**

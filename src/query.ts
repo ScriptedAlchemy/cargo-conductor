@@ -8,6 +8,7 @@ import { resolveDaemonConfig } from './daemon/config.js';
 import type { DaemonConfigShape } from './daemon/config.js';
 import { requestExpecting } from './daemon/control.js';
 import { createLedgerApi, openLedgerDatabase, openLedgerDatabaseReadOnly } from './daemon/ledger.js';
+import { isOrphanedByRestart, orphanedByRestartError } from './daemon/protocol.js';
 import type {
   AttachmentSavingsReport,
   KacheStatusReport,
@@ -20,12 +21,20 @@ import type {
 } from './daemon/protocol.js';
 import { stripAnsi } from './lib/ansi.js';
 import { shortId } from './lib/id.js';
-import type { DaemonStatus } from './lib/protocol-schemas.js';
+import { statusReportSchema, type DaemonStatus } from './lib/protocol-schemas.js';
 import { countWord } from './lib/text.js';
+import {
+  learnDaemonVersion,
+  validateDaemonReply,
+  versionSkewLine,
+  type DaemonVersionSkewError,
+} from './lib/version-skew.js';
 
 export interface HaulerSnapshot {
   readonly active: readonly RequestRecord[];
   readonly daemon: DaemonStatus;
+  /** The running daemon's release version, when it stated one (report or pong); absent when stopped. */
+  readonly daemonVersion?: string;
   readonly kache?: KacheStatusReport | null;
   readonly lanes: readonly LaneStatus[];
   readonly maxConcurrent: number | null;
@@ -68,11 +77,23 @@ export const stalledGuidance = (
     ? `ticket looks stalled (no CPU for ${Math.floor(request.stall.idleMs / 60_000)}m) — hauler kill ${request.attachedTo ?? request.ticket}`
     : null;
 
+/**
+ * `hauler result` / `hauler_result` explanation for a ticket the daemon
+ * restart ended (#75): it was not killed by anyone and did not fail on its
+ * own, so a plain `killed` would send the reader looking for a cause.
+ */
+export const orphanedGuidance = (
+  request: Pick<RequestRecord, 'status'> & Partial<Pick<RequestRecord, 'error'>>,
+): string | null =>
+  request.error !== undefined && isOrphanedByRestart({ error: request.error, status: request.status })
+    ? `${orphanedByRestartError}: the daemon stopped while it was in flight and does not hand runs over; resubmit if the work is still needed`
+    : null;
+
 export const describeRequestRecord = (
   ticket: string,
   request:
     | (Pick<RequestRecord, 'ticket' | 'status' | 'errorCount' | 'warningCount'> &
-        Partial<Pick<RequestRecord, 'attachedTo' | 'stall'>>)
+        Partial<Pick<RequestRecord, 'attachedTo' | 'error' | 'stall'>>)
     | null,
 ): string => {
   if (request === null) {
@@ -82,8 +103,8 @@ export const describeRequestRecord = (
     request.errorCount === null || request.warningCount === null
       ? ''
       : ` (${countWord(request.errorCount, 'error')}, ${countWord(request.warningCount, 'warning')})`;
-  const stalled = stalledGuidance(request);
-  return `${request.ticket} ${request.status}${counts}${stalled === null ? '' : ` — ${stalled}`}`;
+  const note = stalledGuidance(request) ?? orphanedGuidance(request);
+  return `${request.ticket} ${request.status}${counts}${note === null ? '' : ` — ${note}`}`;
 };
 
 /**
@@ -114,10 +135,11 @@ const stoppedSummary = (recentCount: number): string => {
   return `cargo-hauler daemon is not running; ${countWord(recentCount, 'recorded request')}`;
 };
 
-const runningSummary = (report: StatusReport): string => {
+const runningSummary = (report: StatusReport, daemonVersion: string | undefined): string => {
   const queued = report.lanes.reduce((sum, lane) => sum + lane.queued, 0);
   const running = report.active.filter((record) => record.status === 'running').length;
-  return `cargo-hauler daemon is running (pid ${report.pid}); ${queued} queued, ${running} running`;
+  const skew = versionSkewLine(daemonVersion);
+  return `cargo-hauler daemon is running (pid ${report.pid}); ${queued} queued, ${running} running${skew === null ? '' : `; ${skew}`}`;
 };
 
 /** Keep the internal raw report off the strict public status-result object spread. */
@@ -130,11 +152,16 @@ const withReport = (
     value: report,
   }) as HaulerSnapshot;
 
-const fromReport = (report: StatusReport, config: DaemonConfigShape): HaulerSnapshot =>
+const fromReport = (
+  report: StatusReport,
+  config: DaemonConfigShape,
+  daemonVersion: string | undefined,
+): HaulerSnapshot =>
   withReport(
     {
       active: report.active,
       daemon: 'running',
+      ...(daemonVersion === undefined ? {} : { daemonVersion }),
       ...(report.kache === undefined ? {} : { kache: report.kache }),
       ...(report.system === undefined ? {} : { system: report.system }),
       lanes: report.lanes,
@@ -146,10 +173,26 @@ const fromReport = (report: StatusReport, config: DaemonConfigShape): HaulerSnap
       socketPath: report.socketPath,
       startedAtMs: report.startedAtMs,
       stateRoot: config.stateDir,
-      summary: runningSummary(report),
+      summary: runningSummary(report, daemonVersion),
     },
     report,
   );
+
+/**
+ * A live daemon's report, read with the lenient client schema so a daemon
+ * left running across an upgrade still answers (#75). A report that does not
+ * fit fails as version skew; the daemon's version rides the report from
+ * 0.4.5 on and is fetched with one ping from older daemons.
+ */
+const fromLiveReport = (
+  raw: unknown,
+  config: DaemonConfigShape,
+): Effect.Effect<HaulerSnapshot, DaemonVersionSkewError> =>
+  Effect.gen(function* () {
+    const report = yield* validateDaemonReply(statusReportSchema, raw, config.socketPath);
+    const daemonVersion = yield* learnDaemonVersion(report, config.socketPath);
+    return fromReport(report, config, daemonVersion);
+  });
 
 const emptyStopped = (config: DaemonConfigShape): HaulerSnapshot =>
   withReport(
@@ -215,9 +258,14 @@ const fromLedger = (
   );
 };
 
+/**
+ * Fails only with `DaemonVersionSkew`: a daemon that answered with a report
+ * this build cannot read. Every other way of not reaching the daemon is a
+ * snapshot that says so (`stopped`, `unresponsive`).
+ */
 export const loadHaulerSnapshot = (
   options: LoadSnapshotOptions = {},
-): Effect.Effect<HaulerSnapshot> => {
+): Effect.Effect<HaulerSnapshot, DaemonVersionSkewError> => {
   const config = options.config ?? resolveDaemonConfig();
   const recentLimit = options.recentLimit ?? defaultRecentLimit;
   return requestExpecting(
@@ -228,11 +276,9 @@ export const loadHaulerSnapshot = (
     },
     (message): message is StatusResultMessage => message.type === 'status-result',
   ).pipe(
-    Effect.flatMap((result) => {
-      return result === undefined
-        ? fromLedger(config, recentLimit)
-        : Effect.succeed(fromReport(result.report, config));
-    }),
+    Effect.flatMap((result) =>
+      result === undefined ? fromLedger(config, recentLimit) : fromLiveReport(result.report, config),
+    ),
     // Unreachable means stopped; a timeout or dropped connection means a
     // daemon that exists but did not answer — say so instead of "stopped".
     Effect.catchTags({

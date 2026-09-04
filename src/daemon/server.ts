@@ -423,7 +423,11 @@ export const makeConnectionHandler =
             case 'status':
               return Effect.gen(function* () {
                 const report = yield* options.broker.report(message.limit);
-                yield* send({ type: 'status-result', id: message.id, report });
+                yield* send({
+                  type: 'status-result',
+                  id: message.id,
+                  report: { ...report, version: options.version },
+                });
               });
             case 'ping':
               return send({

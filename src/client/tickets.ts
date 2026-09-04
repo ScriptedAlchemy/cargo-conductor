@@ -22,6 +22,8 @@ import type {
   ServerMessage,
 } from '../daemon/protocol.js';
 import { shortId } from '../lib/id.js';
+import { requestRecordSchema } from '../lib/protocol-schemas.js';
+import { validateDaemonReply, type DaemonVersionSkewError } from '../lib/version-skew.js';
 
 import { ensureDaemonRunning } from './ensure-daemon.js';
 import { formatProgressLine } from './progress.js';
@@ -35,14 +37,30 @@ export class DaemonRejectedError extends Data.TaggedError('DaemonRejected')<{
 
 /**
  * Infrastructure failures stay typed in this library: a daemon that is down
- * is not the same as a ticket that does not exist. Callers convert to
- * fail-open values only at deliberately fail-open boundaries (hooks).
+ * is not the same as a ticket that does not exist, and a daemon whose reply
+ * this build cannot read is an older daemon to restart (#75). Callers convert
+ * to fail-open values only at deliberately fail-open boundaries (hooks).
  */
 export type TicketSocketError =
   | ConnectionClosedError
   | ControlTimeoutError
   | DaemonUnreachableError
-  | DaemonRejectedError;
+  | DaemonRejectedError
+  | DaemonVersionSkewError;
+
+const nullableRecordSchema = requestRecordSchema.nullable();
+
+/**
+ * The record on a `result-result`/`await-result` reply, read with the lenient
+ * client schema so an older daemon's rows (no `outputPath`, no `after`) still
+ * parse; anything that still does not fit fails as version skew instead of
+ * surfacing later as a raw schema dump.
+ */
+const readRecord = (
+  request: unknown,
+  config: DaemonConfigShape,
+): Effect.Effect<RequestRecord | null, DaemonVersionSkewError> =>
+  validateDaemonReply(nullableRecordSchema, request, config.socketPath);
 
 /**
  * One request, one answer: resolves on the reply carrying this request's id,
@@ -91,7 +109,7 @@ export const fetchTicket = (
     { id: shortId(), ticket, type: 'result' },
     2_000,
     (message): message is ResultResultMessage => message.type === 'result-result',
-  ).pipe(Effect.map((result) => result?.request ?? null));
+  ).pipe(Effect.flatMap((result) => readRecord(result?.request ?? null, config)));
 
 /**
  * Ask the daemon to stop a ticket: a queued job is dropped, a running leader
@@ -248,10 +266,11 @@ export const awaitTicket = (
     maxWaitMs + 2_000,
     (message): message is AwaitResultMessage => message.type === 'await-result',
   ).pipe(
-    Effect.map((result) => ({
-      request: result?.request ?? null,
-      timedOut: result?.timedOut ?? true,
-    })),
+    Effect.flatMap((result) =>
+      readRecord(result?.request ?? null, config).pipe(
+        Effect.map((request) => ({ request, timedOut: result?.timedOut ?? true })),
+      ),
+    ),
   );
 
 export interface BackgroundSubmitInput {

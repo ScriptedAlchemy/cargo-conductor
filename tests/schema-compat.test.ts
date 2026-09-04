@@ -91,6 +91,62 @@ const savings = {
   },
 };
 
+/**
+ * A record exactly as a 0.4.1 daemon serializes it (`git show
+ * v0.4.1:src/lib/protocol-schemas.ts`): no `outputPath` (0.4.2, #68), no
+ * `after`/`waitingFor` (0.4.4, #45), no `stall`/`orphaned` (0.4.3, #46). A
+ * CLI upgraded under a still-running older daemon must read these (#75).
+ */
+const { outputPath: _legacyOutputPath, ...legacyDaemonRecord } = baseRecord;
+
+const legacyDaemonReport = {
+  active: [{ ...legacyDaemonRecord, exitCode: null, finishedAtMs: null, status: 'running', ticket: 'cc-3518' }],
+  lanes: [{ key: '["/ws","/ws/target"]', queued: 0, runningTicket: 'cc-3518', targetDir: '/ws/target', workspaceRoot: '/ws' }],
+  maxConcurrent: 5,
+  pid: 741314,
+  recent: [legacyDaemonRecord],
+  socketPath: '/home/me/.cache/cargo-hauler/daemon.sock',
+  startedAtMs: 1,
+  system: { clampThresholdPerCore: null, cores: 16, loadAvg1: 3.2 },
+};
+
+describe('legacy daemon replies (issue #75)', () => {
+  it('parses a 0.4.1-shaped status report with today\'s schema, defaulting the fields it lacks', () => {
+    const parsed = statusReportSchema.parse(legacyDaemonReport);
+    expect(parsed.active[0]?.outputPath).toBeNull();
+    expect(parsed.active[0]?.after).toEqual([]);
+    expect(parsed.active[0]?.waitingFor).toBeUndefined();
+    expect(parsed.active[0]?.stall).toBeUndefined();
+    expect(parsed.active[0]?.orphaned).toBeUndefined();
+    expect(parsed.recent[0]?.outputPath).toBeNull();
+    expect(parsed.system?.heavy).toBeUndefined();
+    expect(parsed.version).toBeUndefined();
+  });
+
+  it('parses a 0.4.1-shaped result and await reply with today\'s schema', () => {
+    const result = resultFetchResultSchema.parse({
+      operation: 'result',
+      request: legacyDaemonRecord,
+      summary: 'cc-1 done',
+      ticket: 'cc-1',
+    });
+    expect(result.request?.outputPath).toBeNull();
+    const awaited = awaitResultSchema.parse({
+      operation: 'await',
+      request: legacyDaemonRecord,
+      summary: 'cc-1 done',
+      ticket: 'cc-1',
+      timedOut: false,
+    });
+    expect(awaited.request?.after).toEqual([]);
+  });
+
+  it('carries the daemon version on a status report from a current daemon', () => {
+    const parsed = statusReportSchema.parse({ ...legacyDaemonReport, version: '0.4.4' });
+    expect(parsed.version).toBe('0.4.4');
+  });
+});
+
 describe('status/result contract completeness (issue #16)', () => {
   /**
    * A finished record exactly as the daemon serializes it after a demuxed

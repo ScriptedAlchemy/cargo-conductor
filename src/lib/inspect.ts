@@ -1,5 +1,3 @@
-import * as Effect from 'effect/Effect';
-
 import type { DaemonConfigShape } from '../daemon/config.js';
 import { displayRequestRecord, displayRequestRecords, loadHaulerSnapshot } from '../query.js';
 
@@ -11,19 +9,22 @@ import type {
   StatusResult,
 } from './protocol-schemas.js';
 import { filterStatusRows, hasStatusFilters, statusSummary } from './status-filter.js';
+import { runTicketEffect } from './ticket-errors.js';
 
 export interface InspectOptions {
   readonly config?: DaemonConfigShape;
   readonly signal: AbortSignal;
 }
 
+// Through the ticket boundary runner: a daemon whose report this build cannot
+// read surfaces as the version-skew message, not a schema dump (#75).
 const loadSnapshot = (limit: number, options: InspectOptions) =>
-  Effect.runPromise(
+  runTicketEffect(
     loadHaulerSnapshot({
       recentLimit: limit,
       ...(options.config === undefined ? {} : { config: options.config }),
     }),
-    { signal: options.signal },
+    options.signal,
   );
 
 export const loadLastResult = async (options: InspectOptions): Promise<LastResult> => {
@@ -70,6 +71,6 @@ export const loadStatusResult = async (
     active: displayRequestRecords(active),
     operation: 'status',
     recent: displayRequestRecords(recent),
-    summary: statusSummary(snapshot.daemon, active, recent),
+    summary: statusSummary(snapshot.daemon, active, recent, { daemonVersion: snapshot.daemonVersion }),
   };
 };
