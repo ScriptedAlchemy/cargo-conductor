@@ -46,19 +46,23 @@ what is queued, or why their command is slow.
 
 ## Quick start
 
+Install from npm — the package carries a ready-made plugin for each host and
+its own installer, so nothing else is needed:
+
 ```sh
-pnpm install && pnpm run build
-pnpm exec agent-bundle install claude --from artifact/claude --scope user   # Claude Code
-pnpm exec agent-bundle install codex  --from artifact/codex                 # Codex
-pnpm exec agent-bundle install cursor --from artifact/cursor --mode local   # Cursor
-node dist/bin/hauler.js install-shim   # optional: cargo from scripts/terminals too
+npm install -g cargo-hauler
+
+cargo-hauler-install install claude --scope user   # Claude Code
+cargo-hauler-install install codex                 # Codex
+cargo-hauler-install install cursor --mode local   # Cursor
+hauler install-shim                                # optional: cargo from scripts and terminals too
 ```
 
-Restart the host so new sessions load the hooks. The daemon starts on demand
-with the first brokered request; `hauler status` shows what is running, and
-the `hauler_status` tool opens the dashboard in hosts that render MCP Apps.
-Full install notes, per-host details, and `--replace` for upgrades are in
-[Install](#install) and [docs/install.md](docs/install.md).
+Restart the host (or reload the window) so new sessions load the hooks. The
+daemon starts on demand with the first brokered request; `hauler status` shows
+what is running, and the `hauler_status` tool opens the dashboard in hosts that
+render MCP Apps. Prefer the hosts' own plugin commands, or building from a
+checkout? See [Install](#install).
 
 ## Commands and tools
 
@@ -385,44 +389,74 @@ is reported as unavailable and never rejects a request.
 Requirements: Node 22.19 or newer, Cargo, and Linux or macOS (Windows is
 experimental: named-pipe transport, no PATH shim).
 
+The npm package ships one plugin per host under `artifact/<host>` — the
+Claude Code plugin with its local marketplace, the Codex plugin, and the Cursor
+plugin with its `install.mjs` — plus three executables: `hauler` (the CLI),
+`cargo-hauler` (the routed commands), and `cargo-hauler-install`. Every pack
+also contains an `INSTALL.md` with the exact commands for that host.
+
+### With the bundled installer
+
+```sh
+npm install -g cargo-hauler        # or run each command as: npx -p cargo-hauler <command>
+
+cargo-hauler-install install claude --scope user       # user, project, or local
+cargo-hauler-install install codex
+cargo-hauler-install install cursor --mode local        # ~/.cursor/plugins/local/cargo-hauler
+cargo-hauler-install install cursor --mode marketplace  # stage a local marketplace repo for Customize → Add Plugins from Local Repository
+```
+
+`cargo-hauler-install` runs the host's own plugin commands for you (below),
+detects an installed copy with the same version but different content and
+replaces it, and takes `--replace` (alias `--force`) to replace a different
+installed version. `--json` prints the result for scripts.
+
+### With the hosts' own plugin commands
+
+The same result without the installer, from the package or a build (paths are
+relative to `node_modules/cargo-hauler` or the checkout):
+
+```sh
+# Claude Code — a local marketplace plus a plugin install
+cd artifact/claude
+claude plugin marketplace add ./
+claude plugin install cargo-hauler@cargo-hauler-marketplace --scope user
+
+# Codex — a local marketplace snapshot
+cd artifact/codex
+codex plugin marketplace add ./
+codex plugin add cargo-hauler@cargo-hauler-marketplace
+
+# Cursor — no non-interactive plugin command exists, so the pack ships one
+node artifact/cursor/install.mjs                     # local plugin (default)
+node artifact/cursor/install.mjs --mode marketplace  # local marketplace repository
+```
+
+Upgrading to a new version: `claude plugin marketplace update cargo-hauler-marketplace
+&& claude plugin update cargo-hauler@cargo-hauler-marketplace`, `codex plugin
+remove … && codex plugin marketplace add ./ && codex plugin add …`, and
+`node artifact/cursor/install.mjs --replace`. `claude plugin update` is
+version-gated, so after a rebuild that did not bump the version use
+`claude plugin uninstall … --keep-data` and install again (the installer does
+this automatically). Restart or reload the host after installing.
+
+### From a checkout
+
 ```sh
 pnpm install
 pnpm run build      # artifact/{claude,codex,cursor,portable} + dist/bin
 ```
 
-Each host pack under `artifact/<host>` is independently installable through
-the framework's installer. The packs are framework-owned; this project ships
-no installer of its own.
-
-```sh
-# Claude Code (local marketplace + plugin install)
-pnpm exec agent-bundle install claude --from artifact/claude --scope user
-
-# Codex
-pnpm exec agent-bundle install codex --from artifact/codex
-
-# Cursor: safe-copy into ~/.cursor/plugins/local/cargo-hauler (default), or
-# stage a local marketplace repository for Customize → Add Plugins from Local Repository
-pnpm exec agent-bundle install cursor --from artifact/cursor --mode local
-pnpm exec agent-bundle install cursor --from artifact/cursor --mode marketplace
-```
-
-Add `--replace` to any of them after a same-version rebuild. From an `npm
-pack`ed tarball the same operations are
-`npx cargo-hauler-install install <host> [--scope …] [--mode …] [--json]`
-(`dist/bin/cargo-hauler-install.js`, generated by the build and gated by
-`agent-bundle prepack`). `agent-bundle doctor --host <host>` reports the
-installed copy versus the artifact (`current`, `stale`, `version-mismatch`,
-`foreign`, `not-installed`) and, for Cursor, whether the manifest hooks are
-registered. Each pack's `INSTALL.md` carries the same commands with the exact
-compiled names. Restart or reload the host after installing so new sessions
-load the hooks. Per-host notes, hook timeouts, and the optional PATH shim are
-in [docs/install.md](docs/install.md).
+Then install with either method above from `artifact/<host>`, and run
+`node dist/bin/hauler.js install-shim` for the PATH shim. Building needs the
+repository's dev dependencies (including the agent-bundle framework, pinned as
+a pkg.pr.new preview until it is on npm); using the published package does
+not.
 
 The first brokered request makes one daemon-start attempt. Hooks cover Cargo
 commands submitted through supported agent shells; the optional PATH shim
-(`node dist/bin/hauler.js install-shim`) also covers Cargo invoked by scripts
-and terminals.
+(`hauler install-shim`) also covers Cargo invoked by scripts and terminals.
+Per-host notes and hook timeouts are in [docs/install.md](docs/install.md).
 
 ## Configuration
 

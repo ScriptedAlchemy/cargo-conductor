@@ -1,10 +1,12 @@
 # Installing cargo-hauler
 
-cargo-hauler is an [agent-bundle](https://github.com/ScriptedAlchemy/agent-bundle)
-application. `pnpm run build` emits one independently installable host pack per
-target — `artifact/claude`, `artifact/codex`, `artifact/cursor`, and the
-Agent Plugins `artifact/portable` — plus the package binaries in `dist/bin/`
-(`hauler.js`, `cargo-hauler.js`, and the generated `cargo-hauler-install.js`).
+The npm package (`npm install -g cargo-hauler`) carries one ready-made plugin
+per host — `artifact/claude`, `artifact/codex`, `artifact/cursor`, and the
+Agent Plugins `artifact/portable` — plus three executables in `dist/bin/`:
+`hauler` (the CLI), `cargo-hauler` (the routed commands), and
+`cargo-hauler-install`. Installing needs only Node and the host; the
+agent-bundle framework that builds these packs is a development dependency
+only, and the packs and installer never load it.
 
 Supported platforms: Linux and macOS. Windows is experimental and untested
 (the daemon endpoint resolves to a named pipe, but the cargo PATH shim is
@@ -35,27 +37,44 @@ decides the rewritten command exactly as it would have decided the original.
 in-flight builds, and plain `continue` — no decision — for every other tool
 call. No route returns `ask`.
 
-## Install with the framework installer
+## Install
 
-The packs are framework-owned and install through `agent-bundle install`; the
-project has no installer of its own. Run from the repository root:
+Every pack installs through its host's own plugin commands; the package also
+ships `cargo-hauler-install`, which runs those commands for you and handles
+same-version replacement. Neither needs the agent-bundle framework.
+
+From the npm package:
 
 ```sh
-pnpm exec agent-bundle install claude --from artifact/claude --scope user
-pnpm exec agent-bundle install codex  --from artifact/codex
-pnpm exec agent-bundle install cursor --from artifact/cursor --mode local
+npm install -g cargo-hauler
+cargo-hauler-install install claude --scope user
+cargo-hauler-install install codex
+cargo-hauler-install install cursor --mode local
 ```
 
-- `--replace` (alias `--force`) replaces a different installed version or
-  adopts a pre-receipt copy; a same-version rebuild is replaced in place
-  (owned files only, `state/` survives).
-- `agent-bundle doctor --host <host>` reports the installed copy versus the
-  artifact as `current`, `stale`, `version-mismatch`, `foreign`, or
-  `not-installed`.
-- From an `npm pack`ed tarball, `npx cargo-hauler-install install <host>
-  [--scope …] [--mode …] [--json]` performs the same operations
-  (`dist/bin/cargo-hauler-install.js`); `npm install` itself never mutates a
-  host.
+Or the host commands directly, from `artifact/<host>` (in the package or a
+checkout — each pack's `INSTALL.md` repeats them with the compiled names):
+
+```sh
+(cd artifact/claude && claude plugin marketplace add ./ && claude plugin install cargo-hauler@cargo-hauler-marketplace --scope user)
+(cd artifact/codex  && codex plugin marketplace add ./  && codex plugin add cargo-hauler@cargo-hauler-marketplace)
+node artifact/cursor/install.mjs [--mode local|marketplace] [--replace]
+```
+
+- `--replace` (alias `--force`) on `cargo-hauler-install` and on the Cursor
+  `install.mjs` replaces a different installed version or adopts a
+  pre-receipt copy; a same-version rebuild is replaced in place (owned files
+  only, `state/` survives). Claude's `plugin update` is version-gated, so a
+  same-version rebuild needs `claude plugin uninstall … --keep-data` then a
+  fresh install; Codex needs `codex plugin remove …` then `marketplace add` +
+  `plugin add`. The installer performs these sequences itself.
+- `cargo-hauler-install … --json` prints the outcome (`installed`, `replaced`,
+  `current`, `refused`) for scripts. `npm install` itself never mutates a host.
+- Contributors with the framework available can also use
+  `pnpm exec agent-bundle install <host> --from artifact/<host>` and
+  `agent-bundle doctor --host <host>` (installed copy versus artifact:
+  `current`, `stale`, `version-mismatch`, `foreign`, `not-installed`); they
+  apply the same policy.
 
 ## Per-host notes
 
@@ -84,11 +103,8 @@ pnpm exec agent-bundle install cursor --from artifact/cursor --mode local
 - `--mode marketplace` stages a committed Git repository at
   `~/.cursor/agent-bundle/marketplaces/cargo-hauler` and prints the one
   Cursor-owned step: Customize → Plugins → Add Plugins from Local Repository →
-  select that directory → Install. `agent-bundle doctor --host cursor` reports
-  whether the staged marketplace was imported.
-- `agent-bundle doctor --host cursor` also reports each local plugin's hook
-  registration (`AB7322`) and warns about duplicate delivery through
-  `~/.cursor/hooks.json` (`AB7323`).
+  select that directory → Install. Cursor then lists the plugin under
+  Customize as a marketplace install rather than "local".
 - The PATH shim (below) additionally covers Cargo that Cursor runs outside
   the hooked shell tool.
 
