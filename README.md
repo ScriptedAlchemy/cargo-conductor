@@ -393,7 +393,10 @@ The npm package ships one plugin per host under `artifact/<host>` — the
 Claude Code plugin with its local marketplace, the Codex plugin, and the Cursor
 plugin with its `install.mjs` — plus three executables: `hauler` (the CLI),
 `cargo-hauler` (the routed commands), and `cargo-hauler-install`. Every pack
-also contains an `INSTALL.md` with the exact commands for that host.
+also contains an `INSTALL.md` with the exact commands for that host. The
+package declares no runtime dependencies — every library the packs and
+executables use is bundled into them — so `npm install` fetches this one
+tarball and nothing else.
 
 ### With the bundled installer
 
