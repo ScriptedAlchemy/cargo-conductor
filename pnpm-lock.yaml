@@ -7,47 +7,25 @@ settings:
 importers:
 
   .:
-    dependencies:
+    devDependencies:
       '@agent-bundle/runtime':
         specifier: https://pkg.pr.new/ScriptedAlchemy/agent-bundle/@agent-bundle/runtime@42539ff5fbafdff0656317b841a50100ac0fc141
         version: https://pkg.pr.new/ScriptedAlchemy/agent-bundle/@agent-bundle/runtime@42539ff5fbafdff0656317b841a50100ac0fc141(@rspack/core@2.2.2(@swc/helpers@0.5.23))(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
+      '@changesets/cli':
+        specifier: 3.0.1
+        version: 3.0.1
       '@effect/atom-react':
         specifier: 4.0.0-rc.112
         version: 4.0.0-rc.112(effect@4.0.0-rc.112)(react@19.2.8)(scheduler@0.27.0)
       '@effect/platform-node':
         specifier: 4.0.0-rc.112
         version: 4.0.0-rc.112(effect@4.0.0-rc.112)(redis@6.2.1)
-      '@modelcontextprotocol/server':
-        specifier: 2.0.0
-        version: 2.0.0
-      bashjsast:
-        specifier: github:woolkingx/bashjsast#131f4b677d1906774fc49cfceab0ccb7b370b2e6
-        version: https://codeload.github.com/woolkingx/bashjsast/tar.gz/131f4b677d1906774fc49cfceab0ccb7b370b2e6
-      effect:
-        specifier: 4.0.0-rc.112
-        version: 4.0.0-rc.112
-      proper-lockfile:
-        specifier: ^4.1.2
-        version: 4.1.2
-      react:
-        specifier: ^19.2.8
-        version: 19.2.8
-      react-dom:
-        specifier: ^19.2.8
-        version: 19.2.8(react@19.2.8)
-      scheduler:
-        specifier: ^0.27.0
-        version: 0.27.0
-      zod:
-        specifier: 4.5.4
-        version: 4.5.4
-    devDependencies:
-      '@changesets/cli':
-        specifier: 3.0.1
-        version: 3.0.1
       '@effect/tsgo':
         specifier: 0.38.0
         version: 0.38.0
+      '@modelcontextprotocol/server':
+        specifier: 2.0.0
+        version: 2.0.0
       '@rstest/core':
         specifier: 0.11.11
         version: 0.11.11
@@ -69,12 +47,33 @@ importers:
       agent-bundle:
         specifier: https://pkg.pr.new/ScriptedAlchemy/agent-bundle/agent-bundle@42539ff5fbafdff0656317b841a50100ac0fc141
         version: https://pkg.pr.new/ScriptedAlchemy/agent-bundle/agent-bundle@42539ff5fbafdff0656317b841a50100ac0fc141(@agent-bundle/runtime@https://pkg.pr.new/ScriptedAlchemy/agent-bundle/@agent-bundle/runtime@42539ff5fbafdff0656317b841a50100ac0fc141(@rspack/core@2.2.2(@swc/helpers@0.5.23))(react-dom@19.2.8(react@19.2.8))(react@19.2.8))(@rspack/core@2.2.2(@swc/helpers@0.5.23))(@rstest/core@0.11.11)(@typescript/native-preview@7.0.0-dev.20260707.2)(hono@4.13.5)(react@19.2.8)(typescript@7.0.2)
+      bashjsast:
+        specifier: github:woolkingx/bashjsast#131f4b677d1906774fc49cfceab0ccb7b370b2e6
+        version: https://codeload.github.com/woolkingx/bashjsast/tar.gz/131f4b677d1906774fc49cfceab0ccb7b370b2e6
+      effect:
+        specifier: 4.0.0-rc.112
+        version: 4.0.0-rc.112
       effect-rstest:
         specifier: https://pkg.pr.new/ScriptedAlchemy/effect-rstest@e5f8d5f
         version: https://pkg.pr.new/ScriptedAlchemy/effect-rstest@e5f8d5f(@rstest/core@0.11.11)(effect@4.0.0-rc.112)
+      proper-lockfile:
+        specifier: ^4.1.2
+        version: 4.1.2
+      react:
+        specifier: ^19.2.8
+        version: 19.2.8
+      react-dom:
+        specifier: ^19.2.8
+        version: 19.2.8(react@19.2.8)
+      scheduler:
+        specifier: ^0.27.0
+        version: 0.27.0
       typescript:
         specifier: 7.0.2
         version: 7.0.2
+      zod:
+        specifier: 4.5.4
+        version: 4.5.4
 
 packages:
 
