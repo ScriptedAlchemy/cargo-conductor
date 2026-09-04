@@ -7,6 +7,7 @@ import { requestExpecting, type DaemonUnreachableError } from '../daemon/control
 import type { StatusResultMessage } from '../daemon/protocol.js';
 import { isRecord } from './guards.js';
 import { shortId } from './id.js';
+import { socketErrorCode } from './socket-errors.js';
 import { learnDaemonVersion } from './version-skew.js';
 
 /**
@@ -88,14 +89,8 @@ const runningHealth = (
 };
 
 /** The errno (`ECONNREFUSED`, `EACCES`, `EMFILE`, …) behind a failed socket open, when Node supplied one. */
-const openFailureCode = (error: DaemonUnreachableError): string | undefined => {
-  const socketError: unknown = error.cause;
-  if (!isRecord(socketError) || !isRecord(socketError.reason)) {
-    return undefined;
-  }
-  const cause: unknown = socketError.reason.cause;
-  return isRecord(cause) && typeof cause.code === 'string' ? cause.code : undefined;
-};
+const openFailureCode = (error: DaemonUnreachableError): string | undefined =>
+  socketErrorCode(error.cause) ?? undefined;
 
 const openFailureMessage = (error: DaemonUnreachableError): string => {
   const socketError: unknown = error.cause;

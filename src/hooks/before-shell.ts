@@ -96,6 +96,12 @@ const decideBeforeShell = async (
     return continueResult();
   }
 
+  // Every shell tool call lands here. `hasCargo` needs a word ending in
+  // `cargo`, so the substring test is exact and spares the bash parse.
+  if (!command.includes('cargo')) {
+    return continueResult();
+  }
+
   const prepared = prepareShellCommand(command);
   const inspection = prepared.inspection;
   // `alreadyWrapped` alone is not a short-circuit: `hauler exec -- cargo build

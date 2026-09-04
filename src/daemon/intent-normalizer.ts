@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { realpathSync } from 'node:fs';
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 
-import { optionParts } from '../lib/argv.js';
+import { defaultCargoProfile, optionParts } from '../lib/argv.js';
 import { isRelevantCargoEnvironmentVariable } from '../lib/cargo-env.js';
 
 export interface ParsedCargoArgv {
@@ -106,19 +106,6 @@ const nextestOpaqueOptionsWithValues = new Set([
 const opaqueOptionTakesValue = (subcommand: string, option: string): boolean =>
   opaqueOptionsWithValues.has(option) ||
   (subcommand === 'nextest' && nextestOpaqueOptionsWithValues.has(option));
-
-export const defaultCargoProfile = (subcommand: string): string => {
-  if (subcommand === 'test') {
-    return 'test';
-  }
-  if (subcommand === 'bench') {
-    return 'bench';
-  }
-  if (subcommand === 'install') {
-    return 'release';
-  }
-  return 'dev';
-};
 
 const affectsCompilation = isRelevantCargoEnvironmentVariable;
 

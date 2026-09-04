@@ -12,6 +12,8 @@ import type { NormalizedCargoIntent } from './intent-normalizer.js';
 import {
   emptyEventPriors,
   emptyIndexPriors,
+  eventPriorKey,
+  finitePositiveMs,
   KacheStatus,
 } from './kache-status.js';
 import type {
@@ -82,9 +84,6 @@ const defaultIndexTtlMs = 10 * 60_000;
 const eventPriorWeight = 0.65;
 const observationCacheLimit = 4_096;
 
-const finitePositiveMs = (value: number): number | null =>
-  Number.isFinite(value) && value > 0 ? value : null;
-
 const safeEstimateMs = (value: number): number =>
   Math.round(
     Math.min(
@@ -120,9 +119,6 @@ interface KacheReader {
   readonly load: () => KacheIndexPriors;
   readonly close: () => void;
 }
-
-const eventPriorKey = (crateName: string, profile: string): string =>
-  `${crateName}\0${profile}`;
 
 /**
  * Read-only view over kache's index.db (per-crate compile_time_ms priors).

@@ -30,7 +30,7 @@ const defaultParseSliceMs = 4;
 /** Lines parsed between clock checks; keeps the check itself off the hot path. */
 const parseSliceCheckEvery = 256;
 
-const finitePositiveMs = (value: number): number | null =>
+export const finitePositiveMs = (value: number): number | null =>
   Number.isFinite(value) && value > 0 ? value : null;
 
 const eventProfile = (event: Record<PropertyKey, unknown>): string => {
@@ -46,7 +46,7 @@ const eventProfile = (event: Record<PropertyKey, unknown>): string => {
   return '*';
 };
 
-const eventPriorKey = (crateName: string, profile: string): string =>
+export const eventPriorKey = (crateName: string, profile: string): string =>
   `${crateName}\0${profile}`;
 
 export interface KacheIndexPriors {

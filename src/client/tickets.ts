@@ -26,7 +26,7 @@ import { requestRecordSchema } from '../lib/protocol-schemas.js';
 import { validateDaemonReply, type DaemonVersionSkewError } from '../lib/version-skew.js';
 
 import { ensureDaemonRunning } from './ensure-daemon.js';
-import { formatProgressLine } from './progress.js';
+import { formatDuration, formatProgressLine } from './progress.js';
 
 /** The daemon answered this request with an `error` line (malformed request, internal failure). */
 export class DaemonRejectedError extends Data.TaggedError('DaemonRejected')<{
@@ -127,22 +127,17 @@ export const killTicket = (
     (message): message is KillResultMessage => message.type === 'kill-result',
   ).pipe(Effect.map((result) => result?.killed === true));
 
-const formatSeconds = (ms: number): string => {
-  const seconds = Math.max(0, Math.floor(ms / 1000));
-  return seconds >= 90 ? `${Math.floor(seconds / 60)}m${seconds % 60}s` : `${seconds}s`;
-};
-
 const describeAwaitedRecord = (ticket: string, record: RequestRecord | null): string => {
   if (record === null) {
     return `${ticket} is not known to the daemon (yet)`;
   }
   const command = record.argv.slice(1).join(' ');
-  const estimate = record.estimateMs === null ? '' : ` (est ~${formatSeconds(record.estimateMs)})`;
+  const estimate = record.estimateMs === null ? '' : ` (est ~${formatDuration(record.estimateMs)})`;
   switch (record.status) {
     case 'queued':
-      return `${ticket} queued ${formatSeconds(Date.now() - (record.queuedAtMs ?? record.createdAtMs))}${estimate} — ${command}`;
+      return `${ticket} queued ${formatDuration(Date.now() - (record.queuedAtMs ?? record.createdAtMs))}${estimate} — ${command}`;
     case 'running':
-      return `${ticket} running ${formatSeconds(Date.now() - (record.startedAtMs ?? Date.now()))}${estimate} — ${command}`;
+      return `${ticket} running ${formatDuration(Date.now() - (record.startedAtMs ?? Date.now()))}${estimate} — ${command}`;
     default:
       return `${ticket} ${record.status}${record.exitCode === null ? '' : ` exit=${record.exitCode}`} — ${command}`;
   }

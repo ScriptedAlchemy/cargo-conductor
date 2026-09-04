@@ -20,7 +20,7 @@ import type { Attachment, ExitInfo, Job } from './job-state.js';
 import type { LedgerApi } from './ledger.js';
 import type { AttachMode, FinishedStatus } from './protocol.js';
 import type { ReplayAudience, ReplayChunk } from './replay.js';
-import { calculateServedSavings } from './savings.js';
+import { calculateServedSavings, nonNegativeMs } from './savings.js';
 import type { ServedSavings } from './savings.js';
 import type { TicketDirectory } from './ticket-directory.js';
 
@@ -77,8 +77,6 @@ export interface AttachmentRuntime {
     atMs: number,
   ) => Effect.Effect<void>;
 }
-
-const nonNegativeMs = (value: number): number => Math.max(0, Math.round(value));
 
 /**
  * A raw-output leader spawned with a merged pipe delivers cargo's stderr on

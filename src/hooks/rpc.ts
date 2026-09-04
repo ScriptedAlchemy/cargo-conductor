@@ -1,6 +1,7 @@
 import { createConnection } from 'node:net';
 
 import { LineBuffer } from '../lib/ndjson.js';
+import { socketErrorCode } from '../lib/socket-errors.js';
 
 import { resolveHookSocketPath } from './paths.js';
 import { isRecord } from './shared.js';
@@ -78,9 +79,6 @@ export type RequestOutcome =
   | { readonly kind: 'timeout' }
   | { readonly kind: 'unreachable'; readonly code: string | undefined };
 
-const errorCode = (error: unknown): string | undefined =>
-  isRecord(error) && typeof error.code === 'string' ? error.code : undefined;
-
 /** One-shot NDJSON request/response over the daemon socket, reporting how it ended. */
 export const requestOutcome = (
   message: Record<string, unknown>,
@@ -125,7 +123,7 @@ export const requestOutcome = (
     });
     socket.on('error', (error) => {
       clearTimeout(timer);
-      finish({ code: errorCode(error), kind: 'unreachable' });
+      finish({ code: socketErrorCode(error) ?? undefined, kind: 'unreachable' });
     });
     socket.on('close', () => {
       clearTimeout(timer);

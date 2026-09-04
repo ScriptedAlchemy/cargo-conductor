@@ -6,12 +6,12 @@ import * as Context from 'effect/Context';
 import * as Effect from 'effect/Effect';
 import * as Layer from 'effect/Layer';
 
+import { defaultCargoProfile } from '../lib/argv.js';
 import { isRecord } from '../lib/guards.js';
 import '../lib/quiet-sqlite-warning.js';
 
 import { DaemonConfig } from './config.js';
-import { defaultCargoProfile } from './intent-normalizer.js';
-import { formatTicket, parseTicket } from './protocol.js';
+import { activeStatuses, attachModes, formatTicket, parseTicket, terminalStatuses } from './protocol.js';
 import type {
   AttachmentSavingsModeReport,
   AttachmentSavingsReport,
@@ -234,11 +234,8 @@ const requestColumns = `id, created_at_ms, session, host, cwd, workspace_root, t
   hold_stop, estimate_ms, exec_argv_json, error_count, warning_count, diagnostics_json,
   saved_compute_ms, saved_compute_source, saved_latency_ms, after_json`;
 
-const statusRequestColumns = `id, created_at_ms, session, host, cwd, workspace_root, target_dir, lane_key,
-  argv_json, intent_key, intent_json, status, queued_at_ms, started_at_ms, finished_at_ms, wait_ms,
-  run_ms, exit_code, signal, NULL AS output_tail, output_path, error, attached_to, attach_mode,
-  background, hold_stop, estimate_ms, exec_argv_json, error_count, warning_count, diagnostics_json,
-  saved_compute_ms, saved_compute_source, saved_latency_ms, after_json`;
+/** Status rows deliberately omit the captured output blob. */
+const statusRequestColumns = requestColumns.replace('output_tail', 'NULL AS output_tail');
 
 const columnMigrations: readonly (readonly [column: string, ddl: string])[] = [
   ['attached_to', 'ALTER TABLE requests ADD COLUMN attached_to TEXT'],
@@ -258,9 +255,9 @@ const columnMigrations: readonly (readonly [column: string, ddl: string])[] = [
   ['output_path', 'ALTER TABLE requests ADD COLUMN output_path TEXT'],
 ];
 
-const activeStatusFilter = "status IN ('requested', 'queued', 'running')";
-const terminalStatusFilter =
-  "status IN ('done', 'failed', 'killed', 'denied', 'passthrough')";
+const sqlList = (values: readonly string[]): string => values.map((value) => `'${value}'`).join(', ');
+const activeStatusFilter = `status IN (${sqlList(activeStatuses)})`;
+const terminalStatusFilter = `status IN (${sqlList(terminalStatuses)})`;
 
 /**
  * Terminal rows are never reopened. Attach and running writes can trail a
@@ -268,7 +265,7 @@ const terminalStatusFilter =
  * the late write would flip a `done` row back to `queued`/`running` and the
  * ticket would never read as terminal again.
  */
-const notTerminalFilter = "status NOT IN ('done', 'failed', 'killed', 'denied', 'passthrough')";
+const notTerminalFilter = `status NOT IN (${sqlList(terminalStatuses)})`;
 
 /**
  * Dashboard windows scan only recent leader-settled rows. Keeping this bounded
@@ -773,24 +770,20 @@ export const createLedgerApi = (db: DatabaseSync): LedgerApi => {
       return { requests, transitions };
     });
 
+  const zeroSavings: AttachmentSavingsTotalsReport = {
+    ridersServed: 0,
+    savedComputeMs: 0,
+    savedComputeExactMs: 0,
+    savedComputeEstimatedMs: 0,
+    savedLatencyMs: 0,
+    negativeLatencyRiders: 0,
+  };
+
   const withAllModes = (
     rows: readonly AttachmentSavingsModeReport[],
   ): readonly AttachmentSavingsModeReport[] => {
     const byMode = new Map(rows.map((row) => [row.mode, row] as const));
-    return (['identity', 'coverage', 'batch'] as const).map((mode) => {
-      const row = byMode.get(mode);
-      return (
-        row ?? {
-          mode,
-          ridersServed: 0,
-          savedComputeMs: 0,
-          savedComputeExactMs: 0,
-          savedComputeEstimatedMs: 0,
-          savedLatencyMs: 0,
-          negativeLatencyRiders: 0,
-        }
-      );
-    });
+    return attachModes.map((mode) => byMode.get(mode) ?? { mode, ...zeroSavings });
   };
 
   const totalsFrom = (
@@ -805,14 +798,7 @@ export const createLedgerApi = (db: DatabaseSync): LedgerApi => {
         savedLatencyMs: totals.savedLatencyMs + row.savedLatencyMs,
         negativeLatencyRiders: totals.negativeLatencyRiders + row.negativeLatencyRiders,
       }),
-      {
-        ridersServed: 0,
-        savedComputeMs: 0,
-        savedComputeExactMs: 0,
-        savedComputeEstimatedMs: 0,
-        savedLatencyMs: 0,
-        negativeLatencyRiders: 0,
-      },
+      zeroSavings,
     );
 
   const attachmentSavings = (): AttachmentSavingsReport => {
@@ -980,7 +966,6 @@ export const createLedgerApi = (db: DatabaseSync): LedgerApi => {
   };
 
   const ingestPassthroughSpool = (stateDir: string): number => {
-    mkdirSync(stateDir, { recursive: true });
     const spoolPath = join(stateDir, passthroughSpoolFileName);
     const drainPath = `${spoolPath}.drain`;
     if (!existsSync(drainPath)) {

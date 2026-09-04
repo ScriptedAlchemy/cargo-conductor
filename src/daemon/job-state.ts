@@ -8,12 +8,14 @@ import { cargoJsonDemuxFlag } from '../lib/argv.js';
 import { hasLibKind } from './cargo-json.js';
 import type { TailBuffer } from './executor.js';
 import type { NormalizedCargoIntent } from './intent-normalizer.js';
+import { terminalStatuses } from './protocol.js';
 import type {
   AdmissionHold,
   AttachMode,
   EstimateSource,
   FinishedStatus,
   StallReport,
+  TerminalStatus,
 } from './protocol.js';
 import type { ReplayAudience, ReplayBuffer, ReplayChunk } from './replay.js';
 import type { TicketLogWriter } from './ticket-log.js';
@@ -347,12 +349,8 @@ export const demandSatisfied = (intent: NormalizedCargoIntent, demux: DemuxState
   });
 };
 
-export const isTerminalStatus = (status: string): boolean =>
-  status === 'done' ||
-  status === 'failed' ||
-  status === 'killed' ||
-  status === 'denied' ||
-  status === 'passthrough';
+export const isTerminalStatus = (status: string): status is TerminalStatus =>
+  (terminalStatuses as readonly string[]).includes(status);
 
 export const guarded = (effect: Effect.Effect<void>): Effect.Effect<void> =>
   effect.pipe(

@@ -6,7 +6,7 @@ export interface ServedSavings {
   readonly savedLatencyMs: number;
 }
 
-const nonNegativeMs = (value: number): number => Math.max(0, Math.round(value));
+export const nonNegativeMs = (value: number): number => Math.max(0, Math.round(value));
 
 /**
  * Counterfactual credit for one request served by another cargo process.

@@ -2,6 +2,8 @@ import { DEFAULT_AGENT_RENDER_LIMITS } from '@agent-bundle/runtime';
 import { describe, expect, it } from 'effect-rstest';
 
 import { inputSchema as cliAwaitInputSchema } from '../src/cli/await.js';
+import { inputSchema as cliStatusInputSchema } from '../src/cli/status.js';
+import { requestStatuses } from '../src/daemon/protocol.js';
 import {
   awaitMaxWaitMs,
   awaitResultSchema,
@@ -144,6 +146,13 @@ describe('legacy daemon replies (issue #75)', () => {
   it('carries the daemon version on a status report from a current daemon', () => {
     const parsed = statusReportSchema.parse({ ...legacyDaemonReport, version: '0.4.4' });
     expect(parsed.version).toBe('0.4.4');
+  });
+});
+
+describe('CLI status filter literal', () => {
+  it('spells exactly the protocol request statuses (the validator needs the literal, AB4814)', () => {
+    const statusFilter = cliStatusInputSchema.shape.status.unwrap().element;
+    expect([...statusFilter.options]).toEqual([...requestStatuses]);
   });
 });
 

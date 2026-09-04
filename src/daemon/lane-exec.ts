@@ -147,6 +147,8 @@ export interface LaneRuntime {
     callbacks: SubmitCallbacks,
     queuedAtMs: number,
     estimate: CostEstimate,
+    /** The dependency closure the estimate was priced on, when the caller already has it. */
+    closure?: ReadonlySet<string>,
   ) => Effect.Effect<Job>;
   readonly enqueueJob: (lane: Lane, job: Job) => Effect.Effect<number>;
   /**
@@ -206,6 +208,7 @@ export const makeLaneRuntime = (deps: LaneRuntimeDeps): Effect.Effect<LaneRuntim
       callbacks: SubmitCallbacks,
       queuedAtMs: number,
       estimate: CostEstimate,
+      closure?: ReadonlySet<string>,
     ): Effect.Effect<Job> =>
       Effect.gen(function* () {
         const killSignal = yield* Deferred.make<void>();
@@ -214,13 +217,15 @@ export const makeLaneRuntime = (deps: LaneRuntimeDeps): Effect.Effect<LaneRuntim
         const editedRecently = yield* topology
           .editedRecently(intent.workspaceRoot, intent.packages)
           .pipe(Effect.catchCause(recoverDefect(false)));
-        const depClosure = yield* topology
-          .dependencyClosure(intent.workspaceRoot, intent.packages)
-          .pipe(
-            Effect.catchCause(
-              recoverDefect<ReadonlySet<string>>(new Set<string>()),
-            ),
-          );
+        const depClosure =
+          closure ??
+          (yield* topology
+            .dependencyClosure(intent.workspaceRoot, intent.packages)
+            .pipe(
+              Effect.catchCause(
+                recoverDefect<ReadonlySet<string>>(new Set<string>()),
+              ),
+            ));
         return {
           id,
           ticket,
