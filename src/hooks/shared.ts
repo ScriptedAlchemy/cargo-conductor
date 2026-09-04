@@ -1,6 +1,7 @@
 import { isRecord } from '../lib/guards.js';
 import { countWord } from '../lib/text.js';
 
+import type { DaemonProbe } from './probe.js';
 import type { HookRecord } from './record.js';
 import type { DeniedAttempt, FinishedTicket } from './rpc.js';
 
@@ -15,8 +16,8 @@ export interface HookContext {
 export interface HookServices {
   readonly completedSince?: (session: string, sinceMs: number) => Promise<readonly FinishedTicket[]>;
   readonly haulerArgv?: readonly string[];
-  readonly hasActiveBuilds?: () => boolean | null | Promise<boolean | null>;
   readonly nowMs?: () => number;
+  readonly probeDaemon?: () => DaemonProbe | Promise<DaemonProbe>;
   readonly readCursor?: (session: string) => number;
   readonly record?: (event: HookRecord) => void | Promise<void>;
   readonly recordAttempt?: (attempt: DeniedAttempt) => void | Promise<void>;

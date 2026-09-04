@@ -10,6 +10,7 @@ import { ConnectionOutputBuffer, makeConnectionHandler } from '../src/daemon/ser
 const brokerWith = (overrides: Partial<BrokerApi> = {}): BrokerApi => ({
   _testWaiterCount: () => Effect.succeed(0),
   awaitTicket: () => Effect.succeed({ record: null, timedOut: false }),
+  detach: () => Effect.succeed(true),
   getTicket: () => Effect.succeed(null),
   kill: () => Effect.succeed(true),
   recordAttempt: () => Effect.succeed({ ticket: 'cc-attempt' }),
@@ -127,6 +128,28 @@ describe('daemon connection output buffering', () => {
     expect(buffer.bufferedOutputBytes).toBe(0);
     expect(buffer.bufferedOutputMessages).toBe(0);
   });
+});
+
+describe('daemon connection detach', () => {
+  it.live('marks the ticket detached in the ledger so the afterTool hook reports it', () =>
+    Effect.gen(function* () {
+      const detached: string[] = [];
+      const replies = yield* runMessages(
+        [`${JSON.stringify({ type: 'detach', id: 'detach-1', ticket: 'cc-9' })}\n`],
+        brokerWith({
+          detach: (ticket) =>
+            Effect.sync(() => {
+              detached.push(ticket);
+              return true;
+            }),
+        }),
+      );
+
+      expect(detached).toEqual(['cc-9']);
+      // `detached` reports whether this connection owned the ticket; a detach
+      // for a ticket it never streamed is still recorded but answers false.
+      expect(replies).toContainEqual({ type: 'detach-result', id: 'detach-1', ticket: 'cc-9', detached: false });
+    }));
 });
 
 describe('daemon connection defect boundaries', () => {
