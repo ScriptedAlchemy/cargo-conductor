@@ -11,6 +11,7 @@ import type { DaemonHealth } from '../lib/daemon-health.js';
 import { formatBytes, formatMs, heavyCapNote, pathBasename, relativeTime, shortenPath } from '../lib/format.js';
 import type { StatusResult } from '../lib/protocol-schemas.js';
 import { countWord } from '../lib/text.js';
+import { cliVersion, versionSkewLine } from '../lib/version-skew.js';
 
 import { commandText, diagnosticCounts } from './headlines.js';
 
@@ -28,6 +29,16 @@ export interface DaemonBadgeModel {
   readonly state: DaemonHealth['state'];
   readonly headline: string;
   readonly detail: string | null;
+  /** The resolved state directory, so a reader sees which ledger and socket this is (#75). */
+  readonly stateDir: string | null;
+  /** `daemon 0.4.2 ≠ cli 0.4.4 — restart it with …` when the running daemon is another build (#75). */
+  readonly skew: string | null;
+}
+
+export interface DaemonBadgeShell {
+  /** The version of the CLI/MCP build rendering the badge; defaults to this build's. */
+  readonly cliVersion?: string;
+  readonly stateDir?: string;
 }
 
 const unresponsiveDetail = (
@@ -48,7 +59,12 @@ const unresponsiveDetail = (
   }
 };
 
-export const daemonBadgeModel = (health: DaemonHealth, nowMs: number): DaemonBadgeModel => {
+export const daemonBadgeModel = (
+  health: DaemonHealth,
+  nowMs: number,
+  shell: DaemonBadgeShell = {},
+): DaemonBadgeModel => {
+  const stateDir = shell.stateDir ?? null;
   switch (health.state) {
     case 'running': {
       const lanes = health.busyLanes === 0
@@ -58,7 +74,9 @@ export const daemonBadgeModel = (health: DaemonHealth, nowMs: number): DaemonBad
       return {
         detail: `${health.running}/${health.maxConcurrent} permits${riding}, ${health.queued} queued · ${lanes} · up since ${relativeTime(health.startedAtMs, nowMs)}`,
         headline: `daemon running (pid ${health.pid})`,
+        skew: versionSkewLine(health.version, shell.cliVersion ?? cliVersion),
         state: health.state,
+        stateDir,
       };
     }
     case 'stopped':
@@ -67,22 +85,28 @@ export const daemonBadgeModel = (health: DaemonHealth, nowMs: number): DaemonBad
           ? 'no socket; it starts on demand with the next cargo request'
           : 'socket present but connection refused; a stale socket from an earlier daemon',
         headline: 'daemon stopped',
+        skew: null,
         state: health.state,
+        stateDir,
       };
     case 'unresponsive':
       return {
         detail: unresponsiveDetail(health.reason, health.timeoutMs),
         headline: 'daemon unresponsive',
+        skew: null,
         state: health.state,
+        stateDir,
       };
     case 'unreachable':
       return {
         detail: `socket present but could not be opened (${health.detail}); the daemon may be running — check permissions on the state directory`,
         headline: 'daemon unreachable',
+        skew: null,
         state: health.state,
+        stateDir,
       };
     case 'unprobed':
-      return { detail: null, headline: 'daemon not probed on this surface', state: health.state };
+      return { detail: null, headline: 'daemon not probed on this surface', skew: null, state: health.state, stateDir };
     default: {
       const exhaustive: never = health;
       return exhaustive;

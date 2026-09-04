@@ -12,13 +12,20 @@ import * as Schedule from 'effect/Schedule';
 import * as Scope from 'effect/Scope';
 
 import { resolveDaemonConfig } from '../src/daemon/config.js';
+import type { DaemonConfigShape } from '../src/daemon/config.js';
 import { pingDaemon } from '../src/daemon/control.js';
 import {
+  daemonExitCode,
   makeSignalShutdownController,
+  parseDaemonSubcommand,
+  restartDaemon,
   runForegroundDaemon,
   stopDaemon,
+  type DaemonControlResult,
+  type RestartDaemonDependencies,
 } from '../src/daemon/lifecycle.js';
-import { bindDaemonSocket, socketListenPath } from '../src/daemon/main.js';
+import { bindDaemonSocket, runDaemon, socketListenPath } from '../src/daemon/main.js';
+import { daemonIdentity, type DaemonIdentity } from '../src/lib/version-skew.js';
 import {
   monitorSocketOwnership,
   readSocketIdentity,
@@ -135,6 +142,154 @@ describe('signal shutdown lifecycle', () => {
       expect(process.rawListeners('SIGINT').filter((listener) => !before.has(listener))).toEqual(
         [],
       );
+    }), 30_000);
+});
+
+describe('daemon restart (#75)', () => {
+  const config = resolveDaemonConfig({ CARGO_HAULER_STATE_DIR: '/tmp/cargo-hauler-restart-unit' });
+  const controlResult = (
+    subcommand: 'start' | 'stop',
+    fields: Partial<DaemonControlResult> = {},
+  ): DaemonControlResult => ({
+    message: subcommand === 'start' ? 'cargo-hauler daemon started (pid 42)' : 'cargo-hauler daemon stopped',
+    operation: 'daemon',
+    pid: subcommand === 'start' ? 42 : null,
+    report: null,
+    running: subcommand === 'start',
+    socketPath: config.socketPath,
+    subcommand,
+    ...fields,
+  });
+  const old: DaemonIdentity = { pid: 41, startedAtMs: 1, version: '0.4.1' };
+  const fresh: DaemonIdentity = { pid: 42, startedAtMs: 2, version: '0.4.4' };
+
+  /** Fakes: the old daemon (pid 41) answers until `stop`, exits shortly after, and `start` brings up pid 42. */
+  const fakes = (overrides: Partial<RestartDaemonDependencies> = {}) => {
+    const calls: string[] = [];
+    let alive = true;
+    let stopped = false;
+    const dependencies: RestartDaemonDependencies = {
+      exitGraceMs: 500,
+      identify: () => Effect.sync(() => (stopped ? (alive ? old : fresh) : old)),
+      pollMs: 5,
+      processAlive: () => alive,
+      start: () =>
+        Effect.sync(() => {
+          calls.push('start');
+          return controlResult('start');
+        }),
+      stop: () =>
+        Effect.sync(() => {
+          calls.push('stop');
+          stopped = true;
+          setTimeout(() => {
+            alive = false;
+          }, 30);
+          return controlResult('stop');
+        }),
+      ...overrides,
+    };
+    return { calls, dependencies };
+  };
+
+  it.live('stops the running daemon, waits for its pid to exit, starts a new one, and names both', () =>
+    Effect.gen(function* () {
+      const { calls, dependencies } = fakes();
+      const result = yield* restartDaemon(config, dependencies);
+      expect(calls).toEqual(['stop', 'start']);
+      expect(result).toMatchObject({
+        operation: 'daemon',
+        pid: 42,
+        previousPid: 41,
+        running: true,
+        subcommand: 'restart',
+      });
+      expect(result.message).toBe('cargo-hauler daemon restarted: pid 41 (0.4.1) → pid 42 (0.4.4)');
+      expect(daemonExitCode(result)).toBe(0);
+    }));
+
+  it.live('starts the daemon when none was running and says so', () =>
+    Effect.gen(function* () {
+      const { calls, dependencies } = fakes({ identify: () => Effect.succeed(null) });
+      const result = yield* restartDaemon(config, {
+        ...dependencies,
+        // Nobody answered before; the new daemon answers after `start`.
+        identify: () => Effect.sync(() => (calls.includes('start') ? fresh : null)),
+      });
+      expect(calls).toEqual(['start']);
+      expect(result).toMatchObject({ pid: 42, previousPid: null, running: true, subcommand: 'restart' });
+      expect(result.message).toBe('cargo-hauler daemon was not running; started pid 42 (0.4.4)');
+      expect(daemonExitCode(result)).toBe(0);
+    }));
+
+  it.live('does not start a second daemon while the old pid is still alive after the grace', () =>
+    Effect.gen(function* () {
+      const { calls, dependencies } = fakes({ exitGraceMs: 40, processAlive: () => true });
+      const result = yield* restartDaemon(config, dependencies);
+      expect(calls).toEqual(['stop']);
+      expect(result).toMatchObject({ pid: 41, previousPid: 41, running: true, subcommand: 'restart' });
+      expect(result.message).toContain('pid 41 (0.4.1) is still running 40ms after the shutdown request');
+      expect(result.message).toContain('not restarted');
+      expect(daemonExitCode(result)).toBe(1);
+    }));
+
+  it('is a daemon subcommand', () => {
+    expect(parseDaemonSubcommand(['restart'])).toBe('restart');
+    expect(() => parseDaemonSubcommand(['reload'])).toThrow('run, start, stop, status, restart');
+  });
+
+  it.live('restarts a live daemon: the old one stops before the new one is started', () =>
+    Effect.gen(function* () {
+      const root = yield* scopedTempDir('cargo-hauler-restart-');
+      const liveConfig: DaemonConfigShape = resolveDaemonConfig({
+        CARGO_HAULER_STATE_DIR: join(root, 'state'),
+        CARGO_HAULER_KACHE_INDEX: '',
+      });
+      const scope = yield* Scope.make();
+      yield* Effect.addFinalizer(() => Scope.close(scope, Exit.void));
+      const startInProcess = (): Effect.Effect<DaemonControlResult> =>
+        Effect.gen(function* () {
+          yield* Effect.forkIn(runDaemon(liveConfig), scope);
+          const pong = yield* pingDaemon(liveConfig.socketPath, 500).pipe(
+            Effect.retry(Schedule.spaced('50 millis').pipe(Schedule.upTo({ times: 400 }))),
+          );
+          const started: DaemonControlResult = {
+            message: `cargo-hauler daemon started (pid ${pong.pid})`,
+            operation: 'daemon',
+            pid: pong.pid,
+            report: null,
+            running: true,
+            socketPath: liveConfig.socketPath,
+            subcommand: 'start',
+          };
+          return started;
+        }).pipe(Effect.orDie);
+      const first = yield* startInProcess();
+      const startedAt = (yield* pingDaemon(liveConfig.socketPath, 500)).startedAtMs;
+      yield* Effect.sleep('5 millis');
+
+      let sawSocketGone = false;
+      const result = yield* restartDaemon(liveConfig, {
+        exitGraceMs: 5_000,
+        identify: daemonIdentity,
+        pollMs: 10,
+        // Both daemons live in this test process, so "the process exited" is
+        // "its socket is gone" — which the daemon removes on shutdown.
+        processAlive: () => {
+          const alive = existsSync(liveConfig.socketPath);
+          sawSocketGone ||= !alive;
+          return alive;
+        },
+        start: startInProcess,
+        stop: stopDaemon,
+      });
+      expect(sawSocketGone).toBe(true);
+      expect(result.running).toBe(true);
+      expect(result.previousPid).toBe(first.pid);
+      expect(result.message).toContain('restarted');
+      const after = yield* pingDaemon(liveConfig.socketPath, 500);
+      expect(after.startedAtMs).toBeGreaterThan(startedAt);
+      yield* stopDaemon(liveConfig);
     }), 30_000);
 });
 

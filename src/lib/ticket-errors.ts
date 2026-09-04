@@ -5,8 +5,12 @@ import * as Option from 'effect/Option';
 
 import type { TicketSocketError } from '../client/tickets.js';
 
+import { formatVersionSkew } from './version-skew.js';
+
 export const infraFailure = (error: TicketSocketError): Error => {
   switch (error._tag) {
+    case 'DaemonVersionSkew':
+      return new Error(formatVersionSkew(error));
     case 'DaemonUnreachable':
       return new Error(
         `hauler daemon unreachable at ${error.socketPath}; it starts on demand with any exec, or run: hauler daemon start`,

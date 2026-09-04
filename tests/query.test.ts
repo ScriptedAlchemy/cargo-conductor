@@ -9,9 +9,10 @@ import * as Schedule from 'effect/Schedule';
 import { resolveDaemonConfig } from '../src/daemon/config.js';
 import { pingDaemon, requestOverSocket } from '../src/daemon/control.js';
 import { runDaemon } from '../src/daemon/main.js';
-import type { RequestRecord } from '../src/daemon/protocol.js';
+import { orphanedByRestartError, type RequestRecord } from '../src/daemon/protocol.js';
 import { loadLastResult, loadStatusResult } from '../src/lib/inspect.js';
 import { filterStatusRows, statusSummary } from '../src/lib/status-filter.js';
+import { fetchTicketResult } from '../src/lib/tickets.js';
 import { scopedEnv, scopedLedger, scopedTempDir } from './harness.js';
 import {
   describeRequestRecord,
@@ -61,6 +62,29 @@ describe('ticket summaries', () => {
         warningCount: null,
       }),
     ).toBe('cc-3063 running — ticket looks stalled (no CPU for 42m) — hauler kill cc-3062');
+  });
+
+  it('says a ticket the daemon restart ended was orphaned, not merely killed (#75)', () => {
+    expect(
+      describeRequestRecord('cc-3518', {
+        error: orphanedByRestartError,
+        errorCount: null,
+        status: 'killed',
+        ticket: 'cc-3518',
+        warningCount: null,
+      }),
+    ).toBe(
+      'cc-3518 killed — orphaned by daemon restart: the daemon stopped while it was in flight and does not hand runs over; resubmit if the work is still needed',
+    );
+    expect(
+      describeRequestRecord('cc-3519', {
+        error: null,
+        errorCount: null,
+        status: 'killed',
+        ticket: 'cc-3519',
+        warningCount: null,
+      }),
+    ).toBe('cc-3519 killed');
   });
 });
 
@@ -296,6 +320,51 @@ describe('loadHaulerSnapshot', () => {
       expect(JSON.stringify(last)).not.toContain('\\u001b');
       const status = yield* Effect.promise((signal) => loadStatusResult({}, { signal }));
       expect(JSON.stringify(status)).not.toContain('\\u001b');
+    }));
+
+  it.live('marks tickets in flight at a restart as orphaned by it, and result says so (#75)', () =>
+    Effect.gen(function* () {
+      const config = yield* isolatedConfig;
+      // A previous daemon left cc-1 running and cc-2 queued when it stopped.
+      yield* Effect.scoped(
+        Effect.gen(function* () {
+          const ledger = yield* scopedLedger(config);
+          const input = {
+            argv: ['cargo', 'check'],
+            createdAtMs: 1_000,
+            cwd: '/repo',
+            host: 'cursor',
+            intentJson: null,
+            intentKey: 'k',
+            laneKey: '/repo::/repo/target',
+            session: 's',
+            targetDir: '/repo/target',
+            workspaceRoot: '/repo',
+          };
+          yield* ledger.createRequest(input);
+          yield* ledger.markQueued(1, 1_100);
+          yield* ledger.markRunning(1, 1_200);
+          yield* ledger.createRequest({ ...input, createdAtMs: 2_000 });
+          yield* ledger.markQueued(2, 2_100);
+        }),
+      );
+      yield* Effect.forkScoped(runDaemon(config));
+      yield* pingDaemon(config.socketPath, 500).pipe(
+        Effect.retry(Schedule.spaced('50 millis').pipe(Schedule.upTo({ times: 100 }))),
+      );
+      const result = yield* Effect.promise((signal) =>
+        fetchTicketResult({ ticket: 'cc-1' }, { config, signal }),
+      );
+      expect(result.request?.status).toBe('killed');
+      expect(result.request?.error).toBe(orphanedByRestartError);
+      expect(result.summary).toContain('cc-1 killed — orphaned by daemon restart');
+      expect(result.summary).toContain('resubmit');
+      const queued = yield* Effect.promise((signal) =>
+        fetchTicketResult({ ticket: 'cc-2' }, { config, signal }),
+      );
+      expect(queued.request?.error).toBe(orphanedByRestartError);
+      const snapshot = yield* loadHaulerSnapshot({ config });
+      expect(snapshot.active).toEqual([]);
     }));
 
   it.live('uses the live daemon report when the broker is up', () =>

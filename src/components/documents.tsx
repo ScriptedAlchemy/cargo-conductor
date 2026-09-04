@@ -1,7 +1,7 @@
 import { Agent } from '@agent-bundle/runtime';
 import React from 'react';
 
-import type { RequestRecord } from '../daemon/protocol.js';
+import { orphanedByRestartError, type RequestRecord } from '../daemon/protocol.js';
 import { formatMs } from '../lib/format.js';
 import { documentValue } from '../lib/json.js';
 import { awaitMaxWaitMs } from '../lib/protocol-schemas.js';
@@ -44,7 +44,7 @@ interface DocumentProps<Result> {
 const StoppedWithActive = ({ status }: { readonly status: StatusResult }) =>
   status.daemon === 'stopped' && status.active.length > 0 ? (
     <Agent.Context>
-      {`${countWord(status.active.length, 'request')} show as active in the ledger but the daemon is stopped; they were interrupted and will not finish.`}
+      {`${countWord(status.active.length, 'request')} show as active in the ledger but the daemon is stopped; they were interrupted and will not finish. The next daemon start marks them killed (${orphanedByRestartError}); resubmit the ones still wanted.`}
     </Agent.Context>
   ) : null;
 

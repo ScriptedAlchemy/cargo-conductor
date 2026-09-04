@@ -56,11 +56,14 @@ describe('route manifest', () => {
 
 describe('tool documents without a daemon', () => {
   it('renders status as a stopped daemon with nothing in flight, under the shell', async () => {
-    await withIsolatedStateDir(async () => {
+    await withIsolatedStateDir(async (stateDir) => {
       const rendered = await renderRoute('tool:hauler/hauler_status', { input: {} });
       expectDocument(rendered)
         .toHaveStatus('success')
         .toContainText('cargo-hauler · daemon stopped · no socket')
+        // The resolved state dir rides the header, so a reader who memorised
+        // another path notices the move (#75).
+        .toContainText(`state dir ${stateDir}`)
         .toContainText('daemon is not running')
         .toContainText('Nothing queued or running.')
         .toContainContext('Dashboard: ui://cargo-hauler/dashboard.html');

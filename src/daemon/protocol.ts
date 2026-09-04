@@ -407,6 +407,12 @@ export interface StatusReport {
   readonly savings?: AttachmentSavingsReport;
   readonly kache?: KacheStatusReport | null;
   readonly system?: SystemLoadReport;
+  /**
+   * The daemon's release version, so a client can tell a daemon left running
+   * across an upgrade from its own build (#75). Absent from daemons before
+   * 0.4.5, which report it only on `pong`.
+   */
+  readonly version?: string;
 }
 
 /** Busy share of one device backing the state dir or an in-flight target dir. */
@@ -643,6 +649,16 @@ export const encodeClientMessage = (message: ClientMessage): string =>
 /** The daemon is a trusted local peer; clients parse its lines without schema checks. */
 export const parseServerMessageLine = (line: string): ServerMessage =>
   JSON.parse(line) as ServerMessage;
+
+/**
+ * The `error` a starting daemon stamps on every request still active in the
+ * ledger: the daemon that owned them stopped, and runs are not handed over
+ * across a restart (#75). Clients read it to explain the `killed` status.
+ */
+export const orphanedByRestartError = 'orphaned by daemon restart';
+
+export const isOrphanedByRestart = (record: Pick<RequestRecord, 'status' | 'error'>): boolean =>
+  record.status === 'killed' && record.error === orphanedByRestartError;
 
 export const formatTicket = (id: number): string => `cc-${id}`;
 

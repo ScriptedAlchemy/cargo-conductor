@@ -41,11 +41,14 @@ src/
 Every rendered route — MCP tool, CLI command, rendered script — composes
 through one layout, the way a page framework's `layout.tsx` wraps every page:
 
-- **Header:** `<DaemonBadge>` prints what the request-start probe proved:
-  `cargo-hauler · daemon running (pid 4021) · 2/5 permits +1 riding, 1 queued
-  · 2 lanes busy · up since 3h ago`, or `daemon stopped · no socket; it starts
-  on demand…`, or `daemon unresponsive · did not accept a connection within
-  750ms (machine saturated)…`.
+- **Header:** `<DaemonBadge>` prints what the request-start probe proved and
+  which state directory it is: `cargo-hauler · daemon running (pid 4021) ·
+  2/5 permits +1 riding, 1 queued · 2 lanes busy · up since 3h ago · state dir
+  /fast/cache/cargo-hauler`, or `daemon stopped · no socket; it starts on
+  demand…`, or `daemon unresponsive · did not accept a connection within
+  750ms (machine saturated)…`. When the daemon is another build than the CLI
+  or MCP server rendering the document, a second line says so: `cargo-hauler
+  · daemon 0.4.2 ≠ cli 0.4.4 — restart it with \`hauler daemon restart\``.
 - **Body:** the route's own document, unchanged. The route keeps its
   `<Agent.Result value>`; the runtime merges it into the shell so
   `structuredContent` and `--json` are exactly what the route declared.
@@ -66,7 +69,7 @@ and a `health` value from one bounded `status` probe:
 
 | `health.state` | meaning |
 | --- | --- |
-| `running` | `pid`, `startedAtMs`, `latencyMs`, `running` (permit holders), `riding` (attached), `queued`, `busyLanes`, `maxConcurrent` |
+| `running` | `pid`, `startedAtMs`, `latencyMs`, `running` (permit holders), `riding` (attached), `queued`, `busyLanes`, `maxConcurrent`, and `version` when the daemon states one (on the status report from 0.4.5, by one extra `ping` for older daemons) |
 | `stopped` | `socket-missing` (starts on demand) or `connection-refused` (stale socket) |
 | `unresponsive` | `accept-timeout` (never accepted), `answer-timeout` (accepted, no `status-result`), or `connection-closed` within the probe budget (750 ms for the accept and for the answer); ledger reads still work |
 | `unreachable` | `open-failed` with the errno (`EACCES`, `EMFILE`, …): the socket is present but could not be opened, which is not evidence the daemon is down |
@@ -225,7 +228,7 @@ executable beside it (`dist/bin/cargo-hauler.js` in the package,
 | `hauler result <ticket> [--full]` | A stored ticket; running tickets include a live output tail. The document names the full on-disk output log (`Full output: <path> (size)`) and `--json` carries it as `request.outputPath`; `--full` prints that whole log instead of the tail (the last ~768 KiB when it does not fit, with the path for the rest). |
 | `hauler kill <ticket>` | Stop a ticket: drop it from the queue or SIGTERM (then SIGKILL) its cargo process group, freeing the lane. Riders return to their lane or fail with it. |
 | `hauler request [--session ID] [--host HOST] [--cwd DIR] [--after TICKET …] -- <cargo …>` | Submit a background request and return its ticket, with where it landed in its lane (`queued behind cc-3281 (~13m)`, `waiting for cc-3281`, or `attached to cc-3281`). `--after` works as for `exec`. |
-| `hauler daemon <run\|start\|stop\|status>` | Manage the daemon lifecycle. |
+| `hauler daemon <run\|start\|stop\|status\|restart>` | Manage the daemon lifecycle. `restart` sends the graceful stop, waits up to 5 s for the old pid to exit, then starts a daemon from this install and prints both (`restarted: pid 741314 (0.4.1) → pid 742001 (0.4.4)`); a daemon that has not exited by then is reported, not killed, and nothing is started (exit `1`). Tickets in flight at the restart are not handed over: the new daemon marks them `killed` with the error `orphaned by daemon restart`. |
 | `hauler install-shim [--dir DIR] [--real-cargo PATH] [--force]` | Install the optional PATH shim. |
 
 The `hauler` MCP server projects the same operations as `hauler_status`,
@@ -454,6 +457,23 @@ error `stalled: no CPU for Nm after owner disconnected; killed automatically`.
 tickets (`--bg`, `hauler_request`) have no streaming connection and are only
 ever flagged.
 
+Tickets do not survive a daemon restart. `hauler daemon restart` (or `stop`
+then `start`) ends every queued or running ticket: the cargo processes die
+with the daemon, and the new daemon's first ledger pass marks each of them
+`killed` with the error `orphaned by daemon restart`, so `hauler result cc-N`
+answers `cc-N killed — orphaned by daemon restart: the daemon stopped while it
+was in flight and does not hand runs over; resubmit if the work is still
+needed` rather than looking like a failure of the command itself. Restart when
+the CLI or plugin was upgraded under a running daemon: every document then
+carries `daemon 0.4.2 ≠ cli 0.4.4 — restart it with \`hauler daemon restart\``,
+and a reply the newer client still cannot read is reported as `daemon is 0.4.2
+(pid N, since 3h ago), this CLI is 0.4.4 — restart it with \`hauler daemon
+restart\`` with the first schema mismatch on a second line — never as a raw
+validation dump. The client schemas default the fields older daemons never
+send (`outputPath`, `after`), so a plain version difference alone does not
+break `status`, `result`, or `await`; finish or `hauler kill` what is in
+flight before restarting if the work matters.
+
 The `tool/after` route checks the session's background tickets — `--bg`,
 `hauler_request`, and synchronous requests the client converted to a ticket
 — and, on the first tool call after one finishes, adds its result to the
@@ -582,7 +602,12 @@ unset, the daemon reads kache's configured local store from
   `hauler_await` fail loudly when the daemon is unreachable instead of
   reporting a ticket as not found; `hauler_status`, `hauler_log`, and
   `hauler_last` read the ledger with the daemon marked `stopped` or
-  `unresponsive`.
+  `unresponsive`. A daemon whose reply the client cannot read fails as a
+  version difference naming both versions and `hauler daemon restart`.
+- The state directory is not migrated between installs. Every rendered
+  document names the one in use (`state dir …` in the header; `stateRoot` in
+  `--json`), so a `CARGO_HAULER_STATE_DIR` change is visible on the next
+  command rather than discovered from an empty ledger.
 - Test sharing uses identity attachment or batch folding, never coverage.
   Folded `test` and `nextest` requests receive the composite output and exit
   code, so a failure may come from another package in the batch.

@@ -88,6 +88,14 @@ describe('routed CLI', () => {
     });
   });
 
+  it('accepts daemon restart as a subcommand and rejects one it does not know as usage', async () => {
+    const help = await invokeCli(['daemon', '--help']);
+    expect(help.exitCode).toBe(0);
+    expect(help.stdout).toContain('restart');
+    const unknown = await invokeCli(['daemon', 'reload']);
+    expect(unknown.exitCode).toBe(2);
+  });
+
   it('fails ticket lookups with the daemon down instead of pretending not-found', async () => {
     const run = await invokeCli(['result', 'cc-1']);
     expect(run.exitCode).toBe(1);

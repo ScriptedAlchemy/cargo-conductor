@@ -76,8 +76,20 @@ describe('daemonBadgeModel', () => {
     expect(daemonBadgeModel({ reason: 'event-surface', state: 'unprobed' }, nowMs)).toEqual({
       detail: null,
       headline: 'daemon not probed on this surface',
+      skew: null,
       state: 'unprobed',
+      stateDir: null,
     });
+  });
+
+  it('names the state directory it was given and warns when the daemon is another build (#75)', () => {
+    const running = { busyLanes: 0, latencyMs: 3, maxConcurrent: 5, pid: 42, queued: 0, riding: 0, running: 0, startedAtMs: nowMs, state: 'running' as const };
+    const model = daemonBadgeModel({ ...running, version: '0.4.2' }, nowMs, { cliVersion: '0.4.4', stateDir: '/fast/cache/cargo-hauler' });
+    expect(model.stateDir).toBe('/fast/cache/cargo-hauler');
+    expect(model.skew).toBe('daemon 0.4.2 ≠ cli 0.4.4 — restart it with `hauler daemon restart`');
+    expect(daemonBadgeModel({ ...running, version: '0.4.4' }, nowMs, { cliVersion: '0.4.4' }).skew).toBeNull();
+    // A daemon too old to state a version is not accused of anything.
+    expect(daemonBadgeModel(running, nowMs, { cliVersion: '0.4.4' }).skew).toBeNull();
   });
 });
 

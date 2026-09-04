@@ -83,8 +83,12 @@ export const requestRecordSchema = z.object({
   outputTail: z.string().nullable(),
   /** True when outputTail is a live in-progress snapshot, not the settled tail. */
   outputTailLive: z.boolean().optional(),
-  /** On-disk full output log (`<stateDir>/tickets/<ticket>.log`); null until the run starts. */
-  outputPath: z.string().nullable(),
+  /**
+   * On-disk full output log (`<stateDir>/tickets/<ticket>.log`); null until
+   * the run starts. Daemons before 0.4.2 never send the field (#75): an
+   * absent path is "no log", the same as null.
+   */
+  outputPath: z.string().nullable().default(null),
   queuedAtMs: z.number().nullable(),
   runMs: z.number().nullable(),
   session: z.string().nullable(),
@@ -248,6 +252,8 @@ export const statusReportSchema = z.object({
   recent: z.array(requestRecordSchema),
   socketPath: z.string(),
   startedAtMs: z.number(),
+  // Daemons before 0.4.5 report their version only on `pong`.
+  version: z.string().optional(),
 }) satisfies z.ZodType<StatusReport>;
 
 
@@ -272,6 +278,8 @@ export const statusInputSchema = z
 export interface StatusResult {
   readonly active: readonly RequestRecord[];
   readonly daemon: DaemonStatus;
+  /** The running daemon's release version when it stated one; compare with the CLI's to spot skew (#75). */
+  readonly daemonVersion?: string;
   readonly kache?: KacheStatusReport | null;
   readonly savings?: AttachmentSavingsReport;
   readonly system?: SystemLoadReport;
@@ -305,16 +313,19 @@ export interface DaemonResult {
   readonly message: string;
   readonly operation: 'daemon';
   readonly pid: number | null;
+  /** `restart` only: the pid that was serving before the restart, null when none was. */
+  readonly previousPid?: number | null;
   readonly report: StatusReport | null;
   readonly running: boolean;
   readonly socketPath: string;
-  readonly subcommand: 'run' | 'start' | 'stop' | 'status';
+  readonly subcommand: 'run' | 'start' | 'stop' | 'status' | 'restart';
 }
 
 export const statusResultSchema = z
   .object({
     active: z.array(requestRecordSchema),
     daemon: daemonStatusSchema,
+    daemonVersion: z.string().optional(),
     kache: kacheStatusSchema.nullable().optional(),
     savings: savingsSchema.optional(),
     system: systemLoadSchema.optional(),
@@ -349,7 +360,7 @@ export const lastResultSchema = z
   })
   .strict() satisfies z.ZodType<LastResult>;
 
-const daemonSubcommandSchema = z.enum(['run', 'start', 'stop', 'status']);
+const daemonSubcommandSchema = z.enum(['run', 'start', 'stop', 'status', 'restart']);
 
 export const daemonInputSchema = z
   .object({
@@ -362,6 +373,7 @@ export const daemonResultSchema = z
     message: z.string(),
     operation: z.literal('daemon'),
     pid: z.number().int().nullable(),
+    previousPid: z.number().int().nullable().optional(),
     report: statusReportSchema.nullable(),
     running: z.boolean(),
     socketPath: z.string(),

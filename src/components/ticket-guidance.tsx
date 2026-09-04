@@ -1,7 +1,7 @@
 import { Agent } from '@agent-bundle/runtime';
 import React from 'react';
 
-import type { RequestRecord, RequestStatus } from '../daemon/protocol.js';
+import { isOrphanedByRestart, type RequestRecord, type RequestStatus } from '../daemon/protocol.js';
 import { formatMs } from '../lib/format.js';
 import { awaitMaxWaitMs } from '../lib/protocol-schemas.js';
 
@@ -36,8 +36,12 @@ const FailedGuidance: GuidanceComponent = ({ record }) => (
   </Agent.Context>
 );
 
-const KilledGuidance: GuidanceComponent = ({ record }) => (
-  <Agent.Context>{`${record.ticket} was killed before finishing; resubmit only if the work is still needed.`}</Agent.Context>
+const KilledGuidance: GuidanceComponent = ({ names, record }) => (
+  <Agent.Context>
+    {isOrphanedByRestart(record)
+      ? `${record.ticket} did not finish: the daemon restarted while it was in flight, and running cargo processes are not handed over across a restart. Nothing else went wrong with the command; resubmit it through ${names.request} if the work is still needed.`
+      : `${record.ticket} was killed before finishing; resubmit only if the work is still needed.`}
+  </Agent.Context>
 );
 
 const DeniedGuidance: GuidanceComponent = ({ record }) => (
