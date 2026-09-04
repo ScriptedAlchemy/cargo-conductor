@@ -140,8 +140,8 @@ the same filter as its `session` field). Results carry
 | `tool:hauler/hauler_request` · `cli:request` | submit a background request | `RequestDocument` |
 | `cli:daemon` | `run` / `start` / `stop` / `status` | plain JSON, exit code from the result |
 | `event:session/start` | new session | daemon state and the no-kill rule as context |
-| `event:tool/before` | shell tool about to run | rewrites `cargo …` to `hauler exec --session … --host … -- cargo …`; denies `cargo clean` during in-flight builds |
-| `event:tool/after` | shell tool finished | injects finished-ticket results once per session |
+| `event:tool/before` | shell tool about to run | rewrites `cargo …` to `hauler exec --session … --host … -- cargo …`; denies `cargo clean` during in-flight builds, brokers it while the daemon is too busy to answer |
+| `event:tool/after` | shell tool finished | injects finished background-ticket results once per session |
 | `event:stop` | agent stopping | holds the stop while a foreground ticket is pending (bounded, re-deniable) |
 
 ### Skills
@@ -264,9 +264,23 @@ The hook parses the shell command and rewrites each Cargo invocation to
 `hauler exec --session … --host … -- cargo …`. It recognizes `cargo` behind an
 absolute path (`~/.cargo/bin/cargo`), and behind the wrappers agents actually
 use: `env -u VAR X=y cargo …`, `timeout 600 cargo …`,
-`rustup run <toolchain> cargo …`, `stdbuf`, `nice`, `ionice`, `nohup`,
-`time`, `strace`, `sudo`, `xargs`, `command`, `exec`, and `builtin`. Other
-`rustup` subcommands and already-wrapped commands are left alone.
+`rustup run <toolchain> [--] cargo …`, `stdbuf`, `nice`, `ionice`, `nohup`,
+`/usr/bin/time`, `strace`, `sudo`, `xargs`, `command`, `exec`, `builtin`,
+and a negated test (`while ! cargo build; do …`). Other `rustup`
+subcommands, lookups (`command -v cargo`, `type cargo`, `which cargo`), and
+already-wrapped invocations are left alone; in a partially wrapped list
+(`hauler exec -- cargo build && cargo test`) only the unwrapped half is
+rewritten. The rewrite never passes `--cwd`: the command runs in the same
+shell, so `hauler exec` inherits the working directory and
+`cd crates/foo && cargo build` builds in `crates/foo`.
+
+Before rewriting, the hook checks that the parser can reproduce the original
+command token for token. Constructs the pinned parser cannot round-trip —
+a background `&` (`nohup cargo build … &`, `cargo build & pid=$!`), the
+`time` keyword, `|&`, `coproc`, a heredoc that feeds a pipeline or is
+followed by another statement, `elif`, and `function name { … }` — are left
+untouched and run as plain Cargo rather than risk emitting a changed
+command.
 
 A lane is keyed by workspace root and resolved target directory. It runs one
 job at a time. Different lanes may run concurrently after acquiring one of the
@@ -288,8 +302,17 @@ Each admitted leader starts one Cargo process. Identity, coverage, and folded
 batch requests share that process and receive its streamed output. A failed
 stronger compile does not satisfy a coverage or compile-batch attachment; the
 attached request returns to its lane unless its required compilation units were
-already observed as successful. Folded tests share the composite process,
-output, and exit code.
+already observed as successful. Folded tests share the composite process and
+output. `cargo test` / `cargo nextest run` requests fold only when their test
+selection is identical — the same `--test` targets, name filters, arguments
+after `--`, and nextest filterset — so only the package set differs:
+`cargo test -p a` and `cargo test -p b` become
+`cargo test -p a -p b --no-fail-fast`. On success every participant shares
+the exit. When the composite fails, a participant inherits that failure only
+if it named every package the composite ran; otherwise the failing tests may
+belong to another participant's package, so it is requeued and runs alone
+(cargo's test output does not attribute failures to packages). The leader
+keeps the composite exit, as compile-batch leaders do.
 
 Brokered output keeps cargo's stdout and stderr as separate channels. When the
 caller's own stdout and stderr are the same open file (`cargo run 2>&1`, a
@@ -324,18 +347,22 @@ heartbeats. Non-compiling cargo subcommands (`fmt`, `update`, `fetch`, `add`,
 `remove`, `generate-lockfile`, `vendor`, `new`, `init`, `info`, `uninstall`)
 run locally instead of queueing for a permit.
 
-The per-run `CARGO_BUILD_JOBS` grant defaults to the available cores divided
-across the configured permit count, with a floor of four jobs. Separately, the
-daemon arms one GNU make jobserver FIFO with `cores - 1` tokens when it
+The daemon arms one GNU make jobserver FIFO with `cores - 1` tokens when it
 acquires the singleton lock and passes it to every Cargo it spawns through
 `MAKEFLAGS`, so concurrent lanes share one global rustc parallelism budget.
+While the FIFO is armed no `CARGO_BUILD_JOBS` is injected, because Cargo only
+joins an inherited jobserver when `-j`/`build.jobs` is unset. The per-run
+`CARGO_BUILD_JOBS` grant — the available cores divided across the configured
+permit count, with a floor of four jobs — is the fallback for a daemon that
+could not arm the FIFO (no `mkfifo`, unwritable state directory). A caller's
+own `-j` flag or `CARGO_BUILD_JOBS` always wins over both.
 
 | Capability | Behavior |
 | --- | --- |
 | Work sharing | Identical requests attach, covered checks attach, and compatible queued compile or test requests fold. |
 | Lane isolation | A workspace-root and target-directory pair is serialized independently from other lanes. |
 | Admission | Per-core load, Linux CPU PSI, Linux memory PSI and `MemAvailable`, macOS VM pressure, configured thresholds, and the global permit cap control new starts. |
-| Parallelism | A per-run `CARGO_BUILD_JOBS` grant plus one daemon-owned jobserver FIFO shared by every spawned Cargo. |
+| Parallelism | One daemon-owned jobserver FIFO shared by every spawned Cargo; a per-run `CARGO_BUILD_JOBS` grant only when the FIFO could not be armed. |
 | Scheduling | EWMA estimates, optional kache priors, fan-out, dependency topology, recent edits, and request age determine lane order. |
 | Persistence | Tickets, output tails, timings, outcomes, and savings are stored in SQLite. |
 | Caller output and status | Output streams to attached callers; late callers receive buffered replay. After 30 seconds without output, the client emits a progress heartbeat every 15 seconds with lane queue position, the lane-head ticket, and an aggregate wait ETA. |
@@ -369,13 +396,19 @@ start cargo at all. If the connection drops after the ticket was accepted, the
 client prints `connection to daemon lost; ticket cc-N continues — hauler
 result cc-N` and exits `1`; the daemon finishes the ticket on its own.
 
-The `tool/after` route checks session tickets and, on the first tool call
-after a ticket finishes, adds its result to the agent context. For foreground
-tickets, the `stop` route waits for the lower of the remaining estimate and
-`CARGO_HAULER_STOP_WAIT_MS`; if the ticket finishes it denies the stop and
-returns the result, otherwise it denies with status and ETA. `stopHookActive`
-and an eight-denial cap per ticket prevent a repeated stop loop; background
-tickets never hold a stop. Codex 0.147.0 stop-hold behaviour is verified in
+The `tool/after` route checks the session's background tickets — `--bg`,
+`hauler_request`, and synchronous requests the client converted to a ticket
+— and, on the first tool call after one finishes, adds its result to the
+agent context. A foreground ticket streamed its exit to the shell the agent
+just watched, so it is never re-announced. For foreground tickets, the
+`stop` route waits for the lower of the remaining estimate and
+`CARGO_HAULER_STOP_WAIT_MS` (clamped to the daemon's two-hour await
+ceiling); if the ticket finishes it denies the stop and returns the result,
+otherwise it denies with status and ETA. `stopHookActive` and an
+eight-denial cap per ticket prevent a repeated stop loop; the per-ticket
+counters live in `hook-state.json`, written atomically and pruned once a
+session's tickets are no longer pending. `--bg` tickets never hold a stop.
+Codex 0.147.0 stop-hold behaviour is verified in
 [docs/codex-hooks.md](docs/codex-hooks.md).
 
 ### PATH shim
@@ -439,7 +472,7 @@ is reported as unavailable and never rejects a request.
 | `CARGO_HAULER_STATE_DIR` | Per-user cache directory | Unix socket or Windows named pipe source, SQLite ledger, daemon log, pid lock, `hook-state.json`, and `hook-events.jsonl`. No legacy alias. |
 | `CARGO_HAULER_CARGO_BIN` | `$CARGO_HOME/bin/cargo` | Cargo binary for daemon-started work; bare `cargo` is the last fallback. Never resolved through `PATH`. Read from the daemon's own environment (export it where the daemon starts, or before `hauler daemon start`); clients do not forward it. |
 | `CARGO_HAULER_MAX_CONCURRENT` | `5` | Global admission permits for Cargo processes across all lanes. |
-| `CARGO_HAULER_JOBS_GRANT` | `max(4, cores / max concurrent)` | `CARGO_BUILD_JOBS` added to each Cargo process; `0` disables injection. |
+| `CARGO_HAULER_JOBS_GRANT` | `max(4, cores / max concurrent)` | `CARGO_BUILD_JOBS` added to each Cargo process only while the shared jobserver FIFO is not armed; an armed daemon injects `MAKEFLAGS` instead and leaves `CARGO_BUILD_JOBS` unset. `0` disables injection. |
 | `CARGO_HAULER_LOAD_THRESHOLD` | Disabled | Per-core one-minute load threshold for deferring new admissions. |
 | `CARGO_HAULER_LOAD_MIN` | `2` | Active Cargo processes below which load, CPU PSI, and soft memory pressure do not defer admission. |
 | `CARGO_HAULER_CPU_PRESSURE_THRESHOLD` | `75` | Linux CPU PSI `some avg10` percentage for deferring new admissions; `0` disables. |
@@ -454,7 +487,7 @@ is reported as unavailable and never rejects a request.
 | `CARGO_HAULER_BATCH` | Enabled | `0` disables the batch composer. |
 | `CARGO_HAULER_BATCH_WINDOW_MS` | `150` | Delay applied to a batchable lane head so nearby requests can fold; `0` disables. |
 | `CARGO_HAULER_KILL_GRACE_MS` | `8000` | Time between SIGTERM and SIGKILL when the daemon stops a Cargo process. |
-| `CARGO_HAULER_STOP_WAIT_MS` | `30000` | Maximum wait for one stop-hook invocation. |
+| `CARGO_HAULER_STOP_WAIT_MS` | `30000` | Maximum wait for one stop-hook invocation; values above the 7200000 ms await ceiling are clamped. |
 | `CARGO_HAULER_LOG_LEVEL` | `Info` | Daemon log level. |
 | `CARGO_HAULER_HOST`, `CARGO_HAULER_SESSION` | Unset | Default `--host` and `--session` attribution for `hauler exec`; the PATH shim also borrows `CARGO_HAULER_HOST`'s shell cap for auto-background. |
 
@@ -485,6 +518,11 @@ unset, the daemon reads kache's configured local store from
 - Test sharing uses identity attachment or batch folding, never coverage.
   Folded `test` and `nextest` requests receive the composite output and exit
   code, so a failure may come from another package in the batch.
+- The `cargo clean` guard probes the daemon for 250 ms. Active work denies
+  the clean; an idle daemon brokers it; a daemon that accepts but does not
+  answer in time is busy, so the clean is brokered and the lane serializes
+  it behind the builds it would otherwise race; only a socket nobody listens
+  on (`ECONNREFUSED`, `ENOENT`) lets a raw `cargo clean` run.
 - Hook rewrites, policy denials such as `cargo clean` during an active build,
   and malformed requests are recorded (`hook-events.jsonl`; a failed ledger
   row).
@@ -509,7 +547,7 @@ data is the daemon's own. The repository ships no preview harness of its own.
 
 agent-bundle does not yet have an npm release; this repository pins the
 [pkg.pr.new](https://pkg.pr.new) preview of main commit
-[`886b1921f`](https://github.com/ScriptedAlchemy/agent-bundle/commit/886b1921f64f7b857528acda32d94c4d0df9bba7)
+[`5775351fb`](https://github.com/ScriptedAlchemy/agent-bundle/commit/5775351fbc1c82e2861a9d69cad78adb086d052d)
 for both `agent-bundle` and `@agent-bundle/runtime`. `inspect` reports the
 `agent` component kind as unavailable on every host (agent-bundle G5
 deferral); this plugin defines no agents. Two framework limitations observed

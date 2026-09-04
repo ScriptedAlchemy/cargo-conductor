@@ -1,6 +1,6 @@
 import { prepareShellCommand } from './inspect.js';
 import { resolveHaulerArgv } from './paths.js';
-import { probeActiveBuilds } from './probe.js';
+import { probeActiveBuilds, type DaemonProbe } from './probe.js';
 import { appendHookRecord } from './record.js';
 import { recordDeniedAttempt } from './rpc.js';
 import {
@@ -36,6 +36,45 @@ const denyCleanReason =
 // Telemetry only: whitespace splitting intentionally does not preserve quoted arguments.
 const attemptArgv = (command: string): readonly string[] => command.trim().split(/\s+/u);
 
+interface DenyCleanInput {
+  readonly command: string;
+  readonly cwd: string | undefined;
+  readonly host: string;
+  readonly nowMs: () => number;
+  readonly record: NonNullable<HookServices['record']>;
+  readonly session: string;
+  readonly submitAttempt: NonNullable<HookServices['recordAttempt']>;
+  readonly toolName: string | undefined;
+}
+
+const denyClean = async (input: DenyCleanInput): Promise<BeforeShellResult> => {
+  await input.record({
+    atMs: input.nowMs(),
+    command: input.command,
+    host: input.host,
+    outcome: 'deny',
+    phase: 'beforeTool',
+    reason: denyCleanReason,
+    session: input.session,
+    ...(input.cwd === undefined ? {} : { cwd: input.cwd }),
+    ...(input.toolName === undefined ? {} : { toolName: input.toolName }),
+  });
+  try {
+    void Promise.resolve(
+      input.submitAttempt({
+        argv: attemptArgv(input.command),
+        cwd: input.cwd ?? process.cwd(),
+        host: input.host,
+        reason: denyCleanReason,
+        session: input.session,
+      }),
+    ).catch(() => undefined);
+  } catch {
+    // Attempt telemetry is strictly fail-open at the hook boundary.
+  }
+  return { outcome: 'deny', reason: denyCleanReason };
+};
+
 const decideBeforeShell = async (
   event: BeforeShellEvent,
   context: HookContext,
@@ -48,7 +87,9 @@ const decideBeforeShell = async (
 
   const prepared = prepareShellCommand(command);
   const inspection = prepared.inspection;
-  if (inspection.alreadyWrapped || !inspection.hasCargo) {
+  // `alreadyWrapped` alone is not a short-circuit: `hauler exec -- cargo build
+  // && cargo test` still has an unbrokered half.
+  if (!inspection.hasCargo) {
     return continueResult();
   }
 
@@ -59,43 +100,39 @@ const decideBeforeShell = async (
   const record = services.record ?? appendHookRecord;
 
   if (inspection.destructive) {
-    const probe = services.hasActiveBuilds ?? probeActiveBuilds;
-    let active: boolean | null;
+    const probe = services.probeDaemon ?? probeActiveBuilds;
+    let verdict: DaemonProbe;
     try {
-      active = await probe();
+      verdict = await probe();
     } catch {
-      active = null;
+      verdict = 'absent';
     }
-    if (active === true) {
-      await record({
-        atMs: nowMs(),
-        command,
-        host,
-        outcome: 'deny',
-        phase: 'beforeTool',
-        reason: denyCleanReason,
-        session,
-        ...(cwd === undefined ? {} : { cwd }),
-        ...(event.toolName === undefined ? {} : { toolName: event.toolName }),
-      });
-      const submitAttempt = services.recordAttempt ?? recordDeniedAttempt;
-      try {
-        void Promise.resolve(
-          submitAttempt({
-            argv: attemptArgv(command),
-            cwd: cwd ?? process.cwd(),
-            host,
-            reason: denyCleanReason,
-            session,
-          }),
-        ).catch(() => undefined);
-      } catch {
-        // Attempt telemetry is strictly fail-open at the hook boundary.
+    switch (verdict) {
+      case 'idle':
+      case 'busy':
+        // Idle: broker it like any other cargo command. Busy: the daemon is
+        // alive but saturated, which is when a raw clean would race its
+        // lanes; the rewrite lets the lane serialize the clean instead.
+        break;
+      case 'absent':
+        // No daemon: nothing to race, and brokering would only auto-start one
+        // for a clean.
+        return continueResult();
+      case 'active':
+        return denyClean({
+          command,
+          cwd,
+          host,
+          nowMs,
+          record,
+          session,
+          submitAttempt: services.recordAttempt ?? recordDeniedAttempt,
+          toolName: event.toolName,
+        });
+      default: {
+        const exhaustive: never = verdict;
+        return exhaustive;
       }
-      return { outcome: 'deny', reason: denyCleanReason };
-    }
-    if (active === null) {
-      return continueResult();
     }
   }
 
@@ -103,7 +140,6 @@ const decideBeforeShell = async (
     haulerArgv: services.haulerArgv ?? resolveHaulerArgv(),
     host,
     session,
-    ...(cwd === undefined ? {} : { cwd }),
   });
   if (rewritten === command) {
     return continueResult();

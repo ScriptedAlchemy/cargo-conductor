@@ -67,6 +67,46 @@ const globalOptionsWithValues = new Set([
   '-Z',
 ]);
 
+/**
+ * Post-subcommand cargo options the intent does not model but which take a
+ * value. The pair stays opaque (it still disqualifies attaching and
+ * batching), but the value is consumed with its option so `cargo test -j 4
+ * name` never reads `4` as a test-name filter.
+ */
+const opaqueOptionsWithValues = new Set([
+  '--color',
+  '--config',
+  '--jobs',
+  '--message-format',
+  '-j',
+  '-Z',
+]);
+
+/** Value-taking `cargo nextest run` options, meaningful only under nextest. */
+const nextestOpaqueOptionsWithValues = new Set([
+  '--archive-file',
+  '--build-jobs',
+  '--cargo-profile',
+  '--config-file',
+  '--extract-to',
+  '--failure-output',
+  '--final-status-level',
+  '--message-format-version',
+  '--partition',
+  '--retries',
+  '--run-ignored',
+  '--status-level',
+  '--success-output',
+  '--test-threads',
+  '--tool-config-file',
+  '--workspace-remap',
+  '-P',
+]);
+
+const opaqueOptionTakesValue = (subcommand: string, option: string): boolean =>
+  opaqueOptionsWithValues.has(option) ||
+  (subcommand === 'nextest' && nextestOpaqueOptionsWithValues.has(option));
+
 export const defaultCargoProfile = (subcommand: string): string => {
   if (subcommand === 'test') {
     return 'test';
@@ -294,7 +334,12 @@ export const parseCargoArgv = (input: readonly string[]): ParsedCargoArgv => {
         profile = 'dev';
         break;
       default:
-        if (argument.startsWith('-') || !testFilterSubcommands.has(subcommand)) {
+        if (argument.startsWith('-')) {
+          opaqueArguments.push(argument);
+          if (inlineValue === undefined && opaqueOptionTakesValue(subcommand, option)) {
+            opaqueArguments.push(takeValue());
+          }
+        } else if (!testFilterSubcommands.has(subcommand)) {
           opaqueArguments.push(argument);
         } else if (subcommand === 'nextest' && nextestCommand === null) {
           nextestCommand = argument;

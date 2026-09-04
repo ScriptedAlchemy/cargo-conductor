@@ -32,12 +32,17 @@ clippy, fmt, nextest) or is waiting on someone else's cargo.
   `hauler_result` is for a point-in-time read and includes the live output
   tail while a run is still in progress. The dashboard drawer refreshes that
   tail every three seconds.
-- Folded test runs share one result. Queued compatible `cargo test` /
-  `cargo nextest run` requests may fold into a single composite run (a
-  superset of the participants' packages, targets, and filters, with
-  `--no-fail-fast`), and every participant gets the composite's full output
-  and exit code. If your ticket failed but your own tests look green in the
-  output, check whether a co-batched test failed before touching your code.
+- Folded test runs share one process. Queued `cargo test` /
+  `cargo nextest run` requests with the same test selection (targets,
+  filters, arguments after `--`, filterset) but different packages may fold
+  into one composite run over the union of their packages with
+  `--no-fail-fast`; every participant gets the composite's full output. A
+  passing composite is everyone's pass. If it fails, a participant that did
+  not name every package in the composite is requeued and runs its own
+  request alone, so the result it reports is its own. The leader ticket
+  keeps the composite exit: if it failed but your own tests look green in
+  the output, check whether a co-batched package failed before touching
+  your code.
   The lane briefly holds a batchable head (150ms by default) so requests
   launched together can fold before the first process starts; set
   `CARGO_HAULER_BATCH_WINDOW_MS=0` to disable that window.

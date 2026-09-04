@@ -332,6 +332,20 @@ export const guarded = (effect: Effect.Effect<void>): Effect.Effect<void> =>
     ),
   );
 
+/**
+ * One step of a settlement sequence. A defect (a busy sqlite ledger, a
+ * metric registry fault) is logged and swallowed so the steps after it —
+ * waiter notification, lane release, exit fan-out — still run; otherwise
+ * the claimed settlement would be lost and the ticket never terminal.
+ */
+export const settlementStep = (label: string, effect: Effect.Effect<void>): Effect.Effect<void> =>
+  effect.pipe(
+    Effect.catchCauseIf(
+      (cause) => !Cause.hasInterruptsOnly(cause),
+      (cause) => Effect.logError(`settlement step ${label} failed: ${Cause.pretty(cause)}`),
+    ),
+  );
+
 export const attachmentReceives = (attachment: Attachment, audience: ReplayAudience): boolean => {
   if (attachment.mode === 'identity') {
     return true;
