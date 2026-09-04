@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { Agent } from '@agent-bundle/runtime';
 import { afterEach, beforeEach, describe, expect, it } from 'effect-rstest';
 import type { AgentEventRouteProps, CanonicalAgentEvent } from 'agent-bundle';
+import { createEventRouteInput } from 'agent-bundle/test';
 import { isValidElement, type ReactElement, type ReactNode } from 'react';
 
 import StopRoute from '../src/events/stop.js';
@@ -17,20 +18,20 @@ const fixturesDir = join(import.meta.dirname, 'fixtures', 'hooks');
 const loadFixture = (name: string): Readonly<Record<string, unknown>> =>
   JSON.parse(readFileSync(join(fixturesDir, `${name}.json`), 'utf8')) as Readonly<Record<string, unknown>>;
 
-const routeProps = (
-  event: CanonicalAgentEvent,
+/**
+ * The props the generated wrapper hands a route: the host envelope validated,
+ * frozen, and projected onto the family's canonical payload by the framework's
+ * own table (agent-bundle#466), so a route reads `canonical.payload` here
+ * exactly as it does in a host.
+ */
+const routeProps = <E extends CanonicalAgentEvent>(
+  event: E,
   host: 'claude' | 'codex' | 'cursor',
   nativeEvent: string,
   native: Readonly<Record<string, unknown>>,
-): AgentEventRouteProps => ({
-  canonical: {
-    event,
-    idempotencyKey: 'k',
-    observedAt: new Date().toISOString(),
-    provenance: { host, hostContractRevision: 'test', nativeEvent, source: 'native' },
-    sequence: 1,
-  },
-  native,
+  options: { readonly validate?: boolean } = {},
+): AgentEventRouteProps<E> => ({
+  ...createEventRouteInput(event, native, { host, nativeEvent, ...options }),
   signal: new AbortController().signal,
 });
 
@@ -179,8 +180,16 @@ describe('agent event routes', () => {
   });
 
   it('stop continues when the envelope carries no session', async () => {
+    // Deliberately partial: Claude always sends `session_id`, so the wrapper's
+    // validation is bypassed to reach the route's own fail-open path.
     const element = await StopRoute(
-      routeProps('stop', 'claude', 'Stop', { cwd: '/tmp/ws', stop_hook_active: false }),
+      routeProps(
+        'stop',
+        'claude',
+        'Stop',
+        { cwd: '/tmp/ws', hook_event_name: 'Stop', stop_hook_active: false },
+        { validate: false },
+      ),
     );
 
     expect(decisionOf(element)).toEqual({ outcome: 'continue' });
@@ -189,7 +198,7 @@ describe('agent event routes', () => {
 
   it('stop fails open when the daemon is unreachable', async () => {
     const element = await StopRoute(
-      routeProps('stop', 'cursor', 'stop', { conversation_id: 'sess-cursor', loop_count: 1 }),
+      routeProps('stop', 'cursor', 'stop', { conversation_id: 'sess-cursor', hook_event_name: 'stop', loop_count: 1 }),
     );
 
     expect(decisionOf(element)).toEqual({ outcome: 'continue' });

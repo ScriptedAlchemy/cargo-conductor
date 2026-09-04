@@ -80,6 +80,24 @@ describe('hauler script', () => {
     expect(result.text).toContain('daemon');
   });
 
+  it('hands exec the terminal the envelope probed, and nothing when there is none', async () => {
+    const terminal = {
+      hostSurface: 'script',
+      sharesTarget: true,
+      stderr: { color: 'basic', kind: 'tty' },
+      stdout: { color: 'basic', kind: 'tty' },
+    } as const;
+    let seen: RunExecOptions | undefined;
+    const runExec = (options: RunExecOptions) => {
+      seen = options;
+      return Effect.succeed({ exitCode: 0, mode: 'brokered' as const });
+    };
+    await runScript(['exec', '--', 'cargo', 'check'], { runExec, terminal, write: () => undefined });
+    expect(seen?.terminal).toBe(terminal);
+    await runScript(['exec', '--', 'cargo', 'check'], { runExec, write: () => undefined });
+    expect(seen).not.toHaveProperty('terminal');
+  });
+
   it('dispatches exec to the streaming client instead of JSON-printing a receipt', async () => {
     let seenArgv: readonly string[] | undefined;
     const result = await run(['exec', '--session', 's1', '--', 'cargo', 'check', '-p', 'alpha'], {

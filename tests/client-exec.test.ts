@@ -2,6 +2,7 @@ import { mkdirSync, readFileSync } from 'node:fs';
 import { createServer, type Server, type Socket } from 'node:net';
 import { join } from 'node:path';
 
+import type { AgentTerminal, AgentTerminalColor, AgentTerminalStreamKind } from 'agent-bundle';
 import { describe, expect, it } from 'effect-rstest';
 import * as Effect from 'effect/Effect';
 import * as Fiber from 'effect/Fiber';
@@ -28,6 +29,25 @@ import {
 import { LineBuffer } from '../src/lib/ndjson.js';
 
 import { fakeCargoEnv, scopedDaemon, scopedFixture } from './harness.js';
+
+/**
+ * A terminal reading as the executable envelope hands it to `main` (agent-bundle#511):
+ * two colorless pipes unless a test says otherwise.
+ */
+const terminalOf = ({
+  color = 'none',
+  sharesTarget = false,
+  stdout = 'pipe',
+}: {
+  readonly color?: AgentTerminalColor;
+  readonly sharesTarget?: boolean;
+  readonly stdout?: AgentTerminalStreamKind;
+} = {}): AgentTerminal => ({
+  hostSurface: 'script',
+  sharesTarget,
+  stderr: { color, kind: 'pipe' },
+  stdout: { color, kind: stdout },
+});
 
 interface ScriptedDaemonOptions {
   readonly ack: {
@@ -256,7 +276,7 @@ describe('runExecClient', () => {
         cwd: fixture.ws1,
         host: 'claude',
         io: redirected.io,
-        stdoutIsTty: false,
+        terminal: terminalOf({ stdout: 'pipe' }),
       });
       expect(result.exitCode).toBe(75);
       // `cargo test > out.log` auto-backgrounded: out.log holds only this
@@ -273,7 +293,7 @@ describe('runExecClient', () => {
         cwd: fixture.ws1,
         host: 'claude',
         io: terminal.io,
-        stdoutIsTty: true,
+        terminal: terminalOf({ stdout: 'tty' }),
       });
       expect(terminal.stderr()).toContain('exceeds the claude shell cap');
       expect(terminal.stderr()).not.toContain('redirected stdout');
@@ -539,7 +559,7 @@ describe('runExecClient', () => {
         cwd: fixture.ws1,
         env: fakeCargoEnv(fixture),
         io: collected.io,
-        mergeStderr: true,
+        terminal: terminalOf({ sharesTarget: true }),
       });
 
       expect(result.exitCode).toBe(0);
@@ -560,8 +580,7 @@ describe('runExecClient', () => {
         cwd: fixture.ws1,
         env: fakeCargoEnv(fixture),
         io: collected.io,
-        mergeStderr: true,
-        stdoutColor: false,
+        terminal: terminalOf({ sharesTarget: true }),
       });
 
       expect(result.exitCode).toBe(0);
@@ -582,7 +601,7 @@ describe('runExecClient', () => {
         cwd: fixture.ws1,
         env: fakeCargoEnv(fixture),
         io: collected.io,
-        mergeStderr: true,
+        terminal: terminalOf({ sharesTarget: true }),
       });
 
       expect(result.mode).toBe('passthrough');
@@ -600,7 +619,7 @@ describe('runExecClient', () => {
         cwd: fixture.ws1,
         env: fakeCargoEnv(fixture),
         io: collected.io,
-        mergeStderr: true,
+        terminal: terminalOf({ sharesTarget: true }),
       });
 
       expect(result.exitCode).toBe(0);
@@ -818,7 +837,7 @@ describe('runExecClient', () => {
         cwd: fixture.ws1,
         env: fakeCargoEnv(fixture),
         io: collected.io,
-        stderrColor: false,
+        terminal: terminalOf({ color: 'none' }),
       });
 
       expect(result.exitCode).toBe(0);
@@ -840,7 +859,7 @@ describe('runExecClient', () => {
         cwd: fixture.ws1,
         env: fakeCargoEnv(fixture),
         io: collected.io,
-        stderrColor: true,
+        terminal: terminalOf({ color: 'basic' }),
       });
 
       expect(result.exitCode).toBe(0);

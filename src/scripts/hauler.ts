@@ -3,6 +3,7 @@ import { existsSync, realpathSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import type { AgentTerminal, ExecutableMainContext } from 'agent-bundle';
 import * as Cause from 'effect/Cause';
 import * as Effect from 'effect/Effect';
 
@@ -36,13 +37,15 @@ Commands:
       an older install (in-flight tickets end as "orphaned by daemon restart")
   install-shim [--dir DIR] [--real-cargo PATH] [--force]
       Install an optional PATH cargo shim
-  status | log | last | await <ticket> | result <ticket> | request [--after TICKET] -- <cargo command>
+  status | log | last | await <ticket> | result <ticket> | request [--after TICKET] -- <cargo command> | dashboard
       Routed commands; run \`cargo-hauler --help\` for options
 `;
 
 export interface ScriptOptions {
   readonly runExec?: (options: RunExecOptions) => Effect.Effect<RunExecResult>;
   readonly signal?: AbortSignal;
+  /** The process's terminal as the executable envelope probed it; `exec` shapes its output by it. */
+  readonly terminal?: AgentTerminal;
   readonly write?: (value: string) => void;
   readonly writeStderr?: (data: string | Uint8Array) => void;
   readonly writeStdout?: (data: Uint8Array) => void;
@@ -149,6 +152,7 @@ const runExecCommand = async (argv: readonly string[], options: ScriptOptions): 
       ...(parsed.background ? { background: true } : {}),
       ...(parsed.after === undefined ? {} : { after: parsed.after }),
       ...(session === undefined ? {} : { session }),
+      ...(options.terminal === undefined ? {} : { terminal: options.terminal }),
     }).pipe(
       Effect.map((result) => result.exitCode),
       Effect.catchCause((cause) =>
@@ -220,25 +224,41 @@ const routedCliPath = (): string | null => {
   return null;
 };
 
-const forwardToRoutedCli = (argv: readonly string[], options: ScriptOptions): Promise<number> =>
+/**
+ * Runs `node <script> …` in the foreground with inherited stdio and returns
+ * its exit code. A SIGINT/SIGTERM aimed at this process is relayed to the
+ * child (a terminal's Ctrl-C reaches both already; `kill <pid>` does not), and
+ * an abort becomes the child's SIGTERM.
+ */
+const forwardToProcess = (argv: readonly string[], options: ScriptOptions): Promise<number> =>
   new Promise((resolvePromise, reject) => {
-    const bin = routedCliPath();
-    if (bin === null) {
-      (options.write ?? defaultWrite)(usage);
-      resolvePromise(2);
-      return;
-    }
-    const child = spawn(process.execPath, [bin, ...argv], { stdio: 'inherit' });
-    const abort = (): void => {
+    const child = spawn(process.execPath, argv, { stdio: 'inherit' });
+    const relaySigint = (): void => {
+      child.kill('SIGINT');
+    };
+    const relaySigterm = (): void => {
       child.kill('SIGTERM');
     };
-    options.signal?.addEventListener('abort', abort, { once: true });
+    process.on('SIGINT', relaySigint);
+    process.on('SIGTERM', relaySigterm);
+    options.signal?.addEventListener('abort', relaySigterm, { once: true });
     child.once('error', reject);
     child.once('exit', (code, signal) => {
-      options.signal?.removeEventListener('abort', abort);
+      process.off('SIGINT', relaySigint);
+      process.off('SIGTERM', relaySigterm);
+      options.signal?.removeEventListener('abort', relaySigterm);
       resolvePromise(code ?? (signal === null ? 1 : 128));
     });
   });
+
+const forwardToRoutedCli = (argv: readonly string[], options: ScriptOptions): Promise<number> => {
+  const bin = routedCliPath();
+  if (bin === null) {
+    (options.write ?? defaultWrite)(usage);
+    return Promise.resolve(2);
+  }
+  return forwardToProcess([bin, ...argv], options);
+};
 
 export const runScript = async (
   argv: readonly string[],
@@ -268,9 +288,11 @@ export const runScript = async (
 /**
  * `agent-bundle build` detects the `main` export and generates the process
  * envelope: this module is emitted as `scripts/hauler.mjs` in every host
- * artifact (the hook rewrite target) and as the package `hauler` bin.
+ * artifact (the hook rewrite target) and as the package `hauler` bin. The
+ * envelope probes the process's terminal once and hands it in as `context`
+ * (agent-bundle#511), so `exec` never inspects `process.stdout` itself.
  */
-export const main = async (argv: readonly string[]): Promise<number> => {
+export const main = async (argv: readonly string[], context: ExecutableMainContext): Promise<number> => {
   warnRemovedLegacyStateDir(argv);
-  return runScript(argv);
+  return runScript(argv, { terminal: context.terminal });
 };

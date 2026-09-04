@@ -1,34 +1,33 @@
-import { DEFAULT_AGENT_RENDER_LIMITS } from '@agent-bundle/runtime';
+import { MAX_ROUTE_RENDER_ELAPSED_MS } from 'agent-bundle';
 import { describe, expect, it } from 'effect-rstest';
 
-import { awaitMaxWaitMs } from '../src/lib/protocol-schemas.js';
-import { awaitTransportSlackMs, renderBoundedWaitMs } from '../src/lib/tickets.js';
+import { config as cliAwaitConfig } from '../src/cli/await.js';
+import { awaitCeilingMs } from '../src/daemon/protocol.js';
+import { awaitMaxWaitMessage, ticketInputSchema } from '../src/lib/protocol-schemas.js';
+import { config as toolAwaitConfig } from '../src/mcp/hauler/tools/hauler_await.js';
 
-describe('renderBoundedWaitMs', () => {
-  it('passes a short wait through when nothing has been spent yet', () => {
-    expect(renderBoundedWaitMs(30_000, 0)).toBe(30_000);
+/**
+ * One `await` call waits up to the daemon's ceiling (issues #3, #32). The two
+ * rendered routes declare a `config.render.maxElapsedMs` (agent-bundle#454)
+ * that covers that whole wait plus the snapshot fetch before it and the
+ * socket round trip after it — the literal in each config is what the
+ * compiler reads, so this test holds it to `awaitCeilingMs`.
+ */
+describe('await render budget', () => {
+  it.each([
+    ['cli:await', cliAwaitConfig.render.maxElapsedMs],
+    ['tool:hauler/hauler_await', toolAwaitConfig.render.maxElapsedMs],
+  ])('%s covers the daemon await ceiling with transport headroom', (_route, maxElapsedMs) => {
+    expect(maxElapsedMs).toBeGreaterThan(awaitCeilingMs);
+    expect(maxElapsedMs - awaitCeilingMs).toBeLessThanOrEqual(60_000);
+    expect(maxElapsedMs).toBeLessThanOrEqual(MAX_ROUTE_RENDER_ELAPSED_MS);
   });
 
-  it('shrinks the daemon wait by what the snapshot already spent, plus socket slack', () => {
-    // 55 s ceiling, 4 s spent fetching the snapshot: 55 - 4 - slack.
-    expect(renderBoundedWaitMs(awaitMaxWaitMs, 4_000)).toBe(
-      awaitMaxWaitMs - 4_000 - awaitTransportSlackMs,
+  it('caps maxWaitMs at the daemon ceiling, not the framework default', () => {
+    expect(ticketInputSchema.parse({ maxWaitMs: awaitCeilingMs, ticket: 'cc-1' }).maxWaitMs).toBe(awaitCeilingMs);
+    expect(ticketInputSchema.parse({ maxWaitMs: 90_000, ticket: 'cc-1' }).maxWaitMs).toBe(90_000);
+    expect(() => ticketInputSchema.parse({ maxWaitMs: awaitCeilingMs + 1, ticket: 'cc-1' })).toThrow(
+      awaitMaxWaitMessage,
     );
-  });
-
-  it('never goes negative when the budget is already gone', () => {
-    expect(renderBoundedWaitMs(awaitMaxWaitMs, 60_000)).toBe(0);
-  });
-
-  it('keeps the worst case under the framework render session', () => {
-    // Provider probe (≤1.5 s) happens before the route clock starts; the
-    // route then spends `elapsed` on the snapshot and `wait + slack` on the
-    // daemon long-poll. Whatever the split, the total stays under 60 s.
-    for (const elapsed of [0, 2_000, 4_500]) {
-      const wait = renderBoundedWaitMs(awaitMaxWaitMs, elapsed);
-      expect(1_500 + elapsed + wait + awaitTransportSlackMs).toBeLessThan(
-        DEFAULT_AGENT_RENDER_LIMITS.maxElapsedMs,
-      );
-    }
   });
 });

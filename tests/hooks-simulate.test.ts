@@ -4,17 +4,15 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { listHooks, simulateHook } from 'agent-bundle/api';
+import { createEventRouteInput } from 'agent-bundle/test';
 import { describe, expect, it } from 'effect-rstest';
 import * as Effect from 'effect/Effect';
 
 import { handleAfterShell } from '../src/hooks/after-shell.js';
-import {
-  handleBeforeShell,
-  type BeforeShellEvent,
-  type HookContext,
-} from '../src/hooks/before-shell.js';
+import { handleBeforeShell, type HookContext } from '../src/hooks/before-shell.js';
 import type { HookRecord } from '../src/hooks/record.js';
 import { recordDeniedAttempt } from '../src/hooks/rpc.js';
+import { shellEventFrom } from '../src/lib/event-support.js';
 
 import { pollReport, scopedDaemon } from './harness.js';
 
@@ -32,18 +30,11 @@ const services = {
   probeDaemon: () => 'idle' as const,
 };
 
-const canonicalFromNative = (native: Record<string, unknown>): BeforeShellEvent => ({
-  cwd: typeof native.cwd === 'string' ? native.cwd : undefined,
-  sessionId:
-    typeof native.session_id === 'string'
-      ? native.session_id
-      : typeof native.conversation_id === 'string'
-        ? native.conversation_id
-        : undefined,
-  toolInput: native.tool_input as Readonly<Record<string, unknown>> | undefined,
-  toolName: typeof native.tool_name === 'string' ? native.tool_name : undefined,
-  toolUseId: typeof native.tool_use_id === 'string' ? native.tool_use_id : undefined,
-});
+type FixtureHost = 'claude' | 'codex' | 'cursor';
+
+/** The hook event the route would build: the envelope projected by the framework's own payload table. */
+const shellEventOf = (event: 'tool/before' | 'tool/after', host: FixtureHost, native: Record<string, unknown>) =>
+  shellEventFrom(createEventRouteInput(event, native, { host }).canonical.payload);
 
 const runWrapper = (
   wrapper: string,
@@ -87,14 +78,18 @@ const findWrapper = (event: 'tool-before' | 'tool-after', host: 'claude' | 'curs
 
 describe('host envelope fixtures', () => {
   it('rewrites cargo from Claude, Codex, and Cursor native beforeTool envelopes', async () => {
-    const cases: readonly { readonly file: string; readonly context: HookContext; readonly host: string }[] = [
+    const cases: readonly { readonly file: string; readonly context: HookContext; readonly host: FixtureHost }[] = [
       { context: { nativeEvent: 'PreToolUse', target: 'claude' }, file: 'claude-before-cargo.json', host: 'claude' },
       { context: { nativeEvent: 'PreToolUse', target: 'codex' }, file: 'codex-before-cargo.json', host: 'codex' },
       { context: { nativeEvent: 'preToolUse', target: 'cursor' }, file: 'cursor-before-cargo.json', host: 'cursor' },
     ];
 
     for (const item of cases) {
-      const result = await handleBeforeShell(canonicalFromNative(loadJson(item.file)), item.context, services);
+      const result = await handleBeforeShell(
+        shellEventOf('tool/before', item.host, loadJson(item.file)),
+        item.context,
+        services,
+      );
       expect(result.outcome).toBe('allow');
       expect(result.updatedInput?.command).toContain(`--host ${item.host}`);
       expect(result.updatedInput?.command).toContain('-- cargo');
@@ -103,25 +98,19 @@ describe('host envelope fixtures', () => {
 
   it('records afterTool from Claude and Cursor native envelopes', async () => {
     const records: HookRecord[] = [];
-    const cases: readonly { readonly context: HookContext; readonly file: string }[] = [
-      { context: { nativeEvent: 'PostToolUse', target: 'claude' }, file: 'claude-after-cargo.json' },
-      { context: { nativeEvent: 'postToolUse', target: 'cursor' }, file: 'cursor-after-cargo.json' },
+    const cases: readonly { readonly context: HookContext; readonly file: string; readonly host: FixtureHost }[] = [
+      { context: { nativeEvent: 'PostToolUse', target: 'claude' }, file: 'claude-after-cargo.json', host: 'claude' },
+      { context: { nativeEvent: 'postToolUse', target: 'cursor' }, file: 'cursor-after-cargo.json', host: 'cursor' },
     ];
 
     for (const item of cases) {
-      const native = loadJson(item.file);
-      const toolResponse =
-        native.tool_response ??
-        (typeof native.tool_output === 'string' ? JSON.parse(native.tool_output) : undefined);
-      await handleAfterShell(
-        { ...canonicalFromNative(native), toolResponse },
-        item.context,
-        {
-          record: (entry) => {
-            records.push(entry);
-          },
+      // Claude's `tool_response` object and Cursor's `tool_output` JSON string
+      // arrive as one canonical `toolResponse` (agent-bundle#466).
+      await handleAfterShell(shellEventOf('tool/after', item.host, loadJson(item.file)), item.context, {
+        record: (entry) => {
+          records.push(entry);
         },
-      );
+      });
     }
 
     expect(records).toEqual([

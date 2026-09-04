@@ -8,13 +8,8 @@ import { inspectWorkbenchSurface, workbenchPageLabel } from 'agent-bundle/test';
  * for this project — route catalog, providers, lifecycle fixtures per host,
  * counts, and page availability — from the same compiler pass, with no
  * browser and no dev server.
- *
- * This lives in the plain pool, not `tests/route-unit/`: the Workbench pass
- * compiles in development mode, and under the route-unit pool's
- * `react-server` condition the rendered `SKILL.tsx` fails to evaluate
- * (agent-bundle#441).
  */
-const projectRoot = resolve(import.meta.dirname, '..');
+const projectRoot = resolve(import.meta.dirname, '..', '..');
 
 describe('workbench surface', () => {
   it('catalogs the hauler server, the routed CLI, the event routes, and the daemon provider', async () => {

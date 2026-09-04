@@ -4,6 +4,7 @@ import { join } from 'node:path';
 
 import * as NodeServices from '@effect/platform-node/NodeServices';
 import * as NodeSocket from '@effect/platform-node/NodeSocket';
+import type { AgentTerminal } from 'agent-bundle';
 import * as Cause from 'effect/Cause';
 import * as Deferred from 'effect/Deferred';
 import * as Effect from 'effect/Effect';
@@ -35,7 +36,7 @@ import type {
   ServerMessage,
 } from '../daemon/protocol.js';
 
-import { AnsiStreamStripper, colorEnabled } from '../lib/ansi.js';
+import { AnsiStreamStripper } from '../lib/ansi.js';
 import { shortId } from '../lib/id.js';
 
 import { ensureDaemonRunning, type EnsureDaemonError } from './ensure-daemon.js';
@@ -47,7 +48,6 @@ import {
 } from './host-cap.js';
 import { localQueryReason } from './local-invocation.js';
 import { formatProgressLine } from './progress.js';
-import { sharesOutputTarget } from './shared-output.js';
 
 export interface ExecIo {
   readonly writeStderr: (data: string | Uint8Array) => void;
@@ -67,37 +67,31 @@ export interface RunExecOptions {
   readonly heartbeatMs?: number;
   readonly host?: string;
   readonly io: ExecIo;
-  /**
-   * Ask the daemon to run cargo with stderr merged into stdout. Defaults to
-   * whether this process's fd 1 and fd 2 are the same open file (`2>&1`), in
-   * which case direct cargo would have preserved write order across them.
-   */
-  readonly mergeStderr?: boolean;
   readonly session?: string;
   readonly silenceThresholdMs?: number;
   /**
-   * Whether the consumer of stdout renders ANSI color. Only consulted for a
-   * merged stream (`mergeStderr`), where cargo's captured `always` color
-   * would otherwise reach a pipe or file that direct cargo (`auto`) would
-   * have left uncolored. Defaults like `stderrColor`, against stdout's TTY.
+   * The process's terminal as the generated executable envelope probed it
+   * (agent-bundle#511, `main(argv, { terminal })`) — the client probes
+   * nothing itself. `stdout.kind` decides whether an auto-background notice
+   * must say where a redirected stdout's output went; `sharesTarget` (fd 1
+   * and fd 2 name one open file: `2>&1`, `| tee`, a shared terminal) asks the
+   * daemon for one merged pipe so write order survives as it would under
+   * direct cargo; each channel's `color` decides whether cargo's captured
+   * `always` color reaches `io` or is stripped first, so a pipe or capture
+   * never sees escape bytes (demux-rendered diagnostics keep theirs on the
+   * wire). Absent — a caller outside the envelope — reads as two separate
+   * colorless pipes.
    */
-  readonly stdoutColor?: boolean;
-  /**
-   * Whether the consumer of stderr renders ANSI color. When false, cargo
-   * output chunks (demux-rendered diagnostics keep their color on the wire)
-   * are stripped before reaching `io`, so a pipe/capture never sees escape
-   * bytes. Defaults to this process's stderr TTY-ness combined with the
-   * NO_COLOR/FORCE_COLOR/CLICOLOR/TERM conventions.
-   */
-  readonly stderrColor?: boolean;
-  /**
-   * Whether this process's stdout is a terminal. When it is not (the caller
-   * redirected it to a file or pipe), an auto-background notice adds where
-   * the command's output can actually be read. Defaults to
-   * `process.stdout.isTTY`.
-   */
-  readonly stdoutIsTty?: boolean;
+  readonly terminal?: AgentTerminal;
   readonly workspaceRoot?: string;
+}
+
+/** `RunExecOptions` once `runExecClient` has read the terminal: what the client's internals consume. */
+interface ExecOptions extends Omit<RunExecOptions, 'terminal'> {
+  /** Run cargo with stderr merged into stdout: the caller's two channels share one target. */
+  readonly mergeStderr: boolean;
+  /** Stdout is a terminal, so an auto-background notice need not say where output went. */
+  readonly stdoutIsTty: boolean;
 }
 
 export interface RunExecResult {
@@ -200,7 +194,7 @@ export interface PassthroughMode {
 }
 
 const passthrough = (
-  options: RunExecOptions,
+  options: ExecOptions,
   config: DaemonConfigShape,
   mode: PassthroughMode,
 ): Effect.Effect<RunExecResult> =>
@@ -224,7 +218,7 @@ const passthrough = (
       cwd: options.cwd,
       env: options.env,
       killSignal,
-      mergeStderr: options.mergeStderr === true,
+      mergeStderr: options.mergeStderr,
       onOutput: (channel, data) => Effect.sync(() => writeChannel(options.io, channel, data)),
       tailBytes: 0,
     });
@@ -319,7 +313,7 @@ const describeExit = (message: ExitMessage): string => {
 };
 
 const handleServerMessage = (
-  options: RunExecOptions,
+  options: ExecOptions,
   message: ServerMessage,
   state: StreamState,
 ): Effect.Effect<void> =>
@@ -372,7 +366,7 @@ const handleServerMessage = (
                     auto: {
                       capMs: hostShellCapMs(capHost),
                       host: capHost,
-                      stdoutRedirected: options.stdoutIsTty !== true,
+                      stdoutRedirected: !options.stdoutIsTty,
                     },
                   }
                 : {}),
@@ -463,7 +457,7 @@ const handleServerMessage = (
   });
 
 const streamBrokered = (
-  options: RunExecOptions,
+  options: ExecOptions,
   config: DaemonConfigShape,
 ): Effect.Effect<
   RunExecResult,
@@ -616,7 +610,7 @@ const streamBrokered = (
         ...(options.session === undefined ? {} : { session: options.session }),
         ...(options.workspaceRoot === undefined ? {} : { workspaceRoot: options.workspaceRoot }),
         ...(options.background === true ? { background: true } : {}),
-        ...(options.mergeStderr === true ? { mergeStderr: true } : {}),
+        ...(options.mergeStderr ? { mergeStderr: true } : {}),
         ...(options.after === undefined || options.after.length === 0
           ? {}
           : { after: [...options.after] }),
@@ -673,7 +667,7 @@ const streamBrokered = (
   });
 
 const brokeredOrUnreachable = (
-  options: RunExecOptions,
+  options: ExecOptions,
   config: DaemonConfigShape,
 ): Effect.Effect<RunExecResult, DaemonUnreachableError> =>
   Effect.scoped(streamBrokered(options, config)).pipe(
@@ -723,20 +717,19 @@ const brokeredOrUnreachable = (
 export const runExecClient = (
   rawOptions: RunExecOptions,
 ): Effect.Effect<RunExecResult> => {
-  const stderrColor =
-    rawOptions.stderrColor ?? colorEnabled(process.env, process.stderr.isTTY === true);
-  const mergeStderr = rawOptions.mergeStderr ?? sharesOutputTarget(1, 2);
-  const stdoutColor =
-    rawOptions.stdoutColor ?? colorEnabled(process.env, process.stdout.isTTY === true);
+  const { terminal, ...rest } = rawOptions;
+  const stderrColor = terminal !== undefined && terminal.stderr.color !== 'none';
+  const stdoutColor = terminal !== undefined && terminal.stdout.color !== 'none';
+  const mergeStderr = terminal?.sharesTarget === true;
   const keep = (io: ExecIo): ExecIo => io;
   const stripStderr = stderrColor ? keep : (io: ExecIo) => withStrippedChannel(io, 'stderr');
   // A merged stream is text from both channels, so the binary-stdout caveat no longer applies.
   const stripStdout = mergeStderr && !stdoutColor ? (io: ExecIo) => withStrippedChannel(io, 'stdout') : keep;
-  const options: RunExecOptions = {
-    ...rawOptions,
+  const options: ExecOptions = {
+    ...rest,
     io: stripStdout(stripStderr(rawOptions.io)),
     mergeStderr,
-    stdoutIsTty: rawOptions.stdoutIsTty ?? process.stdout.isTTY === true,
+    stdoutIsTty: terminal?.stdout.kind === 'tty',
   };
   const config = options.config ?? resolveDaemonConfig();
   // Help/version and other non-compiling queries never take a ticket: a

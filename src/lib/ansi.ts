@@ -82,36 +82,3 @@ export class AnsiStreamStripper {
     return Buffer.from(stripAnsi(held), 'latin1');
   }
 }
-
-const isNonZero = (value: string): boolean => value !== '0' && value.toLowerCase() !== 'false';
-
-/**
- * Whether a consumer stream should receive color, following the common
- * precedence: FORCE_COLOR decides outright when set, CLICOLOR_FORCE forces
- * color on, NO_COLOR (any non-empty value) and CLICOLOR=0 force it off,
- * TERM=dumb cannot render color, otherwise color iff the stream is a TTY.
- */
-export const colorEnabled = (
-  env: Readonly<Record<string, string | undefined>>,
-  isTty: boolean,
-): boolean => {
-  const forceColor = env.FORCE_COLOR;
-  if (forceColor !== undefined && forceColor !== '') {
-    return isNonZero(forceColor);
-  }
-  const clicolorForce = env.CLICOLOR_FORCE;
-  if (clicolorForce !== undefined && isNonZero(clicolorForce)) {
-    return true;
-  }
-  const noColor = env.NO_COLOR;
-  if (noColor !== undefined && noColor !== '') {
-    return false;
-  }
-  if (env.CLICOLOR === '0') {
-    return false;
-  }
-  if (env.TERM === 'dumb') {
-    return false;
-  }
-  return isTty;
-};

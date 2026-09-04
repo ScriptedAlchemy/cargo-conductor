@@ -35,10 +35,12 @@ clippy, fmt, nextest) or is waiting on someone else's cargo.
   locks. The daemon already serializes per (workspace, target dir); a private
   target dir only defeats attach/coverage sharing and multiplies compiles.
 - Long builds: `hauler exec --bg -- cargo …` or `hauler_request`.
-  Wait with `hauler await cc-N --max-wait-ms 55000` (each call waits at most
-  55 s, the rendered-route budget; call it again to keep waiting), or call
-  `hauler_await` with the same `maxWaitMs`; do not hand-roll a tight
-  `hauler_result` polling loop. `hauler result cc-N` /
+  Wait with `hauler await cc-N --max-wait-ms N` (one call waits up to the
+  daemon's 2 h ceiling; call it again to keep waiting), or call `hauler_await`
+  with the same `maxWaitMs`; do not hand-roll a tight `hauler_result` polling
+  loop. A host with its own per-call deadline still bounds one call — Codex
+  stops a tool call at `tool_timeout_sec` (60 s unless raised), so keep
+  `maxWaitMs` under it there and call again. `hauler result cc-N` /
   `hauler_result` is for a point-in-time read and includes the live output
   tail while a run is still in progress. The dashboard drawer refreshes that
   tail every three seconds.

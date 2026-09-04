@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'effect-rstest';
 
-import { AnsiStreamStripper, colorEnabled, stripAnsi } from '../src/lib/ansi.js';
+import { AnsiStreamStripper, stripAnsi } from '../src/lib/ansi.js';
 
 const ESC = '\u001b';
 
@@ -88,28 +88,5 @@ describe('AnsiStreamStripper', () => {
     const stripper = new AnsiStreamStripper();
     expect(pushText(stripper, `end${ESC}[3`)).toBe('end');
     expect(stripper.flush().toString('utf8')).not.toContain(ESC);
-  });
-});
-
-describe('colorEnabled', () => {
-  it('follows TTY-ness when no environment override is set', () => {
-    expect(colorEnabled({}, true)).toBe(true);
-    expect(colorEnabled({}, false)).toBe(false);
-  });
-
-  it('disables on NO_COLOR even for a TTY', () => {
-    expect(colorEnabled({ NO_COLOR: '1' }, true)).toBe(false);
-    expect(colorEnabled({ NO_COLOR: '' }, true)).toBe(true);
-  });
-
-  it('FORCE_COLOR decides outright, beating NO_COLOR', () => {
-    expect(colorEnabled({ FORCE_COLOR: '1', NO_COLOR: '1' }, false)).toBe(true);
-    expect(colorEnabled({ FORCE_COLOR: '0' }, true)).toBe(false);
-  });
-
-  it('honors CLICOLOR conventions and dumb terminals', () => {
-    expect(colorEnabled({ CLICOLOR_FORCE: '1' }, false)).toBe(true);
-    expect(colorEnabled({ CLICOLOR: '0' }, true)).toBe(false);
-    expect(colorEnabled({ TERM: 'dumb' }, true)).toBe(false);
   });
 });

@@ -77,12 +77,13 @@ checkout? See [Install](#install).
 | `hauler status [--limit N] [--cwd DIR] [--session ID] [--lane KEY] [--ticket ID …] [--status S …] [--command-contains TEXT]` | Queue, active runs, lanes, admission, kache, optionally filtered. |
 | `hauler log [--limit N]` | Recent requests from the ledger. |
 | `hauler last` | The most recent request. |
-| `hauler await <ticket> [--max-wait-ms N]` | Long-poll until the ticket finishes or the wait expires (default 30 s, ceiling 55 s per call — the rendered-route budget; call again to keep waiting). |
+| `hauler await <ticket> [--max-wait-ms N]` | Long-poll until the ticket finishes or the wait expires (default 30 s, ceiling 2 h per call — the daemon's await ceiling; call again to keep waiting). A host with its own per-call deadline still bounds one call: Codex stops a tool call at `tool_timeout_sec` (60 s unless raised). |
 | `hauler result <ticket> [--full]` | A stored ticket; running tickets include a live output tail. The document names the full on-disk output log (`Full output: <path> (size)`) and `--json` carries it as `request.outputPath`; `--full` prints that whole log instead of the tail (the last ~768 KiB when it does not fit, with the path for the rest). |
 | `hauler kill <ticket>` | Stop a ticket: drop it from the queue or SIGTERM (then SIGKILL) its cargo process group, freeing the lane. Riders return to their lane or fail with it. |
 | `hauler request [--session ID] [--host HOST] [--cwd DIR] [--after TICKET …] -- <cargo …>` | Submit a background request and return its ticket, with where it landed in its lane (`queued behind cc-3281 (~13m)`, `waiting for cc-3281`, or `attached to cc-3281`). `--after` works as for `exec`. |
 | `hauler daemon <run\|start\|stop\|status\|restart>` | Manage the daemon lifecycle. `restart` sends the graceful stop, waits up to 5 s for the old pid to exit, then starts a daemon from this install and prints both (`restarted: pid 741314 (0.4.1) → pid 742001 (0.4.4)`); a daemon that has not exited by then is reported, not killed, and nothing is started (exit `1`). Tickets in flight at the restart are not handed over: the new daemon marks them `killed` with the error `orphaned by daemon restart`. |
 | `hauler install-shim [--dir DIR] [--real-cargo PATH] [--force]` | Install the optional PATH shim. |
+| `hauler dashboard [--target claude\|codex\|cursor\|portable] [--port N] [--no-open]` | Open the dashboard in a plain browser tab: serve the MCP App standalone against the plugin's own `hauler` server on `127.0.0.1` (through `agent-bundle serve-app`), call `hauler_status` once so it opens populated, and stay in the foreground until Ctrl-C. A checkout command: it needs the built `artifact/` beside the CLI and `agent-bundle` under `node_modules` (`pnpm install && pnpm build`); the npm package ships no runtime dependencies and an installed host pack has no artifact, so both report what is missing. In an MCP host, call `hauler_status` instead. |
 
 The `hauler` MCP server projects the same operations as `hauler_status`,
 `hauler_log`, `hauler_last`, `hauler_await`, `hauler_result`, `hauler_kill`,
@@ -94,7 +95,9 @@ The dashboard is an MCP App (`ui://cargo-hauler/dashboard.html`) attached to
 `hauler_status`. It shows contention and admission, in-flight and queued work
 with live output per ticket, metrics over one-hour, 24-hour, and all-time
 windows, per-command timings, optional kache data, lanes, and history. It
-refreshes itself while open.
+refreshes itself while open. Outside an MCP host, `hauler dashboard` (from the
+plugin checkout) serves the same App in a plain browser tab against the
+running daemon.
 
 ![cargo-hauler metrics for one-hour, 24-hour, and all-time windows](docs/media/dashboard-metrics.png)
 
@@ -716,7 +719,7 @@ artifact build, at the harness proof levels:
 | script-dispatch | `script-dispatch` | the `hauler` entry through its `main` envelope as its own process |
 | mcp-in-memory | `mcp-surface`, `layout` | tool names, `outputSchema`, the dashboard resource link, `_meta.hauler`, and a live fixture broker over the in-memory transport |
 | packed-stdio | `packed-contract` | the built `artifact/cursor` server as a real process against a live broker, every tool through the wire-contract matrix |
-| workbench-surface | `tests/workbench-surface.test.ts` | what `agent-bundle dev` would show: catalog, provider, lifecycles per host, counts |
+| workbench-surface | `workbench-surface` | what `agent-bundle dev` would show: catalog, provider, lifecycles per host, counts |
 
 Daemon-backed cases run a real broker in-process with a fake `cargo`
 (`tests/harness.ts`) and reach it either through the `haulerDaemon` provider
@@ -732,24 +735,19 @@ pnpm run doctor    # installed copies versus the artifact
 pnpm run check     # the gate
 ```
 
-To see the dashboard outside an MCP host, run `pnpm run dev` and open the
-Workbench's MCP page: it binds a session to the generated `hauler` server and
-previews the `ui://cargo-hauler/dashboard.html` App over that session, so the
-data is the daemon's own. The repository ships no preview harness of its own.
+To see the dashboard outside an MCP host, run `node dist/bin/hauler.js
+dashboard` after a build: it serves the `ui://cargo-hauler/dashboard.html` App
+standalone against the generated `hauler` server (`serveApp` from
+`agent-bundle/api`, the Workbench's own host stack), so the data is the
+daemon's own. `pnpm run dev` and the Workbench's MCP page preview the same App
+with live rebuilds. The repository ships no preview harness of its own.
 
 agent-bundle does not yet have an npm release; this repository pins the
 [pkg.pr.new](https://pkg.pr.new) preview of main commit
-[`42539ff5f`](https://github.com/ScriptedAlchemy/agent-bundle/commit/42539ff5fbafdff0656317b841a50100ac0fc141)
+[`c2ffe5ec5`](https://github.com/ScriptedAlchemy/agent-bundle/commit/c2ffe5ec55f2360fdc5c387e5b57e08f5282b84a)
 for both `agent-bundle` and `@agent-bundle/runtime`. `inspect` reports the
 `agent` component kind as unavailable on every host (agent-bundle G5
-deferral); this plugin defines no agents. Two framework limitations observed
-while building this app are tracked upstream: a rendered `SKILL.tsx` cannot
-import `agent-bundle/meta`
-([agent-bundle#440](https://github.com/ScriptedAlchemy/agent-bundle/issues/440)),
-and `inspectWorkbenchSurface` fails on a project with a rendered skill when
-run under the `react-server` condition of the route-unit pool
-([agent-bundle#441](https://github.com/ScriptedAlchemy/agent-bundle/issues/441);
-which is why `tests/workbench-surface.test.ts` lives in the plain pool).
+deferral); this plugin defines no agents.
 
 `repos/effect` is a read-only subtree containing the Effect v4 source pinned to
 `effect@4.0.0-rc.112`; see `AGENTS.md` before working with Effect code in this

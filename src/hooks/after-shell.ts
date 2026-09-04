@@ -14,7 +14,8 @@ import {
 export interface AfterShellEvent {
   readonly cwd?: string;
   readonly sessionId?: string;
-  readonly toolInput?: Readonly<Record<string, unknown>>;
+  /** The completed call's input as the host sent it: an object on Claude and Cursor, any JSON on Codex. */
+  readonly toolInput?: unknown;
   readonly toolName?: string;
   readonly toolResponse?: unknown;
   readonly toolUseId?: string;
