@@ -1017,6 +1017,32 @@ export const quietOutputHint = (
   };
 };
 
+/**
+ * Stall pill for a running row (#46): the daemon saw no process-tree CPU and
+ * no output for `idleMs` on a run already past its estimate. The title names
+ * the release command; riders point at their leader.
+ */
+export const stalledHint = (
+  stall: unknown,
+  killTicket: unknown,
+): { readonly label: string; readonly title: string } | null => {
+  if (
+    typeof stall !== 'object' ||
+    stall === null ||
+    !('idleMs' in stall) ||
+    typeof stall.idleMs !== 'number' ||
+    !Number.isFinite(stall.idleMs) ||
+    stall.idleMs < 0
+  ) {
+    return null;
+  }
+  const kill = typeof killTicket === 'string' ? ` — hauler kill ${killTicket}` : '';
+  return {
+    label: `stalled ${Math.floor(stall.idleMs / 60_000)}m`,
+    title: `no CPU and no output for ${Math.floor(stall.idleMs / 60_000)}m on a run past its estimate; likely deadlocked${kill}`,
+  };
+};
+
 export const laneIsActive = (lane: {
   readonly queued?: unknown;
   readonly runningTicket?: unknown;

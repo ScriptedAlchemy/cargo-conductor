@@ -201,6 +201,19 @@ describe('status/result contract completeness (issue #16)', () => {
     expect(legacy.queue).toBeUndefined();
     expect(legacy.delayed).toBeUndefined();
     expect(legacy.quietMs).toBeUndefined();
+    expect(legacy.stall).toBeUndefined();
+    expect(legacy.orphaned).toBeUndefined();
+  });
+
+  it('accepts the stall report and orphaned flag on a running record (#46)', () => {
+    const stalled = requestRecordSchema.parse({
+      ...baseRecord,
+      orphaned: true,
+      stall: { cpuMs: 4_200, idleMs: 720_000, since: 1_700_000_000_000 },
+      status: 'running',
+    });
+    expect(stalled.stall).toEqual({ cpuMs: 4_200, idleMs: 720_000, since: 1_700_000_000_000 });
+    expect(stalled.orphaned).toBe(true);
   });
 
   it('accepts diagnosed records in status report active/recent lists', () => {

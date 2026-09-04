@@ -31,6 +31,22 @@ describe('formatProgressLine', () => {
     );
   });
 
+  it('says so when a running heartbeat carries the stalled flag (#46)', () => {
+    expect(
+      formatProgressLine({
+        command: 'test -p tracedecay-store-runtime --lib',
+        elapsedMs: 58 * 60_000,
+        estimateMs: 5 * 60_000,
+        kind: 'heartbeat',
+        phase: 'running',
+        stalled: { idleMs: 42 * 60_000, killTicket: 'cc-3062' },
+        ticket: 'cc-3062',
+      }),
+    ).toBe(
+      '[cargo-hauler] cc-3062 running 58m (est ~5m) · looks stalled (no CPU for 42m) — hauler kill cc-3062 — test -p tracedecay-store-runtime --lib\n',
+    );
+  });
+
   it('formats queued await heartbeats with lane position, running head, and wait ETA', () => {
     expect(
       formatProgressLine({

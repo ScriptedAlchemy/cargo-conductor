@@ -39,6 +39,7 @@ import {
   runMetricsView,
   sectionOrder,
   shortenPath,
+  stalledHint,
   subcommandDisplayLabel,
   subcommandMetricsView,
   subcommandTimings,
@@ -68,6 +69,7 @@ describe('MCP App dashboard', () => {
       expect(html).toContain('hauler_result');
       expect(html).toContain('wait exceeds estimate');
       expect(html).toContain('no output — long compile/link phases can be silent');
+      expect(html).toContain('likely deadlocked');
       expect(html).not.toContain('src="http');
     }
   });
@@ -86,6 +88,15 @@ describe('long-wait and quiet-output cues', () => {
       title: 'no output — long compile/link phases can be silent; check kache/rustc activity',
     });
     expect(quietOutputHint(undefined)).toBeNull();
+  });
+
+  it('renders a stall pill naming the kill that frees the lane (#46)', () => {
+    expect(stalledHint({ cpuMs: 2_700, idleMs: 42 * 60_000 + 5_000, since: 1 }, 'cc-3062')).toEqual({
+      label: 'stalled 42m',
+      title: 'no CPU and no output for 42m on a run past its estimate; likely deadlocked — hauler kill cc-3062',
+    });
+    expect(stalledHint(undefined, 'cc-1')).toBeNull();
+    expect(stalledHint({ idleMs: 'soon' }, 'cc-1')).toBeNull();
   });
 });
 

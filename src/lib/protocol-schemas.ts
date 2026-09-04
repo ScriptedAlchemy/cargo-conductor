@@ -8,6 +8,7 @@ import type {
   KacheStatusReport,
   LaneStatus,
   RequestRecord,
+  StallReport,
   StatusMetrics,
   StatusReport,
 } from '../daemon/protocol.js';
@@ -42,6 +43,12 @@ const admissionHoldSchema = z.object({
   detail: z.string(),
   reason: z.enum(['memory-hard', 'heavy-profile-cap', 'memory-soft', 'load', 'cpu-stall']),
 }) satisfies z.ZodType<AdmissionHold>;
+
+const stallReportSchema = z.object({
+  cpuMs: z.number().nonnegative(),
+  idleMs: z.number().nonnegative(),
+  since: z.number(),
+}) satisfies z.ZodType<StallReport>;
 
 // Daemon-sourced payloads deliberately STRIP unknown keys instead of
 // rejecting them (issue #4): plugin snapshots outlive daemon upgrades, and a
@@ -88,6 +95,8 @@ export const requestRecordSchema = z.object({
   delayed: z.boolean().optional(),
   quietMs: z.number().nonnegative().optional(),
   admissionHold: admissionHoldSchema.optional(),
+  stall: stallReportSchema.optional(),
+  orphaned: z.boolean().optional(),
 }) satisfies z.ZodType<RequestRecord>;
 
 const laneStatusSchema = z.object({

@@ -44,6 +44,7 @@ import {
   runMetricsView,
   sectionOrder,
   shortenPath,
+  stalledHint,
   subcommandDisplayLabel,
   subcommandMetricsView,
   summaryFirstLine,
@@ -191,6 +192,7 @@ interface RequestRow {
   readonly delayed?: unknown;
   readonly admissionHold?: unknown;
   readonly quietMs?: unknown;
+  readonly stall?: unknown;
   readonly workspaceRoot?: unknown;
   readonly intentJson?: unknown;
   readonly errorCount?: unknown;
@@ -449,6 +451,8 @@ const elapsedCell = (
   waitMs: unknown,
   quietMs: unknown,
   nowMs: number,
+  stall?: unknown,
+  killTicket?: unknown,
 ): ReactNode => {
   if (typeof sinceMs !== 'number') {
     return '—';
@@ -457,6 +461,7 @@ const elapsedCell = (
   const remaining = remainingEstimateMs(elapsed, estimateMs);
   const waited = queuedWaitMs(waitMs);
   const quiet = quietOutputHint(quietMs);
+  const stalled = stalledHint(stall, killTicket);
   return (
     <>
       <span className="dur">{formatMs(elapsed)}</span>
@@ -470,6 +475,14 @@ const elapsedCell = (
         <span className="est" title={quiet.title}>
           {' '}· {quiet.label}
         </span>
+      )}
+      {stalled === null ? null : (
+        <>
+          {' '}
+          <span className="pill killed" title={stalled.title}>
+            {stalled.label}
+          </span>
+        </>
       )}
     </>
   );
@@ -1419,6 +1432,8 @@ const DashboardContent = ({ structured }: { readonly structured: StructuredConte
                     row.waitMs,
                     row.quietMs,
                     nowMs,
+                    row.stall,
+                    typeof row.attachedTo === 'string' ? row.attachedTo : row.ticket,
                   ),
                 ],
                 onSelect: selectRow(row),
