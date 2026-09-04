@@ -343,7 +343,6 @@ export const BrokerLive: Layer.Layer<
               callbacks,
               createdAtMs,
               estimate,
-              closure,
             );
             yield* Effect.sync(() => directory.setLeader(job));
             yield* ledger.markQueued(created.id, createdAtMs);
