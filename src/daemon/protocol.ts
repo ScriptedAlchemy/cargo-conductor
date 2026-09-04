@@ -429,6 +429,12 @@ export interface AckMessage {
   readonly etaMs?: number;
   /** Where `etaMs` came from; a `default` prior is a placeholder, not a measurement. */
   readonly etaSource?: EstimateSource;
+  /**
+   * Estimated wait before this request starts: the work queued ahead of it
+   * in its lane plus the running head's remaining time. Absent when the
+   * request attached to a leader or its lane was idle.
+   */
+  readonly waitEtaMs?: number;
 }
 
 /**

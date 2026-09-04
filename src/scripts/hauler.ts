@@ -138,7 +138,9 @@ const runExecCommand = async (argv: readonly string[], options: ScriptOptions): 
   return Effect.runPromise(
     exec({
       argv: parsed.cargoArgv,
-      cwd: parsed.cwd ?? process.cwd(),
+      // Resolved here: the daemon would otherwise resolve a relative --cwd
+      // against its own working directory, not the caller's.
+      cwd: resolve(parsed.cwd ?? process.cwd()),
       env: buildTransportedEnv(process.env),
       host: parsed.host ?? envHost ?? 'cli',
       io,
@@ -181,6 +183,9 @@ const runInstallShim = (rest: readonly string[], write: (value: string) => void)
     });
     write(`Installed cargo shim at ${installed.path}\n`);
     write(`${describeShimPathStatus(shimPathStatus(installed.path), destDir)}\n`);
+    write(
+      `The shim embeds this hauler entry: ${installed.haulerScript}. After an upgrade that moves or replaces that directory, the shim runs ${installed.realCargo} directly until you re-run \`hauler install-shim --force\`.\n`,
+    );
     return 0;
   } catch (error) {
     write(`${error instanceof Error ? error.message : String(error)}\n`);

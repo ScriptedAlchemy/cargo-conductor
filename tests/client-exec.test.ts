@@ -4,11 +4,17 @@ import { join } from 'node:path';
 
 import { describe, expect, it } from 'effect-rstest';
 import * as Effect from 'effect/Effect';
+import * as Fiber from 'effect/Fiber';
 import * as Schedule from 'effect/Schedule';
 import type * as Scope from 'effect/Scope';
 
-import { runExecClient } from '../src/client/exec.js';
-import { pingDaemon, requestOverSocket } from '../src/daemon/control.js';
+import { runExecClient, unreachablePassthroughMode } from '../src/client/exec.js';
+import {
+  ControlTimeoutError,
+  DaemonUnreachableError,
+  pingDaemon,
+  requestOverSocket,
+} from '../src/daemon/control.js';
 import { runDaemon } from '../src/daemon/main.js';
 import {
   encodeServerMessage,
@@ -23,16 +29,29 @@ import { LineBuffer } from '../src/lib/ndjson.js';
 
 import { fakeCargoEnv, scopedDaemon, scopedFixture } from './harness.js';
 
+interface ScriptedDaemonOptions {
+  readonly ack: {
+    readonly etaMs: number;
+    readonly etaSource: EstimateSource;
+    readonly waitEtaMs?: number;
+  };
+  /** Written right after the ack. */
+  readonly after?: readonly ServerMessage[];
+  /** Hang up right after the ack, as a crashing daemon would. */
+  readonly closeAfterAck?: boolean;
+  /** Written after the `kill-result` when the client asks to kill its ticket. */
+  readonly afterKill?: readonly ServerMessage[];
+}
+
 /**
  * A stand-in daemon that acks every exec with a fixed estimate, so the
  * client's auto-background decision can be driven without teaching the real
- * cost model a nine-minute prior. Records what the client sent and answers a
- * detach like the real daemon does.
+ * cost model a nine-minute prior. Records what the client sent and answers
+ * detach and kill like the real daemon does.
  */
 const scriptedDaemon = (
   socketPath: string,
-  ack: { readonly etaMs: number; readonly etaSource: EstimateSource },
-  after: readonly ServerMessage[],
+  options: ScriptedDaemonOptions,
 ): Effect.Effect<{ readonly sent: () => readonly ClientMessage[] }, never, Scope.Scope> =>
   Effect.gen(function* () {
     const sent: ClientMessage[] = [];
@@ -48,17 +67,23 @@ const scriptedDaemon = (
               sent.push(message);
               if (message.type === 'exec') {
                 const reply: AckMessage = {
-                  etaMs: ack.etaMs,
-                  etaSource: ack.etaSource,
+                  etaMs: options.ack.etaMs,
+                  etaSource: options.ack.etaSource,
                   id: message.id,
                   laneKey: 'lane',
                   position: 0,
                   ticket: 'cc-1',
                   type: 'ack',
+                  ...(options.ack.waitEtaMs === undefined
+                    ? {}
+                    : { waitEtaMs: options.ack.waitEtaMs }),
                 };
                 socket.write(encodeServerMessage(reply));
-                for (const next of after) {
+                for (const next of options.after ?? []) {
                   socket.write(encodeServerMessage(next));
+                }
+                if (options.closeAfterAck === true) {
+                  socket.end();
                 }
               }
               if (message.type === 'detach') {
@@ -70,6 +95,19 @@ const scriptedDaemon = (
                     type: 'detach-result',
                   }),
                 );
+              }
+              if (message.type === 'kill') {
+                socket.write(
+                  encodeServerMessage({
+                    id: message.id,
+                    killed: true,
+                    ticket: message.ticket,
+                    type: 'kill-result',
+                  }),
+                );
+                for (const next of options.afterKill ?? []) {
+                  socket.write(encodeServerMessage(next));
+                }
               }
             }
           });
@@ -86,6 +124,12 @@ const scriptedDaemon = (
     );
     return { sent: () => sent };
   });
+
+const waitUntil = (condition: () => boolean): Effect.Effect<void> =>
+  Effect.suspend(() => (condition() ? Effect.succeed(true) : Effect.succeed(false))).pipe(
+    Effect.repeat({ until: (ready) => ready, schedule: Schedule.spaced('20 millis') }),
+    Effect.asVoid,
+  );
 
 const collectIo = (): {
   readonly io: {
@@ -151,11 +195,10 @@ describe('runExecClient', () => {
         type: 'exit',
         waitMs: 1,
       };
-      const daemon = yield* scriptedDaemon(
-        fixture.config.socketPath,
-        { etaMs: 60 * 60_000, etaSource: 'default' },
-        [{ id: 'x', ticket: 'cc-1', type: 'started', waitMs: 1 }, exit],
-      );
+      const daemon = yield* scriptedDaemon(fixture.config.socketPath, {
+        ack: { etaMs: 60 * 60_000, etaSource: 'default' },
+        after: [{ id: 'x', ticket: 'cc-1', type: 'started', waitMs: 1 }, exit],
+      });
       const collected = collectIo();
       const result = yield* runExecClient({
         argv: ['cargo', 'build'],
@@ -176,11 +219,9 @@ describe('runExecClient', () => {
     Effect.gen(function* () {
       const fixture = yield* scopedFixture(5);
       mkdirSync(fixture.config.stateDir, { recursive: true });
-      const daemon = yield* scriptedDaemon(
-        fixture.config.socketPath,
-        { etaMs: 10 * 60_000, etaSource: 'ewma' },
-        [],
-      );
+      const daemon = yield* scriptedDaemon(fixture.config.socketPath, {
+        ack: { etaMs: 10 * 60_000, etaSource: 'ewma' },
+      });
       const collected = collectIo();
       const result = yield* runExecClient({
         argv: ['cargo', 'build'],
@@ -200,15 +241,213 @@ describe('runExecClient', () => {
       expect(collected.stderr()).toContain('exit 75');
     }));
 
+  it.live('counts the queue wait toward the shell cap, not just the job’s own runtime', () =>
+    Effect.gen(function* () {
+      const fixture = yield* scopedFixture(5);
+      mkdirSync(fixture.config.stateDir, { recursive: true });
+      // A five-minute build behind six minutes of queued work is the case
+      // auto-background exists for: the shell would be killed at nine.
+      const daemon = yield* scriptedDaemon(fixture.config.socketPath, {
+        ack: { etaMs: 5 * 60_000, etaSource: 'ewma', waitEtaMs: 6 * 60_000 },
+      });
+      const collected = collectIo();
+      const result = yield* runExecClient({
+        argv: ['cargo', 'build'],
+        autoSpawn: false,
+        config: fixture.config,
+        cwd: fixture.ws1,
+        host: 'claude',
+        io: collected.io,
+      });
+
+      expect(result).toEqual({ exitCode: 75, mode: 'brokered', ticket: 'cc-1' });
+      expect(daemon.sent().map((message) => message.type)).toEqual(['exec', 'detach']);
+      expect(collected.stderr()).toContain('queued (0 ahead, wait ~360s, run ~300s)');
+      expect(collected.stderr()).toContain('exceeds the claude shell cap');
+    }));
+
+  it.live('stays foreground when wait plus runtime fits under the cap', () =>
+    Effect.gen(function* () {
+      const fixture = yield* scopedFixture(5);
+      mkdirSync(fixture.config.stateDir, { recursive: true });
+      const daemon = yield* scriptedDaemon(fixture.config.socketPath, {
+        ack: { etaMs: 5 * 60_000, etaSource: 'ewma', waitEtaMs: 60_000 },
+        after: [
+          { id: 'x', ticket: 'cc-1', type: 'started', waitMs: 1 },
+          {
+            error: null,
+            exitCode: 0,
+            id: 'x',
+            runMs: 1,
+            signal: null,
+            status: 'done',
+            ticket: 'cc-1',
+            type: 'exit',
+            waitMs: 1,
+          },
+        ],
+      });
+      const collected = collectIo();
+      const result = yield* runExecClient({
+        argv: ['cargo', 'build'],
+        autoSpawn: false,
+        config: fixture.config,
+        cwd: fixture.ws1,
+        host: 'claude',
+        io: collected.io,
+      });
+
+      expect(result).toEqual({ exitCode: 0, mode: 'brokered', ticket: 'cc-1' });
+      expect(daemon.sent().map((message) => message.type)).toEqual(['exec']);
+      expect(collected.stderr()).toContain('queued (0 ahead, wait ~60s, run ~300s)');
+    }));
+
+  it.live('reports the daemon’s reason when a ticket ends without an exit code', () =>
+    Effect.gen(function* () {
+      const fixture = yield* scopedFixture(5);
+      mkdirSync(fixture.config.stateDir, { recursive: true });
+      yield* scriptedDaemon(fixture.config.socketPath, {
+        ack: { etaMs: 1_000, etaSource: 'default' },
+        after: [
+          {
+            error: 'spawn failed: ENOENT /nonexistent/cargo',
+            exitCode: null,
+            id: 'x',
+            runMs: 0,
+            signal: null,
+            status: 'failed',
+            ticket: 'cc-1',
+            type: 'exit',
+            waitMs: 1,
+          },
+        ],
+      });
+      const collected = collectIo();
+      const result = yield* runExecClient({
+        argv: ['cargo', 'build'],
+        autoSpawn: false,
+        config: fixture.config,
+        cwd: fixture.ws1,
+        io: collected.io,
+      });
+
+      // Previously a bare exit 1 with no line: the caller could not tell a
+      // compile failure from a daemon that never managed to start cargo.
+      expect(result).toEqual({ exitCode: 1, mode: 'brokered', ticket: 'cc-1' });
+      expect(collected.stderr()).toContain(
+        '[cargo-hauler] ticket cc-1 failed: spawn failed: ENOENT /nonexistent/cargo',
+      );
+    }));
+
+  it.live('maps a signaled ticket to 128 + signal and says it was killed', () =>
+    Effect.gen(function* () {
+      const fixture = yield* scopedFixture(5);
+      mkdirSync(fixture.config.stateDir, { recursive: true });
+      yield* scriptedDaemon(fixture.config.socketPath, {
+        ack: { etaMs: 1_000, etaSource: 'default' },
+        after: [
+          {
+            error: null,
+            exitCode: null,
+            id: 'x',
+            runMs: 10,
+            signal: 'SIGTERM',
+            status: 'killed',
+            ticket: 'cc-1',
+            type: 'exit',
+            waitMs: 1,
+          },
+        ],
+      });
+      const collected = collectIo();
+      const result = yield* runExecClient({
+        argv: ['cargo', 'build'],
+        autoSpawn: false,
+        config: fixture.config,
+        cwd: fixture.ws1,
+        io: collected.io,
+      });
+
+      expect(result).toEqual({ exitCode: 143, mode: 'brokered', ticket: 'cc-1' });
+      expect(collected.stderr()).toContain('[cargo-hauler] ticket cc-1 killed (SIGTERM)');
+    }));
+
+  it.live('names the ticket when the connection drops after the ack', () =>
+    Effect.gen(function* () {
+      const fixture = yield* scopedFixture(5);
+      mkdirSync(fixture.config.stateDir, { recursive: true });
+      yield* scriptedDaemon(fixture.config.socketPath, {
+        ack: { etaMs: 1_000, etaSource: 'default' },
+        closeAfterAck: true,
+      });
+      const collected = collectIo();
+      const result = yield* runExecClient({
+        argv: ['cargo', 'build'],
+        autoSpawn: false,
+        config: fixture.config,
+        cwd: fixture.ws1,
+        io: collected.io,
+      });
+
+      // The ticket is still running in the daemon; the caller needs its id.
+      expect(result).toEqual({ exitCode: 1, mode: 'brokered', ticket: 'cc-1' });
+      expect(collected.stderr()).toContain(
+        '[cargo-hauler] connection to daemon lost; ticket cc-1 continues — hauler result cc-1',
+      );
+    }));
+
+  it.live('kills its own ticket and exits 130 when interrupted during a brokered run', () =>
+    Effect.gen(function* () {
+      const fixture = yield* scopedFixture(5);
+      mkdirSync(fixture.config.stateDir, { recursive: true });
+      const daemon = yield* scriptedDaemon(fixture.config.socketPath, {
+        ack: { etaMs: 1_000, etaSource: 'default' },
+        after: [{ id: 'x', ticket: 'cc-1', type: 'started', waitMs: 1 }],
+        afterKill: [
+          {
+            error: null,
+            exitCode: null,
+            id: 'x',
+            runMs: 10,
+            signal: 'SIGTERM',
+            status: 'killed',
+            ticket: 'cc-1',
+            type: 'exit',
+            waitMs: 1,
+          },
+        ],
+      });
+      const collected = collectIo();
+      const listenersBefore = process.listenerCount('SIGINT');
+      const run = yield* Effect.forkChild(
+        runExecClient({
+          argv: ['cargo', 'build'],
+          autoSpawn: false,
+          config: fixture.config,
+          cwd: fixture.ws1,
+          io: collected.io,
+        }),
+      );
+      yield* waitUntil(() => collected.stderr().includes('started'));
+      expect(process.listenerCount('SIGINT')).toBe(listenersBefore + 1);
+      process.emit('SIGINT');
+      const result = yield* Fiber.join(run);
+
+      // Without this the daemon keeps the ticket running (holdStop) after
+      // the terminal's Ctrl-C only killed the client.
+      expect(result).toEqual({ exitCode: 130, mode: 'brokered', ticket: 'cc-1' });
+      expect(daemon.sent().map((message) => message.type)).toEqual(['exec', 'kill']);
+      expect(collected.stderr()).toContain('SIGINT: stopping ticket cc-1');
+      expect(process.listenerCount('SIGINT')).toBe(listenersBefore);
+    }));
+
   it.live('keeps exit 0 for an explicit --bg request', () =>
     Effect.gen(function* () {
       const fixture = yield* scopedFixture(5);
       mkdirSync(fixture.config.stateDir, { recursive: true });
-      yield* scriptedDaemon(
-        fixture.config.socketPath,
-        { etaMs: 1_000, etaSource: 'default' },
-        [],
-      );
+      yield* scriptedDaemon(fixture.config.socketPath, {
+        ack: { etaMs: 1_000, etaSource: 'default' },
+      });
       const collected = collectIo();
       const result = yield* runExecClient({
         argv: ['cargo', 'build'],
@@ -426,6 +665,86 @@ describe('runExecClient', () => {
       ]);
     }));
 
+  it.live('terminates the direct cargo run and exits 130 when interrupted in passthrough', () =>
+    Effect.gen(function* () {
+      const fixture = yield* scopedFixture(5);
+      const collected = collectIo();
+      const listenersBefore = process.listenerCount('SIGINT');
+      const startedAt = Date.now();
+      const run = yield* Effect.forkChild(
+        runExecClient({
+          argv: ['cargo', 'build'],
+          autoSpawn: false,
+          config: fixture.config,
+          cwd: fixture.ws1,
+          env: fakeCargoEnv(fixture, { FAKE_SLEEP: '20' }),
+          io: collected.io,
+        }),
+      );
+      yield* waitUntil(() => collected.stdout().includes('fake-out:build'));
+      expect(process.listenerCount('SIGINT')).toBe(listenersBefore + 1);
+      process.emit('SIGINT');
+      const result = yield* Fiber.join(run);
+
+      // The child is spawned detached, so without a handler Ctrl-C killed
+      // only the client and left cargo (and its rustc children) running.
+      expect(result).toEqual({ exitCode: 130, mode: 'passthrough' });
+      expect(Date.now() - startedAt).toBeLessThan(15_000);
+      expect(process.listenerCount('SIGINT')).toBe(listenersBefore);
+    }));
+
+  it.live('prints the spawn error instead of a silent exit 1 in passthrough', () =>
+    Effect.gen(function* () {
+      const fixture = yield* scopedFixture(5);
+      const collected = collectIo();
+      const result = yield* runExecClient({
+        argv: ['/nonexistent/cargo-binary', 'build'],
+        autoSpawn: false,
+        config: fixture.config,
+        cwd: fixture.ws1,
+        env: fakeCargoEnv(fixture),
+        io: collected.io,
+      });
+
+      expect(result).toEqual({ exitCode: 1, mode: 'passthrough' });
+      expect(collected.stderr()).toMatch(/\[cargo-hauler\] .*nonexistent\/cargo-binary/u);
+    }));
+
+  it.live('carries the lane’s queue wait on the ack', () =>
+    Effect.gen(function* () {
+      const fixture = yield* scopedDaemon(1);
+      const collected = collectIo();
+      const first = yield* runExecClient({
+        argv: ['cargo', 'build'],
+        autoSpawn: false,
+        background: true,
+        config: fixture.config,
+        cwd: fixture.ws1,
+        env: fakeCargoEnv(fixture, { FAKE_SLEEP: '3' }),
+        io: collected.io,
+      });
+      expect(first.ticket).toMatch(/^cc-\d+$/u);
+
+      const messages = yield* requestOverSocket({
+        isTerminal: (message) => message.type === 'ack',
+        message: {
+          argv: ['cargo', 'test'],
+          background: true,
+          cwd: fixture.ws1,
+          env: fakeCargoEnv(fixture),
+          id: 'second',
+          type: 'exec',
+        },
+        socketPath: fixture.config.socketPath,
+        timeoutMs: 5_000,
+      });
+      const ack = messages.find((message): message is AckMessage => message.type === 'ack');
+      // `position` counts pending jobs only; the wait also covers the running
+      // head's remaining estimate, which is what the second request sits behind.
+      expect(ack?.ticket).not.toBe(first.ticket);
+      expect(ack?.waitEtaMs).toBeGreaterThan(0);
+    }));
+
   it.live('invokes ensureDaemon before falling back to passthrough', () =>
     Effect.gen(function* () {
       const fixture = yield* scopedFixture(5);
@@ -530,4 +849,30 @@ describe('runExecClient', () => {
       expect(result.exitCode).toBe(0);
       expect(collected.stderr()).toMatch(/still running \(\d+s\)/u);
     }));
+});
+
+describe('unreachablePassthroughMode', () => {
+  it('goes straight to cargo when the daemon is alive but never accepted', () => {
+    // After 60 s of knocking, pinging again and running a second 60 s cycle
+    // only delays the build; a saturated daemon is not an absent one.
+    const saturated = new DaemonUnreachableError({
+      cause: new ControlTimeoutError({
+        phase: 'open',
+        received: [],
+        socketPath: '/s',
+        timeoutMs: 2_000,
+      }),
+      socketPath: '/s',
+    });
+    expect(unreachablePassthroughMode(saturated)).toEqual({
+      reason: 'daemon did not accept a connection for 60 seconds',
+      spool: true,
+    });
+    // A dead socket still deserves a spawn attempt first.
+    expect(
+      unreachablePassthroughMode(
+        new DaemonUnreachableError({ cause: new Error('ECONNREFUSED'), socketPath: '/s' }),
+      ),
+    ).toBeNull();
+  });
 });

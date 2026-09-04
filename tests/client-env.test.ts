@@ -31,6 +31,31 @@ describe('buildTransportedEnv', () => {
     ).toEqual({ RUSTDOCFLAGS: '--cfg docsrs' });
   });
 
+  it('drops jobserver flags whose descriptors cannot exist in the daemon', () => {
+    // A client started by `make` inherits `--jobserver-auth=R,W` (or the
+    // older `--jobserver-fds=`): those are the caller's file descriptors,
+    // meaningless in another process. Cargo would honour them anyway and the
+    // daemon's own FIFO jobserver would be skipped for the run.
+    expect(
+      buildTransportedEnv({
+        CARGO_MAKEFLAGS: '-j --jobserver-fds=3,4 --jobserver-auth=3,4',
+        MAKEFLAGS: ' -j8 --jobserver-auth=3,4',
+        MFLAGS: '-j8 --jobserver-auth=3,4',
+        RUSTFLAGS: '-C debuginfo=1',
+      }),
+    ).toEqual({ RUSTFLAGS: '-C debuginfo=1' });
+    // A FIFO-backed jobserver is a path and travels fine, as do plain flags.
+    expect(
+      buildTransportedEnv({
+        MAKEFLAGS: '-j --jobserver-auth=fifo:/tmp/make-jobserver',
+        MFLAGS: '-k',
+      }),
+    ).toEqual({
+      MAKEFLAGS: '-j --jobserver-auth=fifo:/tmp/make-jobserver',
+      MFLAGS: '-k',
+    });
+  });
+
   it('skips undefined values', () => {
     expect(buildTransportedEnv({ RUSTFLAGS: undefined })).toEqual({});
   });

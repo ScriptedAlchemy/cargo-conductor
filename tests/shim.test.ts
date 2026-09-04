@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import {
   chmodSync,
   existsSync,
@@ -30,6 +31,43 @@ describe('PATH cargo shim', () => {
     expect(script).toContain(
       'exec /usr/bin/node /opt/plugin/scripts/hauler.mjs exec --host shim -- /usr/bin/cargo "$@"',
     );
+  });
+
+  it('falls back to the real cargo when the embedded hauler entry no longer exists', () => {
+    const script = renderCargoShim({
+      haulerArgv: ['/usr/bin/node', '/opt/plugin/1.0.0/scripts/hauler.mjs'],
+      realCargo: '/usr/bin/cargo',
+    });
+    // The plugin directory is versioned: an upgrade removes it, and every
+    // `cargo` on PATH must keep working rather than fail "No such file".
+    expect(script).toContain('[ -f /opt/plugin/1.0.0/scripts/hauler.mjs ] || exec /usr/bin/cargo "$@"');
+    expect(script.indexOf('[ -f ')).toBeLessThan(script.indexOf('exec /usr/bin/node'));
+
+    // A PATH `hauler` has no file to test; the guard becomes a lookup.
+    const viaPath = renderCargoShim({ haulerArgv: ['hauler'], realCargo: '/usr/bin/cargo' });
+    expect(viaPath).toContain('command -v hauler >/dev/null 2>&1 || exec /usr/bin/cargo "$@"');
+  });
+
+  it('runs the real cargo when the guard trips', () => {
+    const root = mkdtempSync(join(tmpdir(), 'cc-shim-fallback-'));
+    try {
+      const realCargo = join(root, 'real-cargo');
+      writeFileSync(realCargo, '#!/bin/sh\necho "real:$*"\n');
+      chmodSync(realCargo, 0o755);
+      const shim = join(root, 'cargo');
+      writeFileSync(
+        shim,
+        renderCargoShim({
+          haulerArgv: ['/usr/bin/node', join(root, 'missing', 'hauler.mjs')],
+          realCargo,
+        }),
+      );
+      chmodSync(shim, 0o755);
+      const output = execFileSync(shim, ['check', '-p', 'alpha'], { encoding: 'utf8' });
+      expect(output).toBe('real:check -p alpha\n');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it('retains the legacy recursion marker because it cannot change state identity', () => {
