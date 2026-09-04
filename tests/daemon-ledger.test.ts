@@ -99,6 +99,27 @@ describe('ledger lifecycle', () => {
       expect(finished?.savedLatencyMs).toBeNull();
     }));
 
+  it.effect('never reopens a settled row through late attach or running writes', () =>
+    Effect.gen(function* () {
+      const ledger = yield* scopedLedger;
+      yield* ledger.createRequest(makeInput());
+      yield* ledger.markFinished(1, { atMs: 4_200, exitCode: 0, status: 'done' });
+
+      // A follower registered as its leader exits: the leader's settlement
+      // writes `done` first, then the attach follow-up lands.
+      yield* ledger.markAttached(1, { atMs: 4_300, leaderTicket: 'cc-9', mode: 'identity' });
+      yield* ledger.markRunning(1, 4_400);
+
+      const settled = yield* ledger.getRequest(1);
+      expect(settled?.status).toBe('done');
+      expect(settled?.attachedTo).toBeNull();
+      expect(settled?.finishedAtMs).toBe(4_200);
+      expect((yield* ledger.transitionsFor(1)).map((transition) => transition.toStatus)).toEqual([
+        'requested',
+        'done',
+      ]);
+    }));
+
   it.effect('records every transition in order', () =>
     Effect.gen(function* () {
       const ledger = yield* scopedLedger;
@@ -315,17 +336,32 @@ describe('exec argv provenance', () => {
 });
 
 describe('ledger queries', () => {
-  it.effect('returns only compact completed rows for one session since the cutoff', () =>
+  it.effect('returns only compact completed background rows for one session since the cutoff', () =>
     Effect.gen(function* () {
       const ledger = yield* scopedLedger;
       const early = yield* ledger.createRequest(
-        makeInput({ createdAtMs: 1_000, session: 'session-a', intentJson: '{"large":"value"}' }),
+        makeInput({
+          background: true,
+          createdAtMs: 1_000,
+          session: 'session-a',
+          intentJson: '{"large":"value"}',
+        }),
       );
       const matching = yield* ledger.createRequest(
-        makeInput({ createdAtMs: 2_000, session: 'session-a', intentJson: '{"large":"value"}' }),
+        makeInput({
+          background: true,
+          createdAtMs: 2_000,
+          session: 'session-a',
+          intentJson: '{"large":"value"}',
+        }),
+      );
+      // A foreground ticket streamed its exit to the shell the agent watched;
+      // the afterTool notification must not ask for its result again.
+      const foreground = yield* ledger.createRequest(
+        makeInput({ createdAtMs: 2_200, session: 'session-a' }),
       );
       const otherSession = yield* ledger.createRequest(
-        makeInput({ createdAtMs: 3_000, session: 'session-b' }),
+        makeInput({ background: true, createdAtMs: 3_000, session: 'session-b' }),
       );
       yield* ledger.markFinished(early.id, {
         atMs: 2_050,
@@ -341,6 +377,7 @@ describe('ledger queries', () => {
         status: 'failed',
         warningCount: 3,
       });
+      yield* ledger.markFinished(foreground.id, { atMs: 2_600, exitCode: 0, status: 'done' });
       yield* ledger.markFinished(otherSession.id, {
         atMs: 3_500,
         outputTail: 'other session tail',
@@ -360,6 +397,29 @@ describe('ledger queries', () => {
       ]);
       expect('outputTail' in (completed[0] ?? {})).toBe(false);
       expect('intentJson' in (completed[0] ?? {})).toBe(false);
+    }));
+
+  it.effect('reports a foreground ticket once the client detached from it', () =>
+    Effect.gen(function* () {
+      const ledger = yield* scopedLedger;
+      const converted = yield* ledger.createRequest(
+        makeInput({ createdAtMs: 1_000, holdStop: true, session: 'session-a' }),
+      );
+      const watched = yield* ledger.createRequest(
+        makeInput({ createdAtMs: 1_100, holdStop: true, session: 'session-a' }),
+      );
+      expect(yield* ledger.markDetached(converted.id)).toBe(true);
+      expect(yield* ledger.markDetached(9_999)).toBe(false);
+      yield* ledger.markFinished(converted.id, { atMs: 2_000, exitCode: 0, status: 'done' });
+      yield* ledger.markFinished(watched.id, { atMs: 2_000, exitCode: 0, status: 'done' });
+
+      const record = yield* ledger.getRequest(converted.id);
+      expect(record?.background).toBe(true);
+      // Detaching converts delivery, not the stop-hold: the agent still has
+      // not seen this result, so the stop route keeps waiting for it.
+      expect(record?.holdStop).toBe(true);
+      const completed = yield* ledger.sessionCompleted('session-a', 0);
+      expect(completed.map((row) => row.ticket)).toEqual([converted.ticket]);
     }));
 
   it.effect('returns only compact hold-stop pending rows for one session', () =>

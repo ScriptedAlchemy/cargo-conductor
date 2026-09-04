@@ -428,6 +428,9 @@ export const makeConnectionHandler =
             case 'detach':
               return Effect.gen(function* () {
                 const detached = ownTickets.delete(message.ticket);
+                // Recorded even when this connection never owned the ticket:
+                // the client is telling us nobody will stream its exit.
+                yield* options.broker.detach(message.ticket);
                 yield* send({
                   type: 'detach-result',
                   id: message.id,

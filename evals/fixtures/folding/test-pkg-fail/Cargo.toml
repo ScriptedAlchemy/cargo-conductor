@@ -1,0 +1,4 @@
+[package]
+name = "test-pkg-fail"
+version.workspace = true
+edition.workspace = true

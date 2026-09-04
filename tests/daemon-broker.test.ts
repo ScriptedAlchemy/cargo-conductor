@@ -212,9 +212,13 @@ describe('hauler daemon', () => {
       try {
         const advanced = yield* fetchReport(fixture);
         const delayed = advanced.active.find((record) => record.argv.includes('second-queued'));
+        const firstQueued = advanced.active.find((record) => record.argv.includes('first-queued'));
         const quiet = advanced.active.find((record) => record.argv.includes('lane-head'));
         expect(delayed?.delayed).toBe(true);
-        expect(delayed?.queue?.waitEtaMs).toBe(0);
+        // The overrunning head contributes zero remaining time; it must not
+        // cancel out the queued job still ahead of this one.
+        expect(firstQueued?.estimateMs ?? 0).toBeGreaterThan(0);
+        expect(delayed?.queue?.waitEtaMs).toBe(firstQueued?.estimateMs);
         expect(quiet?.quietMs).toBeGreaterThan(300_000);
       } finally {
         Date.now = realNow;

@@ -132,6 +132,12 @@ export interface LedgerApi {
   readonly markAttached: (id: number, input: AttachRequestInput) => Effect.Effect<void>;
   readonly markRequeued: (id: number, atMs: number) => Effect.Effect<void>;
   readonly markFinished: (id: number, input: FinishRequestInput) => Effect.Effect<void>;
+  /**
+   * The submitting client stopped streaming this ticket (auto-background
+   * conversion), so its exit will reach the agent only through
+   * `sessionCompleted`. Leaves `hold_stop` untouched. False when no such row.
+   */
+  readonly markDetached: (id: number) => Effect.Effect<boolean>;
   readonly recordAttempt: (
     input: RecordAttemptInput,
   ) => Effect.Effect<{ readonly id: number; readonly ticket: string }>;
@@ -243,6 +249,14 @@ const columnMigrations: readonly (readonly [column: string, ddl: string])[] = [
 const activeStatusFilter = "status IN ('requested', 'queued', 'running')";
 const terminalStatusFilter =
   "status IN ('done', 'failed', 'killed', 'denied', 'passthrough')";
+
+/**
+ * Terminal rows are never reopened. Attach and running writes can trail a
+ * settlement (a follower registered as its leader exits); without this guard
+ * the late write would flip a `done` row back to `queued`/`running` and the
+ * ticket would never read as terminal again.
+ */
+const notTerminalFilter = "status NOT IN ('done', 'failed', 'killed', 'denied', 'passthrough')";
 
 /**
  * Dashboard windows scan only recent leader-settled rows. Keeping this bounded
@@ -571,7 +585,7 @@ export const createLedgerApi = (db: DatabaseSync): LedgerApi => {
            ELSE MAX(0, ? - queued_at_ms)
          END,
          exec_argv_json = ?
-     WHERE id = ?`,
+     WHERE id = ? AND ${notTerminalFilter}`,
   );
   const updateAttached = db.prepare(
     `UPDATE requests
@@ -581,7 +595,7 @@ export const createLedgerApi = (db: DatabaseSync): LedgerApi => {
          wait_ms = NULL,
          attached_to = ?,
          attach_mode = ?
-     WHERE id = ?`,
+     WHERE id = ? AND ${notTerminalFilter}`,
   );
   const updateRequeued = db.prepare(
     `UPDATE requests
@@ -641,13 +655,18 @@ export const createLedgerApi = (db: DatabaseSync): LedgerApi => {
      WHERE session = ? AND hold_stop = 1 AND ${activeStatusFilter}
      ORDER BY created_at_ms ASC, id ASC`,
   );
+  // Only background (or detached) tickets: a foreground ticket streamed its
+  // exit to the shell the agent just watched, so re-announcing it would only
+  // prompt a redundant `hauler_result`.
   const selectSessionCompleted = db.prepare(
     `SELECT id, status, exit_code, error, error_count, warning_count
      FROM requests
      WHERE session = ? AND finished_at_ms >= ?
        AND status IN ('done', 'failed', 'killed')
+       AND background = 1
      ORDER BY created_at_ms DESC, id DESC`,
   );
+  const updateDetached = db.prepare('UPDATE requests SET background = 1 WHERE id = ?');
   const selectRecentRequests = db.prepare(
     `SELECT ${requestColumns} FROM requests ORDER BY created_at_ms DESC, id DESC LIMIT ?`,
   );
@@ -1030,7 +1049,7 @@ export const createLedgerApi = (db: DatabaseSync): LedgerApi => {
     markRunning: (id, atMs, execArgv) =>
       Effect.sync(() =>
         inTransaction(db, () => {
-          updateRunning.run(
+          const result = updateRunning.run(
             'running',
             atMs,
             atMs,
@@ -1038,7 +1057,9 @@ export const createLedgerApi = (db: DatabaseSync): LedgerApi => {
             execArgv === undefined ? null : JSON.stringify(execArgv),
             id,
           );
-          recordTransition(insertTransition, id, atMs, 'queued', 'running');
+          if (result.changes > 0) {
+            recordTransition(insertTransition, id, atMs, 'queued', 'running');
+          }
         }),
       ),
 
@@ -1046,8 +1067,8 @@ export const createLedgerApi = (db: DatabaseSync): LedgerApi => {
       Effect.sync(() =>
         inTransaction(db, () => {
           const fromStatus = readStatus(selectStatus, id);
-          updateAttached.run(input.leaderTicket, input.mode, id);
-          if (fromStatus !== 'queued') {
+          const result = updateAttached.run(input.leaderTicket, input.mode, id);
+          if (result.changes > 0 && fromStatus !== 'queued') {
             recordTransition(insertTransition, id, input.atMs, fromStatus, 'queued');
           }
         }),
@@ -1085,6 +1106,8 @@ export const createLedgerApi = (db: DatabaseSync): LedgerApi => {
           recordTransition(insertTransition, id, input.atMs, fromStatus, input.status);
         }),
       ),
+
+    markDetached: (id) => Effect.sync(() => toNumber(updateDetached.run(id).changes) > 0),
 
     recordAttempt: (input) => Effect.sync(() => inTransaction(db, () => insertAttempt(input))),
 

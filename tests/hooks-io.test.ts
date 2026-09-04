@@ -1,4 +1,4 @@
-import { createServer } from 'node:net';
+import { createServer, type Socket } from 'node:net';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -58,6 +58,34 @@ const listenStatus = (
     });
   });
 
+/** Accepts connections and swallows every request, like a daemon whose event loop is saturated. */
+const listenSilent = (socketPath: string): Promise<{ readonly close: () => Promise<void> }> =>
+  new Promise((resolve, reject) => {
+    const sockets = new Set<Socket>();
+    const server = createServer((socket) => {
+      sockets.add(socket);
+      socket.on('close', () => sockets.delete(socket));
+    });
+    server.on('error', reject);
+    server.listen(socketPath, () => {
+      resolve({
+        close: () =>
+          new Promise((closeResolve, closeReject) => {
+            for (const socket of sockets) {
+              socket.destroy();
+            }
+            server.close((error) => {
+              if (error) {
+                closeReject(error);
+                return;
+              }
+              closeResolve();
+            });
+          }),
+      });
+    });
+  });
+
 describe('hook recorder', () => {
   it('appends a JSON line under the hauler state dir', async () => {
     await withTempDir(async (directory) => {
@@ -87,31 +115,62 @@ describe('hook recorder', () => {
 });
 
 describe('daemon probe', () => {
-  it('returns true when the daemon reports active work', async () => {
+  it('reports active when the daemon has running work', async () => {
     await withTempDir(async (directory) => {
       const socketPath = join(directory, 'daemon.sock');
       const server = await listenStatus(socketPath, { active: [{ ticket: 'cc-1' }], lanes: [] });
       try {
-        await expect(probeActiveBuilds(socketPath, 500)).resolves.toBe(true);
+        await expect(probeActiveBuilds(socketPath, 500)).resolves.toBe('active');
       } finally {
         await server.close();
       }
     });
   });
 
-  it('returns false when the daemon is idle', async () => {
+  it('reports active when a lane has queued work', async () => {
+    await withTempDir(async (directory) => {
+      const socketPath = join(directory, 'daemon.sock');
+      const server = await listenStatus(socketPath, { active: [], lanes: [{ queued: 2, runningTicket: null }] });
+      try {
+        await expect(probeActiveBuilds(socketPath, 500)).resolves.toBe('active');
+      } finally {
+        await server.close();
+      }
+    });
+  });
+
+  it('reports idle when the daemon has no work', async () => {
     await withTempDir(async (directory) => {
       const socketPath = join(directory, 'daemon.sock');
       const server = await listenStatus(socketPath, { active: [], lanes: [] });
       try {
-        await expect(probeActiveBuilds(socketPath, 500)).resolves.toBe(false);
+        await expect(probeActiveBuilds(socketPath, 500)).resolves.toBe('idle');
       } finally {
         await server.close();
       }
     });
   });
 
-  it('returns null when the daemon socket is missing', async () => {
-    await expect(probeActiveBuilds(join(tmpdir(), 'cc-missing-daemon.sock'), 100)).resolves.toBe(null);
+  it('reports absent when no socket exists or nothing listens on it', async () => {
+    await expect(probeActiveBuilds(join(tmpdir(), 'cc-missing-daemon.sock'), 100)).resolves.toBe('absent');
+    await withTempDir(async (directory) => {
+      const socketPath = join(directory, 'daemon.sock');
+      const server = await listenStatus(socketPath, { active: [], lanes: [] });
+      await server.close();
+      // The socket file may linger after close; connecting yields ECONNREFUSED.
+      await expect(probeActiveBuilds(socketPath, 100)).resolves.toBe('absent');
+    });
+  });
+
+  it('reports busy when the daemon accepts but does not answer in time', async () => {
+    await withTempDir(async (directory) => {
+      const socketPath = join(directory, 'daemon.sock');
+      const server = await listenSilent(socketPath);
+      try {
+        await expect(probeActiveBuilds(socketPath, 50)).resolves.toBe('busy');
+      } finally {
+        await server.close();
+      }
+    });
   });
 });

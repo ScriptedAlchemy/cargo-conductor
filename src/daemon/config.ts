@@ -24,7 +24,11 @@ export interface DaemonConfigShape {
   readonly replayBufferBytes: number;
   /** kache index.db to read per-crate compile-time priors from ('' disables). */
   readonly kacheIndexPath: string;
-  /** CARGO_BUILD_JOBS granted to each spawned cargo (0 disables injection). */
+  /**
+   * CARGO_BUILD_JOBS granted to each spawned cargo while the shared jobserver
+   * FIFO is not armed (0 disables injection). An armed daemon injects
+   * MAKEFLAGS instead, since cargo ignores an inherited jobserver once -j is set.
+   */
   readonly jobsGrant: number;
   /** Merge queued compatible check/build/clippy intents into one cargo. */
   readonly batchEnabled: boolean;

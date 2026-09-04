@@ -3,10 +3,10 @@ import { describe, expect, it } from 'effect-rstest';
 import {
   batchCompatible,
   batchCompatibleFor,
-  batchExitShared,
+  batchFailureOwned,
   batchKindFor,
-  composeNextestBatchArgv,
-  composeTestBatchArgv,
+  composeTestFoldArgv,
+  compositePackages,
   extraPackagesFor,
   maxBatchPackages,
   withExtraPackages,
@@ -185,21 +185,103 @@ describe('batchKindFor', () => {
 });
 
 describe('batchCompatibleFor', () => {
-  it('folds same-surface test intents that differ only in selection', () => {
+  it('folds same-surface test intents with identical selections across packages', () => {
     expect(
       batchCompatibleFor(
         'test',
         intent(['cargo', 'test', '-p', 'alpha', '--all-features', '--test', 't1', 'f1']),
-        intent(['cargo', 'test', '-p', 'beta', '--all-features', '--test', 't2', 'f2']),
+        intent(['cargo', 'test', '-p', 'beta', '--all-features', '--test', 't1', 'f1']),
+      ),
+    ).toBe(true);
+    expect(
+      batchCompatibleFor(
+        'test',
+        intent(['cargo', 'test', '-p', 'alpha', '--', 'f1', 'f2']),
+        intent(['cargo', 'test', '-p', 'beta', '-p', 'gamma', '--', 'f1', 'f2']),
+      ),
+    ).toBe(true);
+    expect(
+      batchCompatibleFor(
+        'test',
+        intent(['cargo', 'test', '-p', 'alpha']),
+        intent(['cargo', 'test', '-p', 'beta', '--no-fail-fast']),
       ),
     ).toBe(true);
     expect(
       batchCompatibleFor(
         'nextest',
         intent(['cargo', 'nextest', 'run', '-p', 'alpha', '-E', 'test(x)']),
+        intent(['cargo', 'nextest', 'run', '-p', 'beta', '-E', 'test(x)']),
+      ),
+    ).toBe(true);
+    expect(
+      batchCompatibleFor(
+        'nextest',
+        intent(['cargo', 'nextest', 'run', '-p', 'alpha']),
         intent(['cargo', 'nextest', 'run', '-p', 'beta']),
       ),
     ).toBe(true);
+  });
+
+  it('refuses test intents whose --test targets, name filters, or trailing arguments differ', () => {
+    // The old superset composite (#53) ran every participant's targets and
+    // filters for every package, so a follower could fail on tests it never
+    // asked for. Only the package set may differ now.
+    expect(
+      batchCompatibleFor(
+        'test',
+        intent(['cargo', 'test', '-p', 'alpha', '--test', 't1', 'f1']),
+        intent(['cargo', 'test', '-p', 'beta', '--test', 't2', 'f1']),
+      ),
+    ).toBe(false);
+    expect(
+      batchCompatibleFor(
+        'test',
+        intent(['cargo', 'test', '-p', 'alpha', '--test', 't1']),
+        intent(['cargo', 'test', '-p', 'beta']),
+      ),
+    ).toBe(false);
+    expect(
+      batchCompatibleFor(
+        'test',
+        intent(['cargo', 'test', '-p', 'alpha', 'f1']),
+        intent(['cargo', 'test', '-p', 'beta', 'f2']),
+      ),
+    ).toBe(false);
+    expect(
+      batchCompatibleFor(
+        'test',
+        intent(['cargo', 'test', '-p', 'alpha', '--', 'f1']),
+        intent(['cargo', 'test', '-p', 'beta']),
+      ),
+    ).toBe(false);
+    // A positional filter and the same name after `--` reach libtest the
+    // same way, but the composite is the leader's argv, so they must match
+    // byte for byte.
+    expect(
+      batchCompatibleFor(
+        'test',
+        intent(['cargo', 'test', '-p', 'alpha', 'f1']),
+        intent(['cargo', 'test', '-p', 'beta', '--', 'f1']),
+      ),
+    ).toBe(false);
+  });
+
+  it('refuses nextest intents whose filtersets differ', () => {
+    expect(
+      batchCompatibleFor(
+        'nextest',
+        intent(['cargo', 'nextest', 'run', '-p', 'alpha', '-E', 'test(x)']),
+        intent(['cargo', 'nextest', 'run', '-p', 'beta']),
+      ),
+    ).toBe(false);
+    expect(
+      batchCompatibleFor(
+        'nextest',
+        intent(['cargo', 'nextest', 'run', '-p', 'alpha', '-E', 'test(x)']),
+        intent(['cargo', 'nextest', 'run', '-p', 'beta', '-E', 'test(y)']),
+      ),
+    ).toBe(false);
   });
 
   it('refuses compile-surface drift and cross-subcommand folds', () => {
@@ -234,16 +316,56 @@ describe('batchCompatibleFor', () => {
   });
 });
 
-describe('batchExitShared', () => {
-  it('shares the composite exit for test and nextest, not compile batches', () => {
-    expect(batchExitShared(intent(['cargo', 'test', '-p', 'alpha', '--', 'f1']))).toBe(true);
-    expect(batchExitShared(intent(['cargo', 'nextest', 'run', '-p', 'alpha']))).toBe(true);
-    expect(batchExitShared(intent(['cargo', 'check', '-p', 'alpha']))).toBe(false);
+describe('compositePackages', () => {
+  it('unions the leader and every folded participant without duplicates', () => {
+    expect(
+      compositePackages(intent(['cargo', 'test', '-p', 'alpha']), [
+        intent(['cargo', 'test', '-p', 'beta', '-p', 'alpha']),
+        intent(['cargo', 'test', '-p', 'gamma']),
+      ]),
+    ).toEqual(['alpha', 'beta', 'gamma']);
   });
 });
 
-describe('composeTestBatchArgv', () => {
-  it('folds the corpus pair into one --no-fail-fast composite', () => {
+describe('batchFailureOwned', () => {
+  it('lets a test participant own the failure only when it named every composite package', () => {
+    const leader = intent(['cargo', 'test', '-p', 'alpha', '--', 'f1']);
+    const follower = intent(['cargo', 'test', '-p', 'beta', '--', 'f1']);
+    const wide = intent(['cargo', 'test', '-p', 'alpha', '-p', 'beta', '--', 'f1']);
+    const composite = compositePackages(leader, [follower, wide]);
+    // beta's tests may have passed while alpha's failed: not beta's failure.
+    expect(batchFailureOwned(leader, composite, follower)).toBe(false);
+    // The wide participant asked for exactly what the composite ran.
+    expect(batchFailureOwned(leader, composite, wide)).toBe(true);
+  });
+
+  it('applies to nextest composites and never to compile batches', () => {
+    const nextestLeader = intent(['cargo', 'nextest', 'run', '-p', 'alpha']);
+    const nextestFollower = intent(['cargo', 'nextest', 'run', '-p', 'beta']);
+    const nextestComposite = compositePackages(nextestLeader, [nextestFollower]);
+    expect(batchFailureOwned(nextestLeader, nextestComposite, nextestFollower)).toBe(false);
+    expect(
+      batchFailureOwned(
+        nextestLeader,
+        nextestComposite,
+        intent(['cargo', 'nextest', 'run', '-p', 'alpha', '-p', 'beta']),
+      ),
+    ).toBe(true);
+
+    const checkLeader = intent(['cargo', 'check', '-p', 'alpha']);
+    const checkFollower = intent(['cargo', 'check', '-p', 'alpha', '-p', 'beta']);
+    expect(
+      batchFailureOwned(
+        checkLeader,
+        compositePackages(checkLeader, [checkFollower]),
+        checkFollower,
+      ),
+    ).toBe(false);
+  });
+});
+
+describe('composeTestFoldArgv', () => {
+  it('adds the followers\' packages and --no-fail-fast to the leader argv', () => {
     const leaderArgv = [
       'cargo',
       'test',
@@ -254,19 +376,18 @@ describe('composeTestBatchArgv', () => {
       'durability_crash_contract',
       'torn_durable_store_is_quarantined_and_rebuilt',
     ];
-    const leader = intent(leaderArgv);
     const follower = intent([
       'cargo',
       'test',
       '-p',
-      'tracedecay-graph-db',
+      'tracedecay-store',
       '--all-features',
       '--test',
-      'verified_generation_contract',
-      'verify_once::a_byte_flip_under_a_stale_mark',
+      'durability_crash_contract',
+      'torn_durable_store_is_quarantined_and_rebuilt',
     ]);
 
-    expect(composeTestBatchArgv(leaderArgv, leader, [follower])).toEqual([
+    expect(composeTestFoldArgv(leaderArgv, [follower])).toEqual([
       'cargo',
       'test',
       '-p',
@@ -274,129 +395,63 @@ describe('composeTestBatchArgv', () => {
       '--all-features',
       '--test',
       'durability_crash_contract',
-      '--test',
-      'verified_generation_contract',
-      '--no-fail-fast',
-      '--',
       'torn_durable_store_is_quarantined_and_rebuilt',
-      'verify_once::a_byte_flip_under_a_stale_mark',
+      '-p',
+      'tracedecay-store',
+      '--no-fail-fast',
     ]);
   });
 
-  it('drops --test narrowing and filters when a participant runs the full set', () => {
-    const leaderArgv = ['cargo', 'test', '-p', 'alpha', '--test', 't1', '--', 'f1'];
+  it('keeps the leader\'s trailing harness arguments after the added flags', () => {
+    const leaderArgv = ['cargo', '+nightly', 'test', '-p', 'alpha', '--release', '--', 'f1', 'f2'];
     expect(
-      composeTestBatchArgv(leaderArgv, intent(leaderArgv), [intent(['cargo', 'test', '-p', 'beta'])]),
-    ).toEqual(['cargo', 'test', '-p', 'alpha', '-p', 'beta', '--no-fail-fast']);
-  });
-
-  it('unions positional and trailing filters without duplicates', () => {
-    const leaderArgv = ['cargo', 'test', '-p', 'alpha', 'shared_filter'];
-    expect(
-      composeTestBatchArgv(leaderArgv, intent(leaderArgv), [
-        intent(['cargo', 'test', '-p', 'alpha', '--', 'shared_filter', 'extra_filter']),
+      composeTestFoldArgv(leaderArgv, [
+        intent(['cargo', '+nightly', 'test', '-p', 'beta', '-p', 'gamma', '--release', '--', 'f1', 'f2']),
       ]),
     ).toEqual([
-      'cargo',
-      'test',
-      '-p',
-      'alpha',
-      '--no-fail-fast',
-      '--',
-      'shared_filter',
-      'extra_filter',
-    ]);
-  });
-
-  it('keeps toolchain, profile, and feature flags on the composite', () => {
-    const leaderArgv = [
       'cargo',
       '+nightly',
       'test',
       '-p',
       'alpha',
       '--release',
-      '--no-default-features',
-      '-F',
-      'net,io',
-      '--',
-      'f1',
-    ];
-    expect(
-      composeTestBatchArgv(leaderArgv, intent(leaderArgv), [
-        intent([
-          'cargo',
-          '+nightly',
-          'test',
-          '-p',
-          'beta',
-          '--release',
-          '--no-default-features',
-          '-F',
-          'io,net',
-          '--',
-          'f2',
-        ]),
-      ]),
-    ).toEqual([
-      'cargo',
-      '+nightly',
-      'test',
-      '-p',
-      'alpha',
       '-p',
       'beta',
-      '--no-default-features',
-      '--features',
-      'io,net',
-      '--profile',
-      'release',
+      '-p',
+      'gamma',
       '--no-fail-fast',
       '--',
       'f1',
       'f2',
     ]);
   });
-});
 
-describe('composeNextestBatchArgv', () => {
-  it('composes one parenthesized or-joined filterset with unioned packages', () => {
+  it('does not duplicate packages or an existing --no-fail-fast', () => {
+    const leaderArgv = ['cargo', 'test', '-p', 'alpha', '--no-fail-fast'];
+    expect(
+      composeTestFoldArgv(leaderArgv, [intent(['cargo', 'test', '-p', 'alpha', '-p', 'beta'])]),
+    ).toEqual(['cargo', 'test', '-p', 'alpha', '--no-fail-fast', '-p', 'beta']);
+  });
+
+  it('extends a nextest run the same way, keeping the shared filterset once', () => {
     const leaderArgv = ['cargo', 'nextest', 'run', '-p', 'alpha', '-E', 'test(torn)'];
-    const leader = intent(leaderArgv);
-    const follower = intent(['cargo', 'nextest', 'run', '-p', 'beta', '-p', 'gamma']);
-
-    expect(composeNextestBatchArgv(leaderArgv, leader, [follower])).toEqual([
+    expect(
+      composeTestFoldArgv(leaderArgv, [
+        intent(['cargo', 'nextest', 'run', '-p', 'beta', '-p', 'gamma', '-E', 'test(torn)']),
+      ]),
+    ).toEqual([
       'cargo',
       'nextest',
       'run',
       '-p',
       'alpha',
+      '-E',
+      'test(torn)',
       '-p',
       'beta',
       '-p',
       'gamma',
-      '-E',
-      '(test(torn)) or ((package(beta)) or (package(gamma)))',
       '--no-fail-fast',
-    ]);
-  });
-
-  it('replaces inline filterset forms and keeps an existing --no-fail-fast', () => {
-    const leaderArgv = ['cargo', 'nextest', 'run', '-p', 'alpha', '--filterset=test(a)', '--no-fail-fast'];
-    const leader = intent(leaderArgv);
-    const follower = intent(['cargo', 'nextest', 'run', '-p', 'beta']);
-
-    expect(composeNextestBatchArgv(leaderArgv, leader, [follower])).toEqual([
-      'cargo',
-      'nextest',
-      'run',
-      '-p',
-      'alpha',
-      '--no-fail-fast',
-      '-p',
-      'beta',
-      '-E',
-      '(test(a)) or (package(beta))',
     ]);
   });
 });
