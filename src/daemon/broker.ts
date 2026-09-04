@@ -76,6 +76,8 @@ export interface SubmitResult {
   /** Estimated remaining runtime for queued requests or their attached leader. */
   readonly etaMs?: number;
   readonly etaSource?: EstimateSource;
+  /** Estimated wait before a queued leader starts (lane work ahead of it). */
+  readonly waitEtaMs?: number;
 }
 
 export interface KillOptions {
@@ -311,12 +313,16 @@ export const BrokerLive: Layer.Layer<
               yield* Deferred.succeed(job.killSignal, undefined);
             }
             const position = yield* lanesRuntime.enqueueJob(lane, job);
+            // The client's auto-background decision needs the whole wall
+            // time, not just this job's runtime (#55).
+            const queued = yield* lanesRuntime.requestStatusFields(created.ticket, Date.now());
             return {
               ticket: created.ticket,
               laneKey,
               position,
               etaMs: job.estimateMs,
               etaSource: job.estimateSource,
+              ...(queued.queue === undefined ? {} : { waitEtaMs: queued.queue.waitEtaMs }),
             };
           }),
         );

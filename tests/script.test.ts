@@ -1,7 +1,7 @@
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 
 import { describe, expect, it } from 'effect-rstest';
 import * as Effect from 'effect/Effect';
@@ -127,6 +127,25 @@ describe('hauler script', () => {
     );
   });
 
+  it('resolves a relative --cwd against the caller, not the daemon', async () => {
+    let seen: RunExecOptions | undefined;
+    await run(['exec', '--cwd', 'crates/alpha', '--', 'cargo', 'check'], {
+      runExec: (options) => {
+        seen = options;
+        return Effect.succeed({ exitCode: 0, mode: 'brokered', ticket: 'cc-9' });
+      },
+    });
+    // Sent verbatim, a relative path resolved inside the daemon's own cwd.
+    expect(seen?.cwd).toBe(resolve('crates/alpha'));
+    await run(['exec', '--', 'cargo', 'check'], {
+      runExec: (options) => {
+        seen = options;
+        return Effect.succeed({ exitCode: 0, mode: 'brokered', ticket: 'cc-9' });
+      },
+    });
+    expect(seen?.cwd).toBe(process.cwd());
+  });
+
   it('returns the cargo exit code from exec and rejects a missing cargo command', async () => {
     const failed = await run(['exec', '--', 'cargo', 'test'], {
       runExec: () => Effect.succeed({ exitCode: 17, mode: 'passthrough' }),
@@ -181,6 +200,21 @@ describe('hauler script', () => {
       expect(result.code).toBe(2);
       expect(result.text).toContain('Usage: hauler install-shim');
       expect(existsSync(join(root, 'cargo'))).toBe(false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('installs a shim that falls back to cargo when its hauler entry is gone, and says so', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'cc-script-shim-'));
+    try {
+      const result = await run(['install-shim', '--dir', root, '--real-cargo', '/usr/bin/cargo']);
+      expect(result.code).toBe(0);
+      expect(result.text).toContain(`Installed cargo shim at ${join(root, 'cargo')}`);
+      // An upgrade that replaces the plugin directory must not turn every
+      // `cargo` on PATH into "No such file"; the operator has to re-run this.
+      expect(result.text).toContain('hauler install-shim --force');
+      expect(readFileSync(join(root, 'cargo'), 'utf8')).toContain('|| exec /usr/bin/cargo "$@"');
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
