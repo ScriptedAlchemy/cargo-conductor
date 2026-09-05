@@ -3,6 +3,17 @@
   "extends": ["config:recommended"],
   "schedule": ["before 9am on monday"],
   "prConcurrentLimit": 3,
+  "ignorePaths": [
+    "**/node_modules/**",
+    "**/bower_components/**",
+    "**/vendor/**",
+    "**/examples/**",
+    "**/__tests__/**",
+    "**/test/**",
+    "**/tests/**",
+    "**/__fixtures__/**",
+    "repos/**"
+  ],
   "ignoreDeps": [
     "effect",
     "@effect/platform-node",
@@ -15,5 +26,5 @@
     "effect-rstest",
     "bashjsast"
   ],
-  "description": "Effect stays pinned to its 4.0.0-rc line (bumped deliberately with migration review), agent-bundle and effect-rstest track pkg.pr.new preview URLs, and typescript is pinned by the tsgo integration; Renovate manages the rest on a weekly schedule."
+  "description": "repos/** is the vendored read-only Effect reference subtree and is never Renovate's to update (#108); the other ignorePaths restate config:recommended's :ignoreModulesAndTests, which setting ignorePaths replaces. Effect stays pinned to its 4.0.0-rc line (bumped deliberately with migration review), agent-bundle and effect-rstest track pkg.pr.new preview URLs, and typescript is pinned by the tsgo integration; Renovate manages the rest on a weekly schedule."
 }
