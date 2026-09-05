@@ -47,10 +47,12 @@ const failure = (exitCode: number, message: string): DashboardServeResult => ({
 const exitCodeOf = ({ code, signal }: ServeAppExit): number => code ?? (signal === null ? 1 : 128);
 
 /**
- * After the ready line the App is the caller's: the helper's own abort
- * handler sends SIGTERM but reports a refused signal only through `close()`,
- * so an abort whose stop failed would otherwise leave `closed` pending for
- * ever. This settles with the exit, or rejects with that `stop-failed`.
+ * After the ready line the App is the caller's. Exactly one party sends the
+ * server its SIGTERM — a second one can bypass a one-shot graceful handler in
+ * the child — and only `close()` reports a refused signal, so the request
+ * `signal` is not handed to the helper past readiness (see `serveDashboard`);
+ * here an abort means one `close()`, whose exit settles this or whose
+ * `stop-failed` rejects it instead of leaving `closed` pending for ever.
  */
 const exitOrStopFailure = (served: SpawnedServeApp, signal: AbortSignal): Promise<ServeAppExit> =>
   new Promise<ServeAppExit>((settle, reject) => {
@@ -69,6 +71,30 @@ const exitOrStopFailure = (served: SpawnedServeApp, signal: AbortSignal): Promis
   });
 
 /**
+ * A signal for the helper that follows the request `signal` only until the
+ * ready line: before it the helper owns the child and an abort is its
+ * `aborted` / `stop-failed` rejection; after it `exitOrStopFailure` owns the
+ * one stop. Returns the signal and the hand-over that stops following.
+ */
+const untilReady = (signal: AbortSignal): { readonly signal: AbortSignal; readonly handOver: () => void } => {
+  const controller = new AbortController();
+  const follow = (): void => {
+    controller.abort();
+  };
+  if (signal.aborted) {
+    follow();
+  } else {
+    signal.addEventListener('abort', follow, { once: true });
+  }
+  return {
+    signal: controller.signal,
+    handOver: () => {
+      signal.removeEventListener('abort', follow);
+    },
+  };
+};
+
+/**
  * Serves `hauler/dashboard` through `agent-bundle serve-app` against the
  * install's built artifact and stays until the server exits or `signal`
  * aborts; every `ServeAppCommandError` becomes the command's result.
@@ -85,6 +111,7 @@ export const serveDashboard = async ({
       `hauler dashboard runs from the plugin checkout, where the built artifact sits beside the CLI; an installed host pack has none. ${inHost}`,
     );
   }
+  const helper = untilReady(signal);
   let served: SpawnedServeApp;
   try {
     served = await spawn({
@@ -96,10 +123,11 @@ export const serveDashboard = async ({
       autoApprove: ['call-tool'],
       open: input.noOpen !== true,
       ...(input.port === undefined ? {} : { port: input.port }),
-      // Ctrl-C reaching the routed CLI stops the server.
-      signal,
+      // Ctrl-C reaching the routed CLI before the ready line stops the server.
+      signal: helper.signal,
     });
   } catch (error) {
+    helper.handOver();
     if (error instanceof ServeAppCommandError) {
       // framework-not-installed, artifact-missing, exited-before-ready (with
       // the child's exit), spawn-failed, aborted, stop-failed.
@@ -107,9 +135,13 @@ export const serveDashboard = async ({
     }
     throw error;
   }
+  helper.handOver();
   let exit: ServeAppExit;
   try {
-    exit = await exitOrStopFailure(served, signal);
+    // An abort that landed between the ready line and this hand-over already
+    // had the helper send the stop; a second `close()` would be a second
+    // SIGTERM, so that exit is simply awaited.
+    exit = helper.signal.aborted ? await served.closed : await exitOrStopFailure(served, signal);
   } catch (error) {
     if (error instanceof ServeAppCommandError) {
       return { ...failure(1, `${error.message} Stop it by hand (kill ${String(served.pid)}).`), url: served.url };
