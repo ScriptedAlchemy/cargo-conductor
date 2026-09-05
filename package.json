@@ -1,6 +1,6 @@
 {
   "name": "cargo-hauler",
-  "version": "0.6.2",
+  "version": "0.6.3",
   "license": "MIT",
   "private": false,
   "description": "Orchestrate cargo across Claude, Codex, and Cursor so concurrent agent sessions share work instead of fighting locks.",
