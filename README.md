@@ -173,15 +173,29 @@ Each admitted leader starts one Cargo process. Identity, coverage, and folded
 batch requests share that process and receive its streamed output. A failed
 stronger compile does not satisfy a coverage or compile-batch attachment; the
 attached request returns to its lane unless its required compilation units were
-already observed as successful. Folded tests share the composite process and
-output. `cargo test` / `cargo nextest run` requests fold only when their test
-selection is identical — the same `--test` targets, name filters, arguments
-after `--`, and nextest filterset — so only the package set differs:
-`cargo test -p a` and `cargo test -p b` become
-`cargo test -p a -p b --no-fail-fast`. On success every participant shares
-the exit. When the composite fails, a participant inherits that failure only
-if it named every package the composite ran; otherwise the failing tests may
-belong to another participant's package, so it is requeued and runs alone
+already observed as successful. Compile batches (`build`, `check`, `clippy`)
+require the same target selection and features, and the same arguments after
+`--`: `cargo clippy -p a -- -D warnings` and `cargo clippy -p b -- -D warnings`
+become `cargo clippy -p a -p b -- -D warnings`, with the trailer once. Under
+`-D warnings` another participant's warnings fail the composite; a participant
+whose own units compiled cleanly is still released as done, the rest rerun
+alone. Folded tests share the composite process and output. `cargo test`
+requests fold when their `--test` / `--lib` selection and harness flags match
+— `--test-threads=N`, `--nocapture`, and `--quiet` are the only flags a
+composite carries, and only when every participant asked for the same set.
+Requests naming different packages may also differ in bare name filters:
+`cargo test -p a -- f1` and `cargo test -p b -- f2` become `cargo test -p a -p
+b --no-fail-fast -- f1 f2`, a run over the union of packages with the union of
+filters (a filter for one package may also match test names in another).
+Requests naming the same packages share no compile and still need the same
+filters; unfiltered runs fold only with unfiltered runs; `--exact`, `--skip`,
+`--ignored`, `--include-ignored`, `--list`, `--format`, `--logfile`, or any
+other harness flag keeps a run out of composites. `cargo nextest run`
+requests fold only on an identical filterset. On success every participant
+shares the exit. When the composite
+fails, a participant inherits that failure only if it named every package and
+every filter the composite ran; otherwise the failing tests may belong to
+another participant's package or filter, so it is requeued and runs alone
 (cargo's test output does not attribute failures to packages). The leader
 keeps the composite exit, as compile-batch leaders do.
 
@@ -557,8 +571,10 @@ unset, the daemon reads kache's configured local store from
   that runs tests attaches only by identity or batch folding. Only a
   compile-only `test --no-run` / `bench --no-run` rides a running `test` /
   `bench`, and it is released by the leader's build alone. Folded `test` and
-  `nextest` requests receive the composite output and exit code, so a
-  failure may come from another package in the batch.
+  `nextest` requests receive the composite output, and a composite may run
+  more than one participant asked for (another package, another name
+  filter); its failure is inherited only by participants that asked for
+  everything it ran, the rest rerun alone.
 - The `cargo clean` guard probes the daemon for 250 ms. Active work denies
   the clean; an idle daemon brokers it; a daemon that accepts but does not
   answer in time is busy, so the clean is brokered and the lane serializes

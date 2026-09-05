@@ -1,7 +1,7 @@
 import * as Effect from 'effect/Effect';
 import * as Metric from 'effect/Metric';
 
-import { batchFailureOwned, compositePackages } from './batch.js';
+import { batchFailureOwned, compositeSelection } from './batch.js';
 import { attachModeMetric, attachRejectionMetric, jobOutcomeMetric } from './broker-metrics.js';
 import { hasLibKind, parseCargoJsonLine } from './cargo-json.js';
 import { attachDecisionFor, attachRejectionRank, isBuildOnlyIntent } from './coverage.js';
@@ -801,9 +801,9 @@ export const makeAttachmentRuntime = (deps: AttachmentRuntimeDeps): AttachmentRu
         return;
       }
       const leaderRunMs = leaderRunMsAt(job, atMs);
-      // Every package the composite ran, for attributing a folded test
-      // failure: the leader's own plus each folded participant's.
-      const composite = compositePackages(
+      // Every package and name filter the composite ran, for attributing a
+      // folded test failure: the leader's own plus each folded participant's.
+      const composite = compositeSelection(
         job.intent,
         detached
           .filter((attachment) => attachment.mode === 'batch')
@@ -818,9 +818,10 @@ export const makeAttachmentRuntime = (deps: AttachmentRuntimeDeps): AttachmentRu
           job.demux !== null &&
           demandSatisfied(attachment.intent, job.demux);
         // A folded test participant inherits the composite's failure only
-        // when it named every package the composite ran; otherwise the
-        // failing tests may belong to another participant's package, and
-        // it requeues to run alone (#53). Compile batches always requeue.
+        // when it named every package and every filter the composite ran;
+        // otherwise the failing tests may belong to another participant's
+        // package or filter, and it requeues to run alone (#53, #87).
+        // Compile batches always requeue.
         const mirrors =
           status === 'done' ||
           (status === 'failed' &&
