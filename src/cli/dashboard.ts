@@ -3,8 +3,9 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import type { CliRouteConfig, CliRouteProps } from 'agent-bundle';
-import { ServeAppCommandError, spawnServeApp, type ServeAppExit, type SpawnedServeApp } from 'agent-bundle/serve-app-command';
 import { z } from 'zod';
+
+import { serveDashboard, type DashboardProject } from '../lib/dashboard-serve.js';
 
 /**
  * `hauler dashboard`: the MCP App in a plain browser tab, outside any MCP
@@ -23,10 +24,11 @@ import { z } from 'zod';
  * into the bin — and owns resolving the installed framework CLI, spawning it,
  * relaying its stdout to stderr so this command keeps stdout for its result,
  * waiting for the ready line, and turning the request signal into the child's
- * SIGTERM. What it cannot know is where this install keeps its artifact: the
- * checkout has it under `node_modules` and `artifact/`; the npm package (no
- * runtime dependencies, #82) and an installed host pack do not, and the
- * command says so.
+ * SIGTERM; `serveDashboard` (`src/lib/dashboard-serve.ts`) maps its outcomes
+ * onto this command's result. What neither can know is where this install
+ * keeps its artifact: the checkout has it under `node_modules` and
+ * `artifact/`; the npm package (no runtime dependencies, #82) and an installed
+ * host pack do not, and the command says so.
  */
 export const config = {
   description:
@@ -55,8 +57,6 @@ export const resultSchema = z
   })
   .strict();
 
-type DashboardResult = z.infer<typeof resultSchema>;
-
 /**
  * Where this CLI lives decides what it can serve: `dist/bin/cargo-hauler.js`
  * sits two levels under the project root (a checkout or the npm package),
@@ -64,7 +64,7 @@ type DashboardResult = z.infer<typeof resultSchema>;
  * cargo-hauler.mjs` sits two levels under that artifact root. An installed
  * host pack is neither and has no artifact to serve from.
  */
-const locateProject = (): { readonly artifact: string; readonly root: string } | undefined => {
+const locateProject = (): DashboardProject | undefined => {
   const here = fileURLToPath(new URL('../../', import.meta.url));
   if (existsSync(join(here, 'agent-bundle.manifest.json'))) {
     return { artifact: here, root: dirname(here) };
@@ -75,51 +75,6 @@ const locateProject = (): { readonly artifact: string; readonly root: string } |
   return undefined;
 };
 
-const inHost = 'In an MCP host, call hauler_status instead — the dashboard App is attached to its result.';
-
-const failure = (exitCode: number, message: string): DashboardResult => ({ exitCode, message, operation: 'dashboard', url: null });
-
-/** The child's exit as this command's: its code, or 1 for an exit with neither code nor signal, or 128 for a signal. */
-const exitCodeOf = ({ code, signal }: ServeAppExit): number => code ?? (signal === null ? 1 : 128);
-
-export default async function Dashboard({ input, signal }: CliRouteProps<typeof inputSchema>): Promise<DashboardResult> {
-  const project = locateProject();
-  if (project === undefined) {
-    return failure(
-      1,
-      `hauler dashboard runs from the plugin checkout, where the built artifact sits beside the CLI; an installed host pack has none. ${inHost}`,
-    );
-  }
-  let served: SpawnedServeApp;
-  try {
-    served = await spawnServeApp({
-      app: 'hauler/dashboard',
-      root: project.root,
-      artifact: project.artifact,
-      target: input.target ?? 'portable',
-      tool: 'hauler_status',
-      autoApprove: ['call-tool'],
-      open: input.noOpen !== true,
-      ...(input.port === undefined ? {} : { port: input.port }),
-      // Ctrl-C reaching the routed CLI stops the server.
-      signal,
-    });
-  } catch (error) {
-    if (error instanceof ServeAppCommandError) {
-      // framework-not-installed, artifact-missing, exited-before-ready (with
-      // the child's exit), spawn-failed, aborted, stop-failed.
-      return failure(error.exit === undefined ? 1 : exitCodeOf(error.exit), `${error.message} ${inHost}`);
-    }
-    throw error;
-  }
-  const exit = await served.closed;
-  return {
-    exitCode: exitCodeOf(exit),
-    message:
-      exit.code === 0
-        ? 'dashboard closed'
-        : `agent-bundle serve-app exited with ${exit.signal ?? String(exit.code)}; see its diagnostics above`,
-    operation: 'dashboard',
-    url: served.url,
-  };
+export default async function Dashboard({ input, signal }: CliRouteProps<typeof inputSchema>): Promise<z.infer<typeof resultSchema>> {
+  return await serveDashboard({ input, project: locateProject(), signal });
 }
