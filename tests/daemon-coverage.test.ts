@@ -150,6 +150,7 @@ const coverage = (leader: readonly string[], candidate: readonly string[]): Atta
 describe('attachDecisionFor gates (#89)', () => {
   it('names the gate that refused the pair, in evaluation order', () => {
     expect(attachRejectionGates).toEqual([
+      'shell-wrapped',
       'subcommand',
       'opaque-arguments',
       'passthrough',

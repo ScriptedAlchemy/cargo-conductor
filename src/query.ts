@@ -1,6 +1,7 @@
 import { existsSync } from 'node:fs';
 import type { DatabaseSync } from 'node:sqlite';
 
+import { version } from 'agent-bundle/meta';
 import * as Effect from 'effect/Effect';
 import type * as Scope from 'effect/Scope';
 
@@ -21,6 +22,7 @@ import type {
   SystemLoadReport,
 } from './daemon/protocol.js';
 import { stripAnsi } from './lib/ansi.js';
+import { isRecord } from './lib/guards.js';
 import { shortId } from './lib/id.js';
 import { statusReportSchema, type DaemonStatus } from './lib/protocol-schemas.js';
 import { countWord } from './lib/text.js';
@@ -176,12 +178,29 @@ const fromReport = (report: StatusReport, config: DaemonConfigShape): HaulerSnap
  * versions are unsupported — the client replaces a daemon of another build
  * before submitting work to it — so a report that does not fit is a protocol
  * defect between same-version peers (the `ZodError` dies), not a condition
- * the reader is told about.
+ * the reader is told about. The read-only surfaces never replace a daemon,
+ * though, so the first read after an upgrade can meet the previous install's
+ * daemon (#123): its version is checked before its rows are parsed, and a
+ * mismatch reads as an unresponsive daemon that names itself, from the
+ * ledger, instead of a `ZodError` over a row shape this build never saw.
  */
-const fromLiveReport = (raw: unknown, config: DaemonConfigShape): Effect.Effect<HaulerSnapshot> =>
-  Effect.sync(() => statusReportSchema.parse(raw)).pipe(
+const fromLiveReport = (
+  raw: unknown,
+  config: DaemonConfigShape,
+  recentLimit: number,
+): Effect.Effect<HaulerSnapshot> => {
+  const reported = isRecord(raw) && typeof raw.version === 'string' ? raw.version : null;
+  if (reported !== null && reported !== version) {
+    return unresponsiveSnapshot(
+      config,
+      recentLimit,
+      `pid ${isRecord(raw) && typeof raw.pid === 'number' ? raw.pid : '?'} is version ${reported}, left by a previous install of this ${version} client; the next cargo command or \`hauler daemon restart\` replaces it`,
+    );
+  }
+  return Effect.sync(() => statusReportSchema.parse(raw)).pipe(
     Effect.map((report) => fromReport(report, config)),
   );
+};
 
 /**
  * One ticket's detail record straight from the ledger, for the read-only
@@ -286,7 +305,9 @@ export const loadHaulerSnapshot = (options: LoadSnapshotOptions = {}): Effect.Ef
     (message): message is StatusResultMessage => message.type === 'status-result',
   ).pipe(
     Effect.flatMap((result) =>
-      result === undefined ? fromLedger(config, recentLimit) : fromLiveReport(result.report, config),
+      result === undefined
+        ? fromLedger(config, recentLimit)
+        : fromLiveReport(result.report, config, recentLimit),
     ),
     // Unreachable means stopped; a timeout or dropped connection means a
     // daemon that exists but did not answer — say so instead of "stopped".

@@ -187,6 +187,13 @@ Within a lane, the daemon can reduce work in three ways:
 3. **Batch folding:** compatible queued compile or test requests are combined
    into one invocation.
 
+A leading `env NAME=value … cargo …` is folded into the request environment,
+so the cargo behind it is scheduled, estimated, attached, and phase-tracked
+as that cargo command (the assignments are part of its identity). A
+`bash -c` / `sh -c` script whose single cargo statement can be read is
+scheduled and estimated as that cargo command too, but never shared or
+folded: the rest of the script is opaque.
+
 A request that could not attach is logged at debug level with the gate that
 refused it (`subcommand`, `opaque-arguments`, `passthrough`,
 `compile-surface`, `packages`, `targets`, `channels`,
@@ -623,7 +630,9 @@ unset, the daemon reads kache's configured local store from
   reporting a ticket as not found; `hauler_status`, `hauler_log`, and
   `hauler_last` read the ledger with the daemon marked `stopped` or
   `unresponsive`. None of these documents replaces a daemon left running by
-  a previous install: they read the daemon that is there, and the next
+  a previous install: a daemon whose version differs from this install is
+  not parsed at all — the document reads the ledger, marks the daemon
+  `unresponsive`, and names the version that answered — and the next
   `hauler exec`, `hauler request`, or hook call replaces it.
 - The state directory is not migrated between installs. Every rendered
   document names the one in use (`state dir …` in the header; `stateRoot` in

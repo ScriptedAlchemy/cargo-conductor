@@ -284,6 +284,15 @@ export const attachDecisionFor = (
   leader: NormalizedCargoIntent,
   candidate: NormalizedCargoIntent,
 ): AttachDecision => {
+  if (leader.shellScript !== null || candidate.shellScript !== null) {
+    // The cargo tail is modeled for scheduling only; the rest of the script
+    // (`source …`, exports, file writes) is opaque and may differ in effect
+    // even between byte-identical scripts, so nothing rides or leads here.
+    return rejected(
+      'shell-wrapped',
+      'a shell-wrapped request (bash -c …) runs more than its cargo tail and is never shared',
+    );
+  }
   if (leader.key === candidate.key) {
     return identityCoalescable.has(candidate.subcommand)
       ? attach('identity')
