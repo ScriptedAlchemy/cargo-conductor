@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.6.4
+
+### Patch Changes
+
+- 1baf004: Model `env NAME=value … cargo …` and `bash -c '… cargo …'` requests as the cargo they run (#126). A leading `env` (assignments, `-u NAME`) is folded into the request environment and intent key, so such requests get the right subcommand, packages, estimate, identity/coverage attachment, batching, demux, and execution-phase hand-back instead of being recorded as subcommand `env` with a default estimate. A `bash -c` / `sh -c` / `zsh -c` script with exactly one cargo statement is scheduled, estimated, and phase-tracked as that cargo tail, but never attaches, leads, or folds (the script may do more than its cargo), and is never demuxed. `env -i` stays opaque; other `env` options are refused as non-cargo programs.
+- 1baf004: Serialize `hook-state.json` read-modify-write cycles across concurrent sessions' hook processes with a lock beside the file (#110), so one session's completion cursor or stop-denial counter is no longer lost when another session's hook saves at the same moment. Waiting is bounded (2 s) and a lock that cannot be taken degrades to the previous unlocked update rather than failing the host's tool call; a lock older than 5 s is treated as abandoned.
+- cc3e6bc: State precisely when `hauler install-shim` embeds the running npm entry instead of the PATH `hauler` (only when no `hauler` on PATH resolves to a `.js` script; version-manager shims do not count), in the README and in the command's own message, which no longer calls a self-embedded checkout entry "global" (#124)
+- 1baf004: `hauler status`, `hauler daemon status`, `hauler log`, `hauler_status`, and the dashboard no longer die with a `ZodError` when the daemon that answers is from a previous install (#123). The read-only surfaces check the daemon's reported version before parsing its rows; a mismatch reads the ledger, marks the daemon `unresponsive`, and says which version is running and that the next cargo command or `hauler daemon restart` replaces it.
+- e0ef261: Replace a daemon from a previous install before `hauler status`, `hauler daemon status`, ticket reads, MCP tools, or hooks parse its reply; report a clear failure when replacement cannot finish (#127)
+
 ## 0.6.3
 
 ### Patch Changes
