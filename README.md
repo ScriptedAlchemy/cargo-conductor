@@ -744,7 +744,7 @@ with live rebuilds. The repository ships no preview harness of its own.
 
 agent-bundle does not yet have an npm release; this repository pins the
 [pkg.pr.new](https://pkg.pr.new) preview of main commit
-[`c2ffe5ec5`](https://github.com/ScriptedAlchemy/agent-bundle/commit/c2ffe5ec55f2360fdc5c387e5b57e08f5282b84a)
+[`cd0b4a62c`](https://github.com/ScriptedAlchemy/agent-bundle/commit/cd0b4a62cd92b3fbced6742b3cead32d9639c3e4)
 for both `agent-bundle` and `@agent-bundle/runtime`. `inspect` reports the
 `agent` component kind as unavailable on every host (agent-bundle G5
 deferral); this plugin defines no agents.
