@@ -144,18 +144,25 @@ export const probeDaemonHealth = (
     return Promise.resolve({ reason: 'socket-missing', state: 'stopped' });
   }
   const timeoutMs = options.timeoutMs ?? healthProbeTimeoutMs;
+  const shutdownTimeoutMs = Math.min(timeoutMs, 500);
+  const exitGraceMs = Math.min(timeoutMs * 2, 1_500);
+  const bootWaitMs = Math.min(timeoutMs * 2, 1_250);
   const startedAt = Date.now();
   const probe: Effect.Effect<DaemonHealth> = ensureDaemonVersion(
     config,
     {
       ...defaultEnsureDependencies,
-      exitGraceMs: timeoutMs,
-      requestShutdown: (socketPath) => requestShutdown(socketPath, timeoutMs),
+      // The 5 s SessionStart envelope must cover ping + replacement + status.
+      // Exit gets enough time for normal teardown and boot gets margin over
+      // observed cold starts, while a genuinely stubborn daemon still fails
+      // within the host budget.
+      exitGraceMs,
+      requestShutdown: (socketPath) => requestShutdown(socketPath, shutdownTimeoutMs),
       waitForDaemon: (socketPath) =>
         pingDaemon(socketPath, Math.min(timeoutMs, 250)).pipe(
           Effect.retry(
             Schedule.spaced('50 millis').pipe(
-              Schedule.upTo({ duration: `${timeoutMs} millis` }),
+              Schedule.upTo({ duration: `${bootWaitMs} millis` }),
             ),
           ),
         ),

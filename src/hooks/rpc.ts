@@ -156,6 +156,17 @@ const replaceStaleDaemon = (): Promise<{ readonly detail: string; readonly repla
     });
   });
 
+export interface RequestOutcomeDependencies {
+  readonly replaceStaleDaemon: () => Promise<{
+    readonly detail: string;
+    readonly replaced: boolean;
+  }>;
+}
+
+const defaultRequestOutcomeDependencies: RequestOutcomeDependencies = {
+  replaceStaleDaemon,
+};
+
 /**
  * One-shot hook request with the same one-version gate as the Effect client.
  * Hook fast paths stay dependency-free on Effect: on skew they delegate the
@@ -166,6 +177,7 @@ export const requestOutcome = async (
   message: Record<string, unknown>,
   socketPath: string,
   timeoutMs: number,
+  dependencies: RequestOutcomeDependencies = defaultRequestOutcomeDependencies,
 ): Promise<RequestOutcome> => {
   const ping = await requestOnce(
     { id: `hook-version-${Date.now()}`, type: 'ping' },
@@ -179,7 +191,7 @@ export const requestOutcome = async (
     return { kind: 'malformed' };
   }
   if (ping.message.version !== version) {
-    const replacement = await replaceStaleDaemon();
+    const replacement = await dependencies.replaceStaleDaemon();
     if (!replacement.replaced) {
       return { detail: replacement.detail, kind: 'replacement-failed' };
     }
