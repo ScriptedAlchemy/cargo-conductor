@@ -149,9 +149,25 @@ Within a lane, the daemon can reduce work in three ways:
 1. **Identity attachment:** a byte-identical request attaches to an in-flight
    run.
 2. **Coverage attachment:** a narrower `check` attaches to a compatible
-   `build` or `check` that covers its package and target scope.
+   `build` or `check` that covers its package and target scope (`--tests`
+   under `--tests` or `--all-targets` included); a compile-only
+   `test --no-run` / `bench --no-run` attaches to a running `test` / `bench`
+   with the same packages, target selection, features, and profile — the
+   leader's test filters and `--test-threads` select what runs, not what
+   compiles — and is released as soon as the leader prints its `Finished`
+   line rather than when its tests end. Flags the daemon does not model
+   (`--locked`, `--offline`, …) and arguments after `--` disqualify a pair
+   only when they differ between the two requests. `check` never rides
+   `clippy`: a lint failure would misreport the check.
 3. **Batch folding:** compatible queued compile or test requests are combined
    into one invocation.
+
+A request that could not attach is logged at debug level with the gate that
+refused it (`subcommand`, `opaque-arguments`, `passthrough`,
+`compile-surface`, `packages`, `targets`, `channels`,
+`leader-build-finished`) and both tickets, and `hauler status --json`
+counts refusals per gate under `metrics.attach_rejections` (the nearest
+miss when several leaders were considered).
 
 Each admitted leader starts one Cargo process. Identity, coverage, and folded
 batch requests share that process and receive its streamed output. A failed
@@ -234,7 +250,7 @@ own `-j` flag or `CARGO_BUILD_JOBS` always wins over both.
 
 | Capability | Behavior |
 | --- | --- |
-| Work sharing | Identical requests attach, covered checks attach, and compatible queued compile or test requests fold. |
+| Work sharing | Identical requests attach, covered checks and compile-only `test --no-run` requests attach, and compatible queued compile or test requests fold. |
 | Lane isolation | A workspace-root and target-directory pair is serialized independently from other lanes. |
 | Admission | Per-core load, Linux CPU PSI, Linux memory PSI and `MemAvailable`, macOS VM pressure, configured thresholds, and the global permit cap control new starts. |
 | Parallelism | One daemon-owned jobserver FIFO shared by every spawned Cargo; a per-run `CARGO_BUILD_JOBS` grant only when the FIFO could not be armed. |
@@ -537,9 +553,12 @@ unset, the daemon reads kache's configured local store from
   document names the one in use (`state dir …` in the header; `stateRoot` in
   `--json`), so a `CARGO_HAULER_STATE_DIR` change is visible on the next
   command rather than discovered from an empty ledger.
-- Test sharing uses identity attachment or batch folding, never coverage.
-  Folded `test` and `nextest` requests receive the composite output and exit
-  code, so a failure may come from another package in the batch.
+- Test execution is never shared by coverage: a `test`, `nextest`, or `bench`
+  that runs tests attaches only by identity or batch folding. Only a
+  compile-only `test --no-run` / `bench --no-run` rides a running `test` /
+  `bench`, and it is released by the leader's build alone. Folded `test` and
+  `nextest` requests receive the composite output and exit code, so a
+  failure may come from another package in the batch.
 - The `cargo clean` guard probes the daemon for 250 ms. Active work denies
   the clean; an idle daemon brokers it; a daemon that accepts but does not
   answer in time is busy, so the clean is brokered and the lane serializes

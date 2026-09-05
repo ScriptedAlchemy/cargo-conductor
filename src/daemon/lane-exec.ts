@@ -528,6 +528,9 @@ export const makeLaneRuntime = (deps: LaneRuntimeDeps): Effect.Effect<LaneRuntim
           ticket: job.ticket,
         });
         yield* Deferred.succeed(job.laneReleased, undefined);
+        // Riders that only wanted this build (`test --no-run`) are done here;
+        // after the stamp, so their rows carry the build-finished time too.
+        yield* attachments.releaseBuildFinishedAttachments(job, atMs);
       });
 
     const completeExit = (job: Job): Effect.Effect<void> =>
