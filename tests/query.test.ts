@@ -322,7 +322,12 @@ describe('loadHaulerSnapshot', () => {
       expect(JSON.stringify(status)).not.toContain('\\u001b');
     }));
 
-  it.live('marks tickets in flight at a restart as orphaned by it, and result says so (#75)', () =>
+  // Both daemon-starting cases below get the same budget as the other
+  // in-process daemon suites: a saturated CI runner (several test files each
+  // spawning daemons) has taken a 300 ms startup past the 5 s default.
+  it.live(
+    'marks tickets in flight at a restart as orphaned by it, and result says so (#75)',
+    () =>
     Effect.gen(function* () {
       const config = yield* isolatedConfig;
       // A previous daemon left cc-1 running and cc-2 queued when it stopped.
@@ -365,9 +370,13 @@ describe('loadHaulerSnapshot', () => {
       expect(queued.request?.error).toBe(orphanedByRestartError);
       const snapshot = yield* loadHaulerSnapshot({ config });
       expect(snapshot.active).toEqual([]);
-    }));
+    }),
+    30_000,
+  );
 
-  it.live('uses the live daemon report when the broker is up', () =>
+  it.live(
+    'uses the live daemon report when the broker is up',
+    () =>
     Effect.gen(function* () {
       const config = yield* isolatedConfig;
       yield* Effect.forkScoped(runDaemon(config));
@@ -384,5 +393,7 @@ describe('loadHaulerSnapshot', () => {
       expect(snapshot.pid).toBe(process.pid);
       expect(snapshot.report?.pid).toBe(process.pid);
       expect(snapshot.summary).toContain('daemon is running');
-    }));
+    }),
+    30_000,
+  );
 });
