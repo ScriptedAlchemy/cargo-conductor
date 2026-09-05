@@ -186,6 +186,13 @@ export interface Job {
   readonly estimateSource: EstimateSource;
   /** Real start of the cargo process, shared by attached ledger rows. */
   startedAtMs: number | null;
+  /** When cargo reported the build finished (execution-phase subcommands only); null otherwise. */
+  buildFinishedAtMs: number | null;
+  /**
+   * Completed once the lane may take its next job: at settlement, or earlier
+   * when the build finished and the daemon overlaps the execution phase.
+   */
+  readonly laneReleased: Deferred.Deferred<void>;
   /** Start time or most recent brokered output, for output-silence visibility. */
   lastOutputAtMs: number | null;
   /** Set while an admission arm holds this lane head back from its permit. */

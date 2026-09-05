@@ -137,6 +137,11 @@ export interface LedgerApi {
     execArgv?: readonly string[],
     outputPath?: string | null,
   ) => Effect.Effect<void>;
+  /**
+   * Stamps the moment cargo reported the build finished on a running leader
+   * and on the riders sharing its process; a no-op for anything else.
+   */
+  readonly markBuildFinished: (id: number, atMs: number) => Effect.Effect<void>;
   readonly markAttached: (id: number, input: AttachRequestInput) => Effect.Effect<void>;
   readonly markRequeued: (id: number, atMs: number) => Effect.Effect<void>;
   readonly markFinished: (id: number, input: FinishRequestInput) => Effect.Effect<void>;
@@ -232,7 +237,7 @@ const requestColumns = `id, created_at_ms, session, host, cwd, workspace_root, t
   argv_json, intent_key, intent_json, status, queued_at_ms, started_at_ms, finished_at_ms, wait_ms,
   run_ms, exit_code, signal, output_tail, output_path, error, attached_to, attach_mode, background,
   hold_stop, estimate_ms, exec_argv_json, error_count, warning_count, diagnostics_json,
-  saved_compute_ms, saved_compute_source, saved_latency_ms, after_json`;
+  saved_compute_ms, saved_compute_source, saved_latency_ms, after_json, build_finished_at_ms`;
 
 /** Status rows deliberately omit the captured output blob. */
 const statusRequestColumns = requestColumns.replace('output_tail', 'NULL AS output_tail');
@@ -253,6 +258,7 @@ const columnMigrations: readonly (readonly [column: string, ddl: string])[] = [
   ['source_attempt_id', 'ALTER TABLE requests ADD COLUMN source_attempt_id TEXT'],
   ['after_json', 'ALTER TABLE requests ADD COLUMN after_json TEXT'],
   ['output_path', 'ALTER TABLE requests ADD COLUMN output_path TEXT'],
+  ['build_finished_at_ms', 'ALTER TABLE requests ADD COLUMN build_finished_at_ms INTEGER'],
 ];
 
 const sqlList = (values: readonly string[]): string => values.map((value) => `'${value}'`).join(', ');
@@ -321,6 +327,7 @@ const toRequestRecord = (row: Row): RequestRecord => {
     queuedAtMs: toNullableNumber(row.queued_at_ms),
     startedAtMs: toNullableNumber(row.started_at_ms),
     finishedAtMs: toNullableNumber(row.finished_at_ms),
+    buildFinishedAtMs: toNullableNumber(row.build_finished_at_ms),
     waitMs: toNullableNumber(row.wait_ms),
     runMs: toNullableNumber(row.run_ms),
     exitCode: toNullableNumber(row.exit_code),
@@ -414,9 +421,11 @@ const inTransaction = <A>(db: DatabaseSync, body: () => A): A => {
 /**
  * `PRAGMA user_version` of a ledger whose one-time data migrations have run.
  * Version 1: attachment savings backfilled for riders settled before the
- * savings columns existed.
+ * savings columns existed. Version 2: saved latency recomputed against the
+ * leader's start, so lane wait behind a not-yet-started leader is no longer
+ * charged to attaching.
  */
-export const ledgerUserVersion = 1;
+export const ledgerUserVersion = 2;
 
 const readUserVersion = (db: DatabaseSync): number =>
   toNumber(db.prepare('PRAGMA user_version').get()?.user_version ?? 0);
@@ -431,21 +440,24 @@ export const backfillAttachmentSavingsSelect = `SELECT f.id,
        f.estimate_ms,
        f.created_at_ms,
        f.finished_at_ms,
-       l.run_ms AS leader_run_ms
+       l.run_ms AS leader_run_ms,
+       l.started_at_ms AS leader_started_at_ms
 FROM requests f
 LEFT JOIN requests l ON l.id = CAST(substr(f.attached_to, 4) AS INTEGER)
 WHERE f.attached_to IS NOT NULL
-  AND f.saved_compute_ms IS NULL
   AND f.status IN ('done', 'failed')
   AND f.finished_at_ms IS NOT NULL
   AND f.estimate_ms IS NOT NULL
   AND f.attach_mode IN ('identity', 'coverage', 'batch')`;
 
 /**
- * Older ledgers predate settlement-time savings columns. Their served rider
- * rows still contain the same counterfactual inputs, so backfill once instead
- * of showing zero forever after an upgrade. Gated on `user_version` so the
- * scan runs a single time per database, not on every open.
+ * Older ledgers predate settlement-time savings columns, or computed saved
+ * latency from the rider's creation rather than the leader's start. Their
+ * served rider rows still contain the counterfactual inputs, so recompute
+ * once instead of showing stale numbers forever after an upgrade: compute
+ * savings are kept where present (they were exact at settlement), latency is
+ * always recomputed. Gated on `user_version` so the scan runs a single time
+ * per database, not on every open.
  */
 const backfillAttachmentSavings = (db: DatabaseSync): void => {
   if (readUserVersion(db) >= ledgerUserVersion) {
@@ -455,8 +467,10 @@ const backfillAttachmentSavings = (db: DatabaseSync): void => {
     const rows = db.prepare(backfillAttachmentSavingsSelect).all() as readonly Row[];
     const update = db.prepare(
       `UPDATE requests
-       SET saved_compute_ms = ?, saved_compute_source = ?, saved_latency_ms = ?
-       WHERE id = ? AND saved_compute_ms IS NULL`,
+       SET saved_compute_ms = COALESCE(saved_compute_ms, ?),
+           saved_compute_source = COALESCE(saved_compute_source, ?),
+           saved_latency_ms = ?
+       WHERE id = ?`,
     );
     for (const row of rows) {
       const savings = calculateServedSavings(
@@ -465,6 +479,7 @@ const backfillAttachmentSavings = (db: DatabaseSync): void => {
         toNumber(row.created_at_ms),
         toNumber(row.finished_at_ms),
         toNullableNumber(row.leader_run_ms),
+        toNullableNumber(row.leader_started_at_ms),
       );
       update.run(
         savings.savedComputeMs,
@@ -600,6 +615,13 @@ export const createLedgerApi = (db: DatabaseSync): LedgerApi => {
          exec_argv_json = ?,
          output_path = ?
      WHERE id = ? AND ${notTerminalFilter}`,
+  );
+  const updateBuildFinished = db.prepare(
+    `UPDATE requests
+     SET build_finished_at_ms = ?
+     WHERE (id = ? OR attached_to = ?)
+       AND status = 'running'
+       AND build_finished_at_ms IS NULL`,
   );
   const updateAttached = db.prepare(
     `UPDATE requests
@@ -1068,6 +1090,11 @@ export const createLedgerApi = (db: DatabaseSync): LedgerApi => {
           }
         }),
       ),
+
+    markBuildFinished: (id, atMs) =>
+      Effect.sync(() => {
+        updateBuildFinished.run(atMs, id, formatTicket(id));
+      }),
 
     markAttached: (id, input) =>
       Effect.sync(() =>

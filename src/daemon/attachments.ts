@@ -96,6 +96,7 @@ const servedSavings = (
   attachment: Attachment,
   atMs: number,
   leaderRunMs: number | null,
+  leaderStartedAtMs: number | null,
 ): ReturnType<typeof calculateServedSavings> =>
   calculateServedSavings(
     attachment.mode,
@@ -103,6 +104,7 @@ const servedSavings = (
     attachment.createdAtMs,
     atMs,
     leaderRunMs,
+    leaderStartedAtMs,
   );
 
 export const makeAttachmentRuntime = (deps: AttachmentRuntimeDeps): AttachmentRuntime => {
@@ -460,7 +462,7 @@ export const makeAttachmentRuntime = (deps: AttachmentRuntimeDeps): AttachmentRu
                     signal: null,
                     error: `compile errors in ${failed}`,
                   },
-              servedSavings(attachment, atMs, null),
+              servedSavings(attachment, atMs, null, job.startedAtMs),
             ),
           ),
         { discard: true },
@@ -511,6 +513,13 @@ export const makeAttachmentRuntime = (deps: AttachmentRuntimeDeps): AttachmentRu
         undefined,
         leader.log?.path ?? null,
       );
+      // A leader past its build has already stamped its riders; one that
+      // attaches later inherits the stamp with the rest of the run.
+      if (leader.buildFinishedAtMs !== null) {
+        yield* ledger
+          .markBuildFinished(attachment.id, leader.buildFinishedAtMs)
+          .pipe(Effect.ignoreCause);
+      }
       const won = yield* notifyAttachmentStarted(attachment, leader.startedAtMs);
       if (won) {
         yield* replayThenGoLive(leader, attachment);
@@ -670,7 +679,7 @@ export const makeAttachmentRuntime = (deps: AttachmentRuntimeDeps): AttachmentRu
             atMs,
             `[cargo-hauler] ${job.ticket} failed elsewhere, but your requested packages compiled cleanly\n`,
             { status: 'done', exitCode: 0, signal: null, error: null },
-            servedSavings(attachment, atMs, leaderRunMs),
+            servedSavings(attachment, atMs, leaderRunMs, job.startedAtMs),
           );
         }
         if (mirrors) {
@@ -680,7 +689,7 @@ export const makeAttachmentRuntime = (deps: AttachmentRuntimeDeps): AttachmentRu
                 attachment,
                 atMs,
                 { status, exitCode, signal, error },
-                servedSavings(attachment, atMs, leaderRunMs),
+                servedSavings(attachment, atMs, leaderRunMs, job.startedAtMs),
               ),
             ),
           );

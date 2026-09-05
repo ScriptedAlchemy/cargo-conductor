@@ -49,6 +49,13 @@ export interface DaemonConfigShape {
    */
   readonly batchWindowMs: number;
   /**
+   * Hand a lane to its next request as soon as a test/bench/run leader
+   * reports its build finished — cargo releases the build-directory lock
+   * there — so the next compile overlaps the leader's execution phase
+   * (CARGO_HAULER_OVERLAP_EXECUTION; on by default).
+   */
+  readonly overlapExecution: boolean;
+  /**
    * Per-core 1-minute loadavg above which admission defers (opt-in via
    * CARGO_HAULER_LOAD_THRESHOLD; null disables the clamp entirely).
    */
@@ -123,7 +130,9 @@ export class DaemonConfig extends Context.Service<DaemonConfig, DaemonConfigShap
   'cargo-hauler/DaemonConfig',
 ) {}
 
-const defaultMaxConcurrent = 5;
+const minimumDefaultMaxConcurrent = 5;
+const maximumDefaultMaxConcurrent = 16;
+const coresPerDefaultPermit = 8;
 const defaultReplayBufferBytes = 4 * 1024 * 1024;
 const defaultLoadMinConcurrent = 2;
 const defaultCpuStallThreshold = 75;
@@ -140,6 +149,23 @@ const defaultStallEstimateFactor = 3;
 const defaultStallIdleMs = 10 * 60_000;
 const gibibyte = 1024 ** 3;
 const defaultTicketLogMaxBytes = 64 * 1024 * 1024;
+
+/**
+ * Default admission permits for a machine with `cores` hardware threads:
+ * one per eight cores, never below the historical five nor above sixteen.
+ * The shared jobserver already bounds compile parallelism machine-wide and
+ * the pressure arms defer admission under load, so extra permits on a large
+ * machine only let more lanes make progress at once instead of parking
+ * whole worktrees behind unrelated builds.
+ */
+export const defaultMaxConcurrentFor = (cores: number): number =>
+  Math.max(
+    minimumDefaultMaxConcurrent,
+    Math.min(
+      maximumDefaultMaxConcurrent,
+      Number.isFinite(cores) ? Math.floor(cores / coresPerDefaultPermit) : 0,
+    ),
+  );
 
 export type ConfigWarningSink = (warning: string) => void;
 
@@ -299,6 +325,7 @@ export interface ResolvedDaemonConfig {
 export const resolveDaemonConfigWithWarnings = (
   env: Readonly<Record<string, string | undefined>> = process.env,
   platform: NodeJS.Platform = process.platform,
+  cores: number = availableParallelism(),
 ): ResolvedDaemonConfig => {
   const warnings: string[] = [];
   const { flag, number, optionalNumber } = envParsers((warning) => {
@@ -310,13 +337,13 @@ export const resolveDaemonConfigWithWarnings = (
   // are safe; state, socket, and database locations accept CARGO_HAULER_* only.
   const maxConcurrent = number(
     pick(env, 'CARGO_HAULER_MAX_CONCURRENT', 'CARGO_CONDUCTOR_MAX_CONCURRENT'),
-    defaultMaxConcurrent,
+    defaultMaxConcurrentFor(cores),
     { integer: true, min: 1 },
   );
   const kacheIndexValue = env.CARGO_HAULER_KACHE_INDEX ?? env.CARGO_CONDUCTOR_KACHE_INDEX;
   // Divide the cores between the admitted builds so N concurrent cargos do
   // not each assume they own the whole machine (rheo's grant idea).
-  const defaultJobsGrant = Math.max(4, Math.floor(availableParallelism() / maxConcurrent));
+  const defaultJobsGrant = Math.max(4, Math.floor(cores / maxConcurrent));
   const linuxOnly = (value: number | null): number | null => (platform === 'linux' ? value : null);
 
   let memPressureSoftThreshold = linuxOnly(
@@ -396,6 +423,7 @@ export const resolveDaemonConfigWithWarnings = (
       defaultBatchWindowMs,
       { integer: true, min: 0 },
     ),
+    overlapExecution: flag(pick(env, 'CARGO_HAULER_OVERLAP_EXECUTION'), true),
     loadThresholdPerCore: optionalNumber(
       pick(env, 'CARGO_HAULER_LOAD_THRESHOLD', 'CARGO_CONDUCTOR_LOAD_THRESHOLD'),
       null,
@@ -453,8 +481,9 @@ export const resolveDaemonConfig = (
   env: Readonly<Record<string, string | undefined>> = process.env,
   platform: NodeJS.Platform = process.platform,
   onWarning: ConfigWarningSink = writeWarningToStderr,
+  cores: number = availableParallelism(),
 ): DaemonConfigShape => {
-  const resolved = resolveDaemonConfigWithWarnings(env, platform);
+  const resolved = resolveDaemonConfigWithWarnings(env, platform, cores);
   for (const warning of resolved.warnings) {
     onWarning(warning);
   }

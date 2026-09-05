@@ -28,13 +28,14 @@ export const LaneBoard = ({ active, lanes, nowMs }: LaneBoardProps) => {
     <>
       <Heading>Lanes</Heading>
       <Table
-        columns={['Lane', 'Running', 'For', 'Command', 'Queued']}
+        columns={['Lane', 'Running', 'For', 'Command', 'Queued', 'Executing']}
         rows={model.rows.map((row) => [
           row.name,
           row.running,
           row.runningFor === null ? '—' : `${row.runningFor}${row.stalled === null ? '' : ` · ${row.stalled}`}`,
           row.runningCommand ?? '—',
           String(row.queued),
+          row.executing ?? '—',
         ])}
       />
     </>

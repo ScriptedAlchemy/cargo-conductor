@@ -40,12 +40,28 @@ export interface RecordOutcomeOptions {
    * per-crate priors shared with other intents. Default `done`.
    */
   readonly outcome?: 'done' | 'failed';
+  /**
+   * Whether the run's packages had been edited within the topology's edit
+   * window when it was submitted. Runs are timed per mode: an edit forces a
+   * rebuild, an unedited rerun is mostly cached, and one blended average
+   * would send the next rebuild to the head of the lane on a seconds-long
+   * estimate. Unknown (undefined) teaches both modes. Unedited runs never
+   * feed the per-crate compile priors either: their wall time is cache
+   * no-ops, not compile cost.
+   */
+  readonly editedRecently?: boolean;
+}
+
+export interface EstimateOptions {
+  /** Selects the timing mode; see {@link RecordOutcomeOptions.editedRecently}. */
+  readonly editedRecently?: boolean;
 }
 
 export interface CostModelApi {
   readonly estimate: (
     intent: NormalizedCargoIntent,
     closurePackages?: ReadonlySet<string> | readonly string[],
+    options?: EstimateOptions,
   ) => Effect.Effect<CostEstimate>;
   readonly kacheStatus: Effect.Effect<KacheStatusReport | null>;
   readonly recordOutcome: (
@@ -259,6 +275,21 @@ const configuredParallelism = (): number => {
   return Number.isInteger(parsed) && parsed > 0 ? parsed : defaultEffectiveParallelism;
 };
 
+/** Whole-intent run-time averages, split by whether the packages were freshly edited. */
+interface IntentEwma {
+  readonly clean: number | null;
+  readonly edited: number | null;
+}
+
+const emptyIntentEwma: IntentEwma = { clean: null, edited: null };
+
+const blendEwma = (base: number | null, sample: number): number =>
+  base === null ? sample : base + ewmaAlpha * (sample - base);
+
+/** The mode's own average, else the other mode's — closer than a cold prior. */
+const observedRunMs = (observed: IntentEwma, edited: boolean): number | null =>
+  edited ? (observed.edited ?? observed.clean) : (observed.clean ?? observed.edited);
+
 interface IntentObservationContext {
   readonly crateKeys: readonly string[];
   readonly parallelism: number;
@@ -299,8 +330,8 @@ const lruSetMutable = <K, V>(map: Map<K, V>, key: K, value: V): void => {
 };
 
 export const createCostModel = (options: CreateCostModelOptions): CostModelWithPrewarm => {
-  /** intentKey -> EWMA of observed run durations; null marks "seeded, empty". */
-  const ewma = SynchronizedRef.makeUnsafe<ReadonlyMap<string, number | null>>(new Map());
+  /** intentKey -> per-mode EWMA of observed run durations (a seeded entry may hold nulls). */
+  const ewma = SynchronizedRef.makeUnsafe<ReadonlyMap<string, IntentEwma>>(new Map());
   const crateObservations = new Map<string, number>();
   const intentContexts = new Map<string, IntentObservationContext>();
   const now = options.now ?? Date.now;
@@ -322,11 +353,11 @@ export const createCostModel = (options: CreateCostModelOptions): CostModelWithP
       : { atMs: now(), priors: options.kachePriors.initial };
   let refreshingIndex = false;
 
-  const seededEwma = (intentKey: string): Effect.Effect<number | null> =>
+  const seededEwma = (intentKey: string): Effect.Effect<IntentEwma> =>
     SynchronizedRef.modifyEffect(ewma, (current) => {
-      if (current.has(intentKey)) {
-        const value = current.get(intentKey) ?? null;
-        return Effect.succeed([value, lruSet(current, intentKey, value)] as const);
+      const existing = current.get(intentKey);
+      if (existing !== undefined) {
+        return Effect.succeed([existing, lruSet(current, intentKey, existing)] as const);
       }
       return options.seedDurations(intentKey, ewmaSeedLimit).pipe(
         Effect.catchCause(() => Effect.succeed([])),
@@ -336,11 +367,15 @@ export const createCostModel = (options: CreateCostModelOptions): CostModelWithP
           for (const runMs of [...durations].reverse()) {
             const validRunMs = finitePositiveMs(runMs);
             if (validRunMs !== null) {
-              value =
-                value === null ? validRunMs : value + ewmaAlpha * (validRunMs - value);
+              value = blendEwma(value, validRunMs);
             }
           }
-          return [value, lruSet(current, intentKey, value)] as const;
+          // Ledger history predates the mode split and is dominated by cached
+          // reruns, so it seeds the cached mode only: the first edited
+          // estimate then floors at the crate compile priors instead of
+          // inheriting a seconds-long average for a rebuild.
+          const seeded: IntentEwma = { clean: value, edited: null };
+          return [seeded, lruSet(current, intentKey, seeded)] as const;
         }),
       );
     });
@@ -414,7 +449,7 @@ export const createCostModel = (options: CreateCostModelOptions): CostModelWithP
         yield* refreshIndexPriors();
       }
     }),
-    estimate: (intent, closurePackages = []) =>
+    estimate: (intent, closurePackages = [], estimateOptions = {}) =>
       Effect.gen(function* () {
         const packageNames = [
           ...new Set<string>([...intent.packages, ...closurePackages]),
@@ -429,9 +464,17 @@ export const createCostModel = (options: CreateCostModelOptions): CostModelWithP
           parallelism,
         });
 
+        const edited = estimateOptions.editedRecently === true;
         const observed = yield* seededEwma(intent.key);
-        if (observed !== null) {
-          return { estimateMs: safeEstimateMs(observed), source: 'ewma' as const };
+        const ownRunMs = observedRunMs(observed, edited);
+        // An intent's own mode predicts it best. An edited intent that has
+        // only ever been timed cached falls through instead, to floor that
+        // average at the crate compile priors: the rebuild the edit forces
+        // is exactly what those measure.
+        const needsCompileFloor =
+          edited && observed.edited === null && packageNames.length > 0;
+        if (ownRunMs !== null && !needsCompileFloor) {
+          return { estimateMs: safeEstimateMs(ownRunMs), source: 'ewma' as const };
         }
         if (packageNames.length === 0) {
           return {
@@ -469,7 +512,17 @@ export const createCostModel = (options: CreateCostModelOptions): CostModelWithP
          * the cargo worker grant bounds throughput. Taking their maximum is
          * conservative without incorrectly summing fully parallel work.
          */
-        const estimateMs = safeEstimateMs(Math.max(maximum, total / parallelism));
+        const crateEstimateMs = Math.max(maximum, total / parallelism);
+        if (ownRunMs !== null) {
+          // Only a real prior may raise the estimate: the cold default is
+          // no evidence that this intent compiles for minutes.
+          const floored =
+            hasCrateObservation || hasKachePrior
+              ? Math.max(ownRunMs, crateEstimateMs)
+              : ownRunMs;
+          return { estimateMs: safeEstimateMs(floored), source: 'ewma' as const };
+        }
+        const estimateMs = safeEstimateMs(crateEstimateMs);
         const source = hasCrateObservation
           ? ('ewma' as const)
           : hasKachePrior
@@ -483,18 +536,24 @@ export const createCostModel = (options: CreateCostModelOptions): CostModelWithP
         if (validRunMs === null) {
           return;
         }
+        const edited = recordOptions?.editedRecently;
         yield* SynchronizedRef.update(ewma, (current) => {
-          const observed = current.get(intentKey);
-          const base = observed === undefined || observed === null ? validRunMs : observed;
-          return lruSet(
-            current,
-            intentKey,
-            base + ewmaAlpha * (validRunMs - base),
-          );
+          const observed = current.get(intentKey) ?? emptyIntentEwma;
+          const next: IntentEwma =
+            edited === undefined
+              ? {
+                  clean: blendEwma(observed.clean, validRunMs),
+                  edited: blendEwma(observed.edited, validRunMs),
+                }
+              : edited
+                ? { ...observed, edited: blendEwma(observed.edited, validRunMs) }
+                : { ...observed, clean: blendEwma(observed.clean, validRunMs) };
+          return lruSet(current, intentKey, next);
         });
         const context = intentContexts.get(intentKey);
         if (
           recordOptions?.outcome === 'failed' ||
+          edited === false ||
           context === undefined ||
           context.crateKeys.length === 0
         ) {

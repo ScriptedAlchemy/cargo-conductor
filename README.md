@@ -130,12 +130,19 @@ followed by another statement, `elif`, and `function name { … }` — are left
 untouched and run as plain Cargo rather than risk emitting a changed
 command.
 
-A lane is keyed by workspace root and resolved target directory. It runs one
-job at a time. Different lanes may run concurrently after acquiring one of the
-global admission permits. `CARGO_HAULER_MAX_CONCURRENT` controls the
-machine-wide permit count and defaults to five Cargo processes. Attached
-requests (riders) do not hold permits; the admission meter counts permit
-holders and reports riders separately.
+A lane is keyed by workspace root and resolved target directory. It compiles
+one job at a time — Cargo's own build-directory lock would serialize them
+anyway. Once a `test`, `nextest`, `bench`, or `run` leader reports its build
+finished, Cargo has dropped that lock, so the lane hands its slot to the next
+request and that compile overlaps the leader's test run
+(`CARGO_HAULER_OVERLAP_EXECUTION=0` restores strict one-at-a-time). Different
+lanes may run concurrently after acquiring one of the global admission
+permits. `CARGO_HAULER_MAX_CONCURRENT` controls the machine-wide permit count;
+the default is one permit per eight cores, clamped between five and sixteen,
+since the shared jobserver already bounds compile parallelism and the pressure
+arms defer admission under load. Attached requests (riders) do not hold
+permits; the admission meter counts permit holders and reports riders
+separately.
 
 Within a lane, the daemon can reduce work in three ways:
 
@@ -470,7 +477,8 @@ Per-host notes and hook timeouts are in [docs/install.md](docs/install.md).
 | --- | --- | --- |
 | `CARGO_HAULER_STATE_DIR` | Per-user cache directory | Unix socket or Windows named pipe source, SQLite ledger, daemon log, pid lock, `hook-state.json`, `hook-events.jsonl`, and the per-ticket output logs under `tickets/`. No legacy alias. |
 | `CARGO_HAULER_CARGO_BIN` | `$CARGO_HOME/bin/cargo` | Cargo binary for daemon-started work; bare `cargo` is the last fallback. Never resolved through `PATH`. Read from the daemon's own environment (export it where the daemon starts, or before `hauler daemon start`); clients do not forward it. |
-| `CARGO_HAULER_MAX_CONCURRENT` | `5` | Global admission permits for Cargo processes across all lanes; an integer >= 1. |
+| `CARGO_HAULER_MAX_CONCURRENT` | cores ÷ 8, clamped to 5–16 | Global admission permits for Cargo processes across all lanes; an integer >= 1. |
+| `CARGO_HAULER_OVERLAP_EXECUTION` | `1` | Hand a lane to its next request once a `test`/`nextest`/`bench`/`run` leader reports its build finished, overlapping the next compile with the leader's execution phase. `0` keeps a lane strictly one process at a time. |
 | `CARGO_HAULER_JOBS_GRANT` | `max(4, cores / max concurrent)` | `CARGO_BUILD_JOBS` added to each Cargo process only while the shared jobserver FIFO is not armed; an armed daemon injects `MAKEFLAGS` instead and leaves `CARGO_BUILD_JOBS` unset. `0` disables injection. |
 | `CARGO_HAULER_JOBSERVER` | `auto` | Machine-wide fifo jobserver for daemon-spawned cargo: `auto` arms it only when the host `make` is 4.4+ (or absent) because older makes reject `--jobserver-auth=fifo:` in build scripts; `fifo` forces it on, `off` disables it (per-run `CARGO_BUILD_JOBS` grants apply instead). |
 | `CARGO_HAULER_LOAD_THRESHOLD` | Disabled | Per-core one-minute load threshold for deferring new admissions. |

@@ -118,6 +118,8 @@ export const daemonBadgeModel = (
 // Lane board
 
 export interface LaneRowModel {
+  /** Leaders past their build still running tests here while the lane is free for the next compile; null when none. */
+  readonly executing: string | null;
   readonly name: string;
   readonly running: string;
   readonly queued: number;
@@ -141,12 +143,19 @@ export const laneBoardModel = (
   nowMs: number,
 ): LaneBoardModel => {
   const byTicket = new Map(active.map((record) => [record.ticket, record]));
-  const busy = lanes.filter((lane) => lane.queued > 0 || lane.runningTicket !== null);
+  const busy = lanes.filter(
+    (lane) =>
+      lane.queued > 0 ||
+      lane.runningTicket !== null ||
+      (lane.executingTickets?.length ?? 0) > 0,
+  );
   return {
     idleLanes: lanes.length - busy.length,
     rows: busy.map((lane) => {
       const leader = lane.runningTicket === null ? undefined : byTicket.get(lane.runningTicket);
+      const executing = lane.executingTickets ?? [];
       return {
+        executing: executing.length === 0 ? null : executing.join(', '),
         name: laneName(lane),
         queued: lane.queued,
         running: lane.runningTicket ?? '—',
