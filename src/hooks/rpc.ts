@@ -129,10 +129,6 @@ const requestOnce = (
 const replaceStaleDaemon = (): Promise<{ readonly detail: string; readonly replaced: boolean }> =>
   new Promise((resolve) => {
     const [command, ...args] = resolveHaulerArgv();
-    if (command === undefined) {
-      resolve({ detail: 'hauler entry is unavailable', replaced: false });
-      return;
-    }
     const child = spawn(command, [...args, 'daemon', 'start'], {
       killSignal: 'SIGTERM',
       stdio: ['ignore', 'pipe', 'pipe'],

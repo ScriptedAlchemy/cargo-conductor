@@ -170,7 +170,6 @@ describe('probeDaemonHealth', () => {
         riding: 0,
         running: 0,
         state: 'running',
-        // The version gate and status report agree on the current build.
         version,
       });
       expect(health.state === 'running' ? health.pid : -1).toBeGreaterThan(0);

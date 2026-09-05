@@ -276,10 +276,6 @@ const fromLedger = (
   );
 };
 
-/**
- * The version handshake runs before the status request. A stale daemon is
- * replaced before any versioned payload can reach the strict schema.
- */
 export const loadHaulerSnapshot = (
   options: LoadSnapshotOptions = {},
 ): Effect.Effect<

@@ -95,8 +95,7 @@ export const waitForDaemon = (
 
 /**
  * The entry that understands `daemon run`: the artifact's `hauler.mjs` when
- * a host injected the plugin root (an MCP server or hook entry re-spawning
- * itself would not), otherwise the running executable.
+ * a host injected the plugin root, otherwise a package or checkout entry.
  */
 const defaultDaemonEntry = (): string => {
   const [, script] = resolveHaulerArgv();
@@ -266,7 +265,6 @@ export const ensureDaemonVersion = (
     );
   });
 
-/** The version gate plus on-demand startup when no daemon answers. */
 export const ensureDaemonRunning = (
   config: DaemonConfigShape = resolveDaemonConfig(),
   dependencies: EnsureDaemonDependencies = defaultEnsureDependencies,
