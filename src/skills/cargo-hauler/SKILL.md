@@ -7,6 +7,11 @@ description: Orchestrate cargo through the hauler daemon — do not kill in-flig
 Use this Skill whenever an agent is about to run `cargo` (check, test, build,
 clippy, fmt, nextest) or is waiting on someone else's cargo.
 
+The CLI is `hauler` on PATH, installed with `npm i -g cargo-hauler`. Never run
+`scripts/hauler.mjs` or any path under `.claude/plugins/cache`,
+`.codex/plugins/cache`, `.cursor/plugins`, or `artifact/<host>`; those are
+plugin internals, not CLI entry points.
+
 ## Rules
 
 - Do not kill in-flight `cargo` processes by PID. Attach or await the existing

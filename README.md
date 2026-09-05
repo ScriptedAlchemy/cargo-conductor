@@ -64,6 +64,10 @@ what is running, and the `hauler_status` tool opens the dashboard in hosts that
 render MCP Apps. Prefer the hosts' own plugin commands, or building from a
 checkout? See [Install](#install).
 
+The CLI is `hauler` on PATH from `npm i -g cargo-hauler`. Never run
+`scripts/hauler.mjs` or any path under `.claude/plugins/cache`,
+`.codex/plugins/cache`, `.cursor/plugins`, or `artifact/<host>` directly.
+
 ## Commands and tools
 
 `hauler` is the command line; agents reach the same operations as MCP tools
@@ -425,11 +429,11 @@ When the daemon starts Cargo it sets `CARGO_HAULER_INSIDE=1`, and the shim then
 invokes the embedded Cargo directly, so the daemon's own Cargo never returns
 through the broker. The shim is POSIX-only; its directory must appear before
 rustup's Cargo directory on `PATH`; replacing an existing destination requires
-`--force`. The embedded `hauler` entry lives in a versioned plugin directory:
-when that file no longer exists (an upgrade replaced the directory), the shim
-runs the embedded Cargo directly instead of failing, and `install-shim` says
-so — re-run `hauler install-shim --force` after such an upgrade to route
-scripted Cargo through the broker again.
+`--force`. `hauler install-shim` resolves the global `hauler` on PATH and
+embeds its realpath (an npm `dist/bin/hauler.js` entry embeds itself only when
+PATH has no `hauler`); it refuses to run from a plugin-local `scripts/hauler.mjs`.
+If a Node upgrade moves that global file, the shim runs Cargo directly until
+you re-run `hauler install-shim --force`.
 
 ### Caller environment
 
@@ -548,7 +552,8 @@ pnpm run build      # artifact/{claude,codex,cursor,portable} + dist/bin
 ```
 
 Then install with either method above from `artifact/<host>`, and run
-`node dist/bin/hauler.js install-shim` for the PATH shim. Building needs the
+`hauler install-shim` from the globally installed CLI for the PATH shim.
+Building needs the
 repository's dev dependencies (including the agent-bundle framework, pinned as
 a pkg.pr.new preview until it is on npm); using the published package does
 not.

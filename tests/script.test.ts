@@ -1,5 +1,14 @@
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import {
+  existsSync,
+  mkdtempSync,
+  mkdirSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
@@ -7,17 +16,22 @@ import { describe, expect, it } from 'effect-rstest';
 import * as Effect from 'effect/Effect';
 
 import type { RunExecOptions, RunExecResult } from '../src/client/exec.js';
-import { runScript } from '../src/scripts/hauler.js';
+import {
+  pluginDirectCliRefusal,
+  pluginInstallShimRefusal,
+  runScript,
+  type ScriptOptions,
+} from '../src/scripts/hauler.js';
 
 const run = async (
   argv: readonly string[],
-  extras: {
-    readonly runExec?: (options: RunExecOptions) => Effect.Effect<RunExecResult>;
-    readonly signal?: AbortSignal;
-  } = {},
+  extras: Pick<ScriptOptions, 'entryPath' | 'env' | 'runDaemon' | 'runExec' | 'signal'> = {},
 ): Promise<{ readonly code: number; readonly text: string }> => {
   const lines: string[] = [];
   const code = await runScript(argv, {
+    ...(extras.entryPath === undefined ? {} : { entryPath: extras.entryPath }),
+    ...(extras.env === undefined ? {} : { env: extras.env }),
+    ...(extras.runDaemon === undefined ? {} : { runDaemon: extras.runDaemon }),
     ...(extras.runExec === undefined ? {} : { runExec: extras.runExec }),
     ...(extras.signal === undefined ? {} : { signal: extras.signal }),
     write: (line) => lines.push(line),
@@ -225,16 +239,159 @@ describe('hauler script', () => {
     }
   });
 
+  const pluginScript = '/home/test/.cursor/plugins/local/cargo-hauler/scripts/hauler.mjs';
+
+  it('refuses install-shim from a plugin copy with the global install guidance', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'cc-script-shim-refusal-'));
+    try {
+      const result = await run(['install-shim', '--dir', root], { entryPath: pluginScript });
+      expect(result).toEqual({ code: 1, text: pluginInstallShimRefusal });
+      expect(existsSync(join(root, 'cargo'))).toBe(false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('embeds the realpath of the hauler command found on PATH', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'cc-script-global-hauler-'));
+    try {
+      const binDir = join(root, 'bin');
+      const globalScript = join(root, 'lib', 'node_modules', 'cargo-hauler', 'dist', 'bin', 'hauler.js');
+      const shimDir = join(root, 'shim');
+      mkdirSync(join(root, 'lib', 'node_modules', 'cargo-hauler', 'dist', 'bin'), {
+        recursive: true,
+      });
+      mkdirSync(binDir, { recursive: true });
+      writeFileSync(globalScript, '#!/usr/bin/env node\n');
+      symlinkSync(globalScript, join(binDir, 'hauler'));
+      const result = await run(
+        ['install-shim', '--dir', shimDir, '--real-cargo', '/usr/bin/cargo'],
+        {
+          entryPath: join(root, 'checkout', 'scripts', 'hauler.mjs'),
+          env: { PATH: binDir },
+        },
+      );
+      expect(result.code).toBe(0);
+      expect(readFileSync(join(shimDir, 'cargo'), 'utf8')).toContain(
+        `exec ${process.execPath} ${realpathSync(join(binDir, 'hauler'))} exec --host shim -- /usr/bin/cargo "$@"`,
+      );
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses direct plugin CLI use but preserves hook and daemon invocations', async () => {
+    const refused = await run(['status'], { entryPath: pluginScript });
+    expect(refused).toEqual({ code: 2, text: pluginDirectCliRefusal });
+
+    let execCalled = false;
+    const exec = await run(['exec', '--host', 'cursor', '--', 'cargo', 'check'], {
+      entryPath: pluginScript,
+      runExec: () => {
+        execCalled = true;
+        return Effect.succeed({ exitCode: 0, mode: 'brokered' });
+      },
+    });
+    expect(exec).toEqual({ code: 0, text: '' });
+    expect(execCalled).toBe(true);
+
+    let daemonArgv: readonly string[] | undefined;
+    const daemon = await run(['daemon', 'run'], {
+      entryPath: pluginScript,
+      runDaemon: async (argv) => {
+        daemonArgv = argv;
+        return 0;
+      },
+    });
+    expect(daemon).toEqual({ code: 0, text: '' });
+    expect(daemonArgv).toEqual(['run']);
+
+    const hook = await run(['--help'], {
+      entryPath: pluginScript,
+      env: { CLAUDE_PLUGIN_ROOT: '/plugin' },
+    });
+    expect(hook.code).toBe(0);
+    expect(hook.text).toContain('Usage: hauler');
+  });
+
+  it('refuses plugin exec without a --host ahead of `--`, and install-shim even under a plugin root', async () => {
+    let execCalled = false;
+    const runExec: ScriptOptions['runExec'] = () => {
+      execCalled = true;
+      return Effect.succeed({ exitCode: 0, mode: 'brokered' });
+    };
+    const bare = await run(['exec', '--', 'cargo', 'check'], { entryPath: pluginScript, runExec });
+    expect(bare).toEqual({ code: 2, text: pluginDirectCliRefusal });
+    const hostAfterSeparator = await run(['exec', '--', 'cargo', '--host', 'cursor'], {
+      entryPath: pluginScript,
+      runExec,
+    });
+    expect(hostAfterSeparator).toEqual({ code: 2, text: pluginDirectCliRefusal });
+    expect(execCalled).toBe(false);
+
+    const root = mkdtempSync(join(tmpdir(), 'cc-script-shim-root-'));
+    try {
+      for (const name of ['CURSOR_PLUGIN_ROOT', 'PLUGIN_ROOT']) {
+        const result = await run(['install-shim', '--dir', root], {
+          entryPath: pluginScript,
+          env: { [name]: '/plugin' },
+        });
+        expect(result).toEqual({ code: 1, text: pluginInstallShimRefusal });
+      }
+      expect(existsSync(join(root, 'cargo'))).toBe(false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('runs every command from the npm bin entry without a refusal', async () => {
+    const npmEntry = '/home/test/.local/share/mise/installs/node/22/lib/node_modules/cargo-hauler/dist/bin/hauler.js';
+    const help = await run(['--help'], { entryPath: npmEntry });
+    expect(help.code).toBe(0);
+    expect(help.text).toContain('Usage: hauler');
+    let execCalled = false;
+    const exec = await run(['exec', '--', 'cargo', 'check'], {
+      entryPath: npmEntry,
+      runExec: () => {
+        execCalled = true;
+        return Effect.succeed({ exitCode: 0, mode: 'brokered' });
+      },
+    });
+    expect(exec).toEqual({ code: 0, text: '' });
+    expect(execCalled).toBe(true);
+  });
+
   it('installs a shim that falls back to cargo when its hauler entry is gone, and says so', async () => {
     const root = mkdtempSync(join(tmpdir(), 'cc-script-shim-'));
     try {
-      const result = await run(['install-shim', '--dir', root, '--real-cargo', '/usr/bin/cargo']);
+      // An npm bin with no other `hauler` on PATH embeds itself; the embedded
+      // file does not exist here, which is exactly the post-Node-upgrade state.
+      const goneEntry = join(root, 'lib', 'node_modules', 'cargo-hauler', 'dist', 'bin', 'hauler.js');
+      const result = await run(['install-shim', '--dir', root, '--real-cargo', '/usr/bin/cargo'], {
+        entryPath: goneEntry,
+        env: { PATH: '' },
+      });
       expect(result.code).toBe(0);
       expect(result.text).toContain(`Installed cargo shim at ${join(root, 'cargo')}`);
-      // An upgrade that replaces the plugin directory must not turn every
-      // `cargo` on PATH into "No such file"; the operator has to re-run this.
+      // A Node upgrade that moves the global entry must not turn every `cargo`
+      // on PATH into "No such file"; the operator has to re-run this.
       expect(result.text).toContain('hauler install-shim --force');
       expect(readFileSync(join(root, 'cargo'), 'utf8')).toContain('|| exec /usr/bin/cargo "$@"');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('fails install-shim with install guidance when no global hauler exists', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'cc-script-shim-none-'));
+    try {
+      const result = await run(['install-shim', '--dir', root, '--real-cargo', '/usr/bin/cargo'], {
+        entryPath: join(root, 'somewhere', 'hauler.mjs'),
+        env: { PATH: '' },
+      });
+      expect(result.code).toBe(1);
+      expect(result.text).toContain('npm i -g cargo-hauler');
+      expect(existsSync(join(root, 'cargo'))).toBe(false);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -249,7 +406,7 @@ describe('hauler script', () => {
   const artifactScript = join(import.meta.dirname, '..', 'artifact', 'cursor', 'scripts', 'hauler.mjs');
 
   it.skipIf(!existsSync(artifactScript))(
-    'forwards routed commands to bin/cargo-hauler.mjs inside a built host artifact',
+    'refuses routed commands from a built host artifact',
     async () => {
       const stateDir = mkdtempSync(join(tmpdir(), 'cargo-hauler-artifact-'));
       try {
@@ -257,9 +414,8 @@ describe('hauler script', () => {
           encoding: 'utf8',
           env: { ...process.env, CARGO_HAULER_KACHE_INDEX: '', CARGO_HAULER_STATE_DIR: stateDir },
         });
-        expect(child.status).toBe(0);
-        const parsed: unknown = JSON.parse(child.stdout);
-        expect(parsed).toMatchObject({ daemon: 'stopped' });
+        expect(child.status).toBe(2);
+        expect(child.stdout).toBe(pluginDirectCliRefusal);
       } finally {
         rmSync(stateDir, { recursive: true, force: true });
       }
