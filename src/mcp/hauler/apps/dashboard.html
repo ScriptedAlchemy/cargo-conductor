@@ -294,7 +294,15 @@
       }
       .subcommand-split > h3,
       .subcommand-split > .empty { grid-column: 1 / -1; }
-      .subcommand-split .cmd { max-width: 300px; }
+      /* The label must not absorb the row's shrinkage: `.cmd` breaks anywhere,
+         so a nowrap value wider than the column would clamp it to one
+         character per line. Keep the label whole and let the value wrap. */
+      .subcommand-split .cmd { max-width: 300px; flex-shrink: 0; }
+      .subcommand-split .row-value {
+        min-width: 0;
+        text-align: right;
+        white-space: normal;
+      }
       .diskutil .est { font-size: 0.72rem; }
       .crate-name {
         min-width: 0;
