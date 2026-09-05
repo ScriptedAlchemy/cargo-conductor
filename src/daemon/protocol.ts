@@ -42,6 +42,27 @@ export type TerminalStatus = (typeof terminalStatuses)[number];
 export const attachModes = ['identity', 'coverage', 'batch'] as const;
 export type AttachMode = (typeof attachModes)[number];
 
+/**
+ * Why a request could not ride an in-flight leader in its lane (see
+ * daemon/coverage.ts). Listed in evaluation order, which is also how close
+ * the pair came to attaching: `subcommand` is a pair that never shares,
+ * `leader-build-finished` is a compatible coverage rider that arrived after
+ * the leader's compile had already ended. `hauler status` reports one count
+ * per gate under `metrics.attach_rejections`, taken from the nearest miss
+ * among the lane's leaders for each request that did not attach.
+ */
+export const attachRejectionGates = [
+  'subcommand',
+  'opaque-arguments',
+  'passthrough',
+  'compile-surface',
+  'packages',
+  'targets',
+  'channels',
+  'leader-build-finished',
+] as const;
+export type AttachRejectionGate = (typeof attachRejectionGates)[number];
+
 /** Provenance of a runtime estimate: measured (`ewma`), kache priors, or a cold-start default. */
 export type EstimateSource = 'ewma' | 'kache' | 'default';
 export type SavedComputeSource = 'exact' | 'estimate';
@@ -340,6 +361,12 @@ export interface StatusMetrics {
   readonly cargo_run_ms_by_kind?: Readonly<Record<string, HistogramMetricSnapshot>>;
   readonly job_outcome: Readonly<Record<string, number>>;
   readonly attach_mode: Readonly<Record<string, number>>;
+  /**
+   * Requests that found in-flight leaders in their lane but attached to none,
+   * counted once each under the gate of their nearest miss
+   * (`AttachRejectionGate`); absent on 0.5.0 and older daemons.
+   */
+  readonly attach_rejections?: Readonly<Record<string, number>>;
   readonly windows?: readonly StatusMetricsWindow[];
   readonly wait_ms_summary?: {
     readonly count: number;

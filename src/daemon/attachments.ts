@@ -2,9 +2,10 @@ import * as Effect from 'effect/Effect';
 import * as Metric from 'effect/Metric';
 
 import { batchFailureOwned, compositePackages } from './batch.js';
-import { attachModeMetric, jobOutcomeMetric } from './broker-metrics.js';
+import { attachModeMetric, attachRejectionMetric, jobOutcomeMetric } from './broker-metrics.js';
 import { hasLibKind, parseCargoJsonLine } from './cargo-json.js';
-import { attachModeFor } from './coverage.js';
+import { attachDecisionFor, attachRejectionRank, isBuildOnlyIntent } from './coverage.js';
+import type { AttachDecision } from './coverage.js';
 import {
   addDiagnostic,
   attachmentReceives,
@@ -18,7 +19,7 @@ import {
 } from './job-state.js';
 import type { Attachment, ExitInfo, Job } from './job-state.js';
 import type { LedgerApi } from './ledger.js';
-import type { AttachMode, FinishedStatus } from './protocol.js';
+import type { AttachMode, AttachRejectionGate, FinishedStatus } from './protocol.js';
 import type { ReplayAudience, ReplayChunk } from './replay.js';
 import { calculateServedSavings, nonNegativeMs } from './savings.js';
 import type { ServedSavings } from './savings.js';
@@ -59,6 +60,13 @@ export interface AttachmentRuntime {
   ) => Effect.Effect<{ readonly leader: Job; readonly mode: AttachMode } | null>;
   readonly removeAttachment: (job: Job, attachment: Attachment) => Effect.Effect<boolean>;
   readonly releaseSatisfiedAttachments: (job: Job) => Effect.Effect<void>;
+  /**
+   * Releases the coverage riders whose demand the leader's finished build
+   * proves (`test --no-run`, `bench --no-run`) as `done`, while the leader
+   * goes on executing. Called from the lane's hand-back once the build is
+   * stamped, and again for a rider that registered in the same instant.
+   */
+  readonly releaseBuildFinishedAttachments: (job: Job, atMs: number) => Effect.Effect<void>;
   readonly completeAttachRegistration: (
     leader: Job,
     attachment: Attachment,
@@ -354,47 +362,138 @@ export const makeAttachmentRuntime = (deps: AttachmentRuntimeDeps): AttachmentRu
     });
 
   /**
+   * The full attach decision for one in-flight leader: the intent gates, then
+   * the job-level ones. Channel agreement comes after the intent gates so a
+   * perfect intent match blocked by the caller's descriptors ranks as the
+   * nearer miss. A coverage rider needs a leader whose compile is still
+   * ahead: one past its build finished proves nothing about the sources as
+   * they are now, and the lane has already been handed on, so the rider
+   * runs its own (fresh, likely no-op) cargo instead. Identity riders keep
+   * riding executing leaders — they want the test results, not the build.
+   */
+  const decideAttach = (job: Job, attachment: Attachment): AttachDecision => {
+    const decision = attachDecisionFor(job.intent, attachment.intent);
+    if (decision._tag === 'rejected') {
+      return decision;
+    }
+    if (!channelsCompatible(job, attachment)) {
+      return {
+        _tag: 'rejected',
+        gate: 'channels',
+        detail: 'the leader merges stderr into stdout and the rider does not (or vice versa)',
+      };
+    }
+    if (decision.mode === 'coverage' && job.buildFinishedAtMs !== null) {
+      return {
+        _tag: 'rejected',
+        gate: 'leader-build-finished',
+        detail: 'the leader already finished its build; only its tests are still running',
+      };
+    }
+    return decision;
+  };
+
+  interface AttachRejection {
+    readonly leader: string;
+    readonly gate: AttachRejectionGate;
+    readonly detail: string;
+  }
+
+  /**
+   * One debug line per leader that refused the rider, and one count for the
+   * request under its nearest miss — the latest gate any leader reached —
+   * so the status metrics answer "why did this not coalesce" without
+   * inflating one missed request into one count per leader.
+   */
+  const recordAttachRejections = (
+    attachment: Attachment,
+    rejections: readonly AttachRejection[],
+  ): Effect.Effect<void> =>
+    Effect.gen(function* () {
+      let nearest: AttachRejection | undefined;
+      for (const rejection of rejections) {
+        yield* Effect.logDebug('attach rejected', {
+          ticket: attachment.ticket,
+          leader: rejection.leader,
+          gate: rejection.gate,
+          detail: rejection.detail,
+        });
+        if (
+          nearest === undefined ||
+          attachRejectionRank(rejection.gate) > attachRejectionRank(nearest.gate)
+        ) {
+          nearest = rejection;
+        }
+      }
+      if (nearest !== undefined) {
+        yield* Metric.update(attachRejectionMetric, nearest.gate);
+      }
+    });
+
+  /**
    * Atomically registers `attachment` on a compatible in-flight leader in
-   * the lane. Runs in one sync frame: the gate check and the registration
-   * cannot interleave with settlement.
+   * the lane. The gate checks and the registration share one sync frame, so
+   * they cannot interleave with settlement; the rejection log and counter
+   * follow outside it, once no leader took the rider.
    */
   const tryRegisterAttachment = (
     laneKey: string,
     attachment: Attachment,
   ): Effect.Effect<{ readonly leader: Job; readonly mode: AttachMode } | null> =>
-    Effect.sync(() => {
-      const register = (job: Job, mode: AttachMode): { leader: Job; mode: AttachMode } => {
-        attachment.mode = mode;
-        attachment.attachedAtMs = Date.now();
-        if (job.demux !== null) {
-          attachment.diagnostics = diagnosticsForAttachment(job.demux, attachment);
+    Effect.gen(function* () {
+      const outcome = yield* Effect.sync(() => {
+        const register = (job: Job, mode: AttachMode): { leader: Job; mode: AttachMode } => {
+          attachment.mode = mode;
+          attachment.attachedAtMs = Date.now();
+          if (job.demux !== null) {
+            attachment.diagnostics = diagnosticsForAttachment(job.demux, attachment);
+          }
+          job.attachments.set(attachment.ticket, attachment);
+          directory.setAttachment(job, attachment);
+          return { leader: job, mode };
+        };
+        const rejections: AttachRejection[] = [];
+        let coverageCandidate: Job | null = null;
+        for (const entry of directory.entries()) {
+          if (entry.kind !== 'leader') {
+            continue;
+          }
+          const job = entry.job;
+          if (job.laneKey !== laneKey || !job.attachGate.open) {
+            continue;
+          }
+          const decision = decideAttach(job, attachment);
+          switch (decision._tag) {
+            case 'attach':
+              if (decision.mode === 'identity') {
+                return { registered: register(job, 'identity'), rejections };
+              }
+              if (decision.mode === 'coverage' && coverageCandidate === null) {
+                coverageCandidate = job;
+              }
+              break;
+            case 'rejected':
+              rejections.push({
+                leader: job.ticket,
+                gate: decision.gate,
+                detail: decision.detail,
+              });
+              break;
+            default: {
+              const exhaustive: never = decision;
+              return exhaustive;
+            }
+          }
         }
-        job.attachments.set(attachment.ticket, attachment);
-        directory.setAttachment(job, attachment);
-        return { leader: job, mode };
-      };
-      let coverageCandidate: Job | null = null;
-      for (const entry of directory.entries()) {
-        if (entry.kind !== 'leader') {
-          continue;
-        }
-        const job = entry.job;
-        if (
-          job.laneKey !== laneKey ||
-          !job.attachGate.open ||
-          !channelsCompatible(job, attachment)
-        ) {
-          continue;
-        }
-        const mode = attachModeFor(job.intent, attachment.intent);
-        if (mode === 'identity') {
-          return register(job, 'identity');
-        }
-        if (mode === 'coverage' && coverageCandidate === null) {
-          coverageCandidate = job;
-        }
+        return {
+          registered: coverageCandidate === null ? null : register(coverageCandidate, 'coverage'),
+          rejections,
+        };
+      });
+      if (outcome.registered === null && outcome.rejections.length > 0) {
+        yield* recordAttachRejections(attachment, outcome.rejections);
       }
-      return coverageCandidate === null ? null : register(coverageCandidate, 'coverage');
+      return outcome.registered;
     });
 
   const removeAttachment = (job: Job, attachment: Attachment): Effect.Effect<boolean> =>
@@ -470,6 +569,55 @@ export const makeAttachmentRuntime = (deps: AttachmentRuntimeDeps): AttachmentRu
     });
 
   /**
+   * Cargo's `Finished` line means every unit in the leader's plan compiled,
+   * the rider's among them: a `--no-run` rider would print that line and
+   * exit 0 right there. Released with the leader's compile time so far as
+   * the measured compute it did not spend; the leader's exit — a test
+   * failure, a kill mid-run — is no longer the rider's concern.
+   */
+  const releaseBuildFinishedAttachments = (job: Job, atMs: number): Effect.Effect<void> =>
+    Effect.gen(function* () {
+      const released = yield* Effect.sync(() => {
+        const proven: Attachment[] = [];
+        for (const attachment of job.attachments.values()) {
+          if (attachment.mode === 'coverage' && isBuildOnlyIntent(attachment.intent)) {
+            proven.push(attachment);
+          }
+        }
+        for (const attachment of proven) {
+          job.attachments.delete(attachment.ticket);
+          directory.remove(attachment.ticket);
+        }
+        return proven;
+      });
+      if (released.length === 0) {
+        return;
+      }
+      yield* Effect.logDebug('released --no-run riders at build finished', {
+        count: released.length,
+        leader: job.ticket,
+      });
+      const leaderBuildMs = leaderRunMsAt(job, atMs);
+      // Released from the stdout pump, like the demux releases: a ledger or
+      // metric defect must not surface as a pump failure.
+      yield* Effect.forEach(
+        released,
+        (attachment) =>
+          settlementStep(
+            `build-finished release (${attachment.ticket})`,
+            finishAttachmentWithNote(
+              attachment,
+              atMs,
+              `[cargo-hauler] released early: build finished under ${job.ticket}; --no-run has nothing left to do\n`,
+              { status: 'done', exitCode: 0, signal: null, error: null },
+              servedSavings(attachment, atMs, leaderBuildMs, job.startedAtMs),
+            ),
+          ),
+        { discard: true },
+      );
+    });
+
+  /**
    * Follow-up after tryRegisterAttachment wins: ledger the attach, and if
    * the leader is already running, deliver the start notice and replay
    * catch-up, then re-check early release — the demand may already be
@@ -525,6 +673,12 @@ export const makeAttachmentRuntime = (deps: AttachmentRuntimeDeps): AttachmentRu
         yield* replayThenGoLive(leader, attachment);
       }
       yield* releaseSatisfiedAttachments(leader);
+      // The registration frame refuses coverage riders once the build is
+      // finished, but the build can finish between that frame and this
+      // follow-up; a `--no-run` rider caught in that window is proven too.
+      if (leader.buildFinishedAtMs !== null) {
+        yield* releaseBuildFinishedAttachments(leader, leader.buildFinishedAtMs);
+      }
     });
 
   const handleStdoutLine = (job: Job, line: string): Effect.Effect<void> => {
@@ -718,6 +872,7 @@ export const makeAttachmentRuntime = (deps: AttachmentRuntimeDeps): AttachmentRu
     tryRegisterAttachment,
     removeAttachment,
     releaseSatisfiedAttachments,
+    releaseBuildFinishedAttachments,
     completeAttachRegistration,
     handleStdoutLine,
     detachAll,

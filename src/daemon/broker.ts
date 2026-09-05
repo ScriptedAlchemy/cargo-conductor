@@ -12,6 +12,7 @@ import * as ChildProcessSpawner from 'effect/unstable/process/ChildProcessSpawne
 
 import {
   attachModeMetric,
+  attachRejectionMetric,
   cargoRunByKindMetric,
   cargoRunKinds,
   cargoRunMetric,
@@ -630,6 +631,7 @@ export const BrokerLive: Layer.Layer<
         );
         const jobOutcome = yield* Metric.value(jobOutcomeMetric);
         const attachMode = yield* Metric.value(attachModeMetric);
+        const attachRejections = yield* Metric.value(attachRejectionMetric);
         const waitSummary = yield* Metric.value(waitMsSummary);
         const nowMs = Date.now();
         const metricWindows = yield* ledger.metricsWindows(nowMs);
@@ -708,6 +710,7 @@ export const BrokerLive: Layer.Layer<
             cargo_run_ms_by_kind: Object.fromEntries(cargoRunByKind),
             job_outcome: Object.fromEntries(jobOutcome.occurrences),
             attach_mode: Object.fromEntries(attachMode.occurrences),
+            attach_rejections: Object.fromEntries(attachRejections.occurrences),
             wait_ms_summary: {
               count: waitSummary.count,
               min: waitSummary.count === 0 ? null : waitSummary.min,

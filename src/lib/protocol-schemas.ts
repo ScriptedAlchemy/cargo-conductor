@@ -148,6 +148,7 @@ const statusMetricsWindowSchema = z.object({
 
 const statusMetricsSchema = z.object({
   attach_mode: frequencyMetricSchema,
+  attach_rejections: frequencyMetricSchema.optional(),
   cargo_run_ms: histogramMetricSchema,
   cargo_run_ms_by_kind: z.record(z.string(), histogramMetricSchema).optional(),
   job_outcome: frequencyMetricSchema,
