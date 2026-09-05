@@ -123,6 +123,25 @@ const withoutRunPhaseArguments = (arguments_: readonly string[]): readonly strin
  * in feature resolution, profile, toolchain, target triple, or compilation
  * environment produces different artifacts and different diagnostics.
  */
+/**
+ * The compile surface as one comparable string: exactly the fields
+ * `sameCompileSurface` compares, so two intents share a key if and only if
+ * they share a surface. The lane scheduler keys its surface affinity on it.
+ */
+export const compileSurfaceKey = (intent: NormalizedCargoIntent): string =>
+  JSON.stringify([
+    intent.workspaceRoot,
+    intent.targetDir,
+    intent.toolchain,
+    intent.envDigest,
+    intent.profile,
+    intent.targetTriple,
+    intent.allFeatures,
+    intent.noDefaultFeatures,
+    intent.features,
+    intent.manifestPath ?? '',
+  ]);
+
 export const sameCompileSurface = (
   left: NormalizedCargoIntent,
   right: NormalizedCargoIntent,

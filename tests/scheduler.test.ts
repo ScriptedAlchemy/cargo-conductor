@@ -295,3 +295,39 @@ describe('heavy-profile cap', () => {
     ).toEqual({ defer: true, reason: 'memory-soft' });
   });
 });
+
+describe('surface affinity', () => {
+  it('scores a candidate on another compile surface as 1.5x its estimate', () => {
+    const same = scheduleScore(candidate({ id: 1, surfaceSwitch: false }));
+    const switching = scheduleScore(candidate({ id: 2, surfaceSwitch: true }));
+    const unknown = scheduleScore(candidate({ id: 3 }));
+    expect(switching).toBeCloseTo(same * 1.5, 6);
+    expect(unknown).toBe(same);
+  });
+
+  it('keeps the lane on its current surface unless the switch is clearly cheaper', () => {
+    // Equal estimates: the same-surface candidate runs first even though the
+    // switching one arrived earlier.
+    expect(
+      selectNextIndex([
+        candidate({ id: 1, surfaceSwitch: true }),
+        candidate({ id: 2, surfaceSwitch: false }),
+      ]),
+    ).toBe(1);
+    // A switch that is half the work still wins: shortest-job-first is not
+    // overridden by affinity, only weighted.
+    expect(
+      selectNextIndex([
+        candidate({ estimateMs: 60_000, id: 1, surfaceSwitch: true }),
+        candidate({ estimateMs: 120_000, id: 2, surfaceSwitch: false }),
+      ]),
+    ).toBe(0);
+    // Age escape still applies to a switching candidate.
+    expect(
+      selectNextIndex([
+        candidate({ ageMs: 60_000, id: 1, surfaceSwitch: true }),
+        candidate({ id: 2, surfaceSwitch: false }),
+      ]),
+    ).toBe(0);
+  });
+});

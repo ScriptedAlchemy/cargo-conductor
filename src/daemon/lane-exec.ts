@@ -22,6 +22,7 @@ import {
   withExtraPackages,
 } from './batch.js';
 import { createBuildPhaseDetector, executionSubcommands } from './build-phase.js';
+import { compileSurfaceKey } from './coverage.js';
 import {
   attachModeMetric,
   cargoRunByKindMetric,
@@ -98,6 +99,11 @@ export interface Lane {
    * hold no lane slot — only their admission permit, until they settle.
    */
   readonly executing: Set<string>;
+  /**
+   * `compileSurfaceKey` of the last leader this lane started; candidates on
+   * another surface are scheduled as costlier (see `scheduler.ts`).
+   */
+  lastSurfaceKey: string | null;
   /**
    * The job the worker took from `pending`, from the batch window through
    * settlement. While it is parked at the load gate or on the permit it is
@@ -315,7 +321,9 @@ export const makeLaneRuntime = (deps: LaneRuntimeDeps): Effect.Effect<LaneRuntim
         const nowMs = Date.now();
         const ready = lane.pending.filter(isSchedulable);
         const index = selectNextIndex(
-          ready.map((candidate) => scheduleCandidate(candidate, lane.pending, nowMs)),
+          ready.map((candidate) =>
+            scheduleCandidate(candidate, lane.pending, nowMs, lane.lastSurfaceKey),
+          ),
         );
         const next = index === -1 ? undefined : ready[index];
         if (next !== undefined) {
@@ -711,6 +719,7 @@ export const makeLaneRuntime = (deps: LaneRuntimeDeps): Effect.Effect<LaneRuntim
         const outputPath = job.log?.path ?? null;
         yield* Effect.sync(() => {
           lane.running = job.ticket;
+          lane.lastSurfaceKey = compileSurfaceKey(job.intent);
         });
         // execArgv already carries the demux flag and any batch-folded -p
         // packages: this is the invocation the ledger reports as "ran as".
@@ -1055,6 +1064,7 @@ export const makeLaneRuntime = (deps: LaneRuntimeDeps): Effect.Effect<LaneRuntim
             wake,
             running: null,
             executing: new Set<string>(),
+            lastSurfaceKey: null,
             head: null,
           };
           lanes.set(key, lane);
@@ -1085,6 +1095,7 @@ export const makeLaneRuntime = (deps: LaneRuntimeDeps): Effect.Effect<LaneRuntim
       candidate: Job,
       pending: readonly Job[],
       nowMs: number,
+      lastSurfaceKey: string | null,
     ) {
       let unblocks = 0;
       for (const other of pending) {
@@ -1107,6 +1118,8 @@ export const makeLaneRuntime = (deps: LaneRuntimeDeps): Effect.Effect<LaneRuntim
         unblocks,
         ageMs: nowMs - candidate.queuedAtMs,
         editedRecently: candidate.editedRecently,
+        surfaceSwitch:
+          lastSurfaceKey !== null && compileSurfaceKey(candidate.intent) !== lastSurfaceKey,
       };
     }
 
@@ -1118,7 +1131,7 @@ export const makeLaneRuntime = (deps: LaneRuntimeDeps): Effect.Effect<LaneRuntim
       while (remaining.length > 0) {
         const index = selectNextIndex(
           remaining.map((candidate) =>
-            scheduleCandidate(candidate, [...remaining, ...blocked], nowMs),
+            scheduleCandidate(candidate, [...remaining, ...blocked], nowMs, lane.lastSurfaceKey),
           ),
         );
         if (index === -1) {

@@ -45,3 +45,43 @@ describe('lane scheduler', () => {
       );
     }));
 });
+
+describe('surface affinity', () => {
+  it.live('runs the request on the surface the lane just built ahead of an older one that would switch', () =>
+    Effect.gen(function* () {
+      const fixture = yield* scopedDaemon(1);
+      // The holder builds with feature `alpha`; while it runs, a request
+      // without the feature arrives first and one with it arrives second.
+      // Both carry the same default estimate, so only affinity separates them.
+      yield* execRequest(fixture, {
+        argv: ['cargo', 'check', '-p', 'holder', '--features', 'alpha'],
+        cwd: fixture.ws1,
+        isTerminal: (message) => message.type === 'started',
+        sleep: '0.5',
+      });
+      const switchingFiber = yield* Effect.forkChild(
+        execRequest(fixture, { argv: ['cargo', 'check', '-p', 'plain'], cwd: fixture.ws1 }),
+      );
+      yield* Effect.sleep('40 millis');
+      const affineFiber = yield* Effect.forkChild(
+        execRequest(fixture, {
+          argv: ['cargo', 'check', '-p', 'featured', '--features', 'alpha'],
+          cwd: fixture.ws1,
+        }),
+      );
+      const [switchingMessages, affineMessages] = yield* Effect.all([
+        Fiber.join(switchingFiber),
+        Fiber.join(affineFiber),
+      ]);
+      const switching = findExit(switchingMessages);
+      const affine = findExit(affineMessages);
+      const report = yield* pollReport(fixture, (candidate) =>
+        [switching.ticket, affine.ticket].every((ticket) =>
+          candidate.recent.some((record) => record.ticket === ticket && record.status === 'done'),
+        ),
+      );
+      const startedAt = (ticket: string) =>
+        report.recent.find((record) => record.ticket === ticket)?.startedAtMs ?? Number.NaN;
+      expect(startedAt(affine.ticket)).toBeLessThan(startedAt(switching.ticket));
+    }));
+});
