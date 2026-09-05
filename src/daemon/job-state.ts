@@ -310,8 +310,11 @@ export const diagnosticFinishFields = (
  * Demultiplexing rewrites the invocation to `--message-format=
  * json-diagnostic-rendered-ansi` so per-unit completion can be observed.
  * Skipped when the caller already chose a message format (their stream is
- * forwarded verbatim, unparsed) or passes trailing `--` arguments whose
- * semantics we do not model.
+ * forwarded verbatim, unparsed). A `--` trailer (`cargo clippy … -- -D
+ * warnings`) does not disable it: the flag is a cargo option and goes
+ * before the `--`, and the trailer's lint levels show up in the JSON
+ * stream as the diagnostic levels the demux already attributes per unit
+ * (#86).
  */
 export const planDemux = (
   intent: NormalizedCargoIntent,
@@ -319,13 +322,14 @@ export const planDemux = (
 ): { readonly execArgv: readonly string[]; readonly demux: DemuxState | null } => {
   const eligible =
     demuxSubcommands.has(intent.subcommand) &&
-    !argv.some((argument) => argument.startsWith('--message-format')) &&
-    !argv.includes('--');
+    !argv.some((argument) => argument.startsWith('--message-format'));
   if (!eligible) {
     return { execArgv: argv, demux: null };
   }
+  const passthroughIndex = argv.indexOf('--');
+  const insertAt = passthroughIndex === -1 ? argv.length : passthroughIndex;
   return {
-    execArgv: [...argv, cargoJsonDemuxFlag],
+    execArgv: [...argv.slice(0, insertAt), cargoJsonDemuxFlag, ...argv.slice(insertAt)],
     demux: {
       unitKinds: new Map(),
       libErrors: new Set(),

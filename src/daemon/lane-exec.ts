@@ -314,8 +314,11 @@ export const makeLaneRuntime = (deps: LaneRuntimeDeps): Effect.Effect<LaneRuntim
     /**
      * Absorbs other queued compatible jobs onto `leader` as batch
      * attachments. Every composite is the leader's argv plus the followers'
-     * `-p` flags; test/nextest composites also add `--no-fail-fast`, and
-     * admit only followers with the leader's exact test selection (#53).
+     * `-p` flags; test/nextest composites also add `--no-fail-fast` and,
+     * for `cargo test`, the followers' extra name filters, admitting only
+     * followers with the leader's `--test` targets and harness flags (#53,
+     * #87); compile composites keep the leader's `--` trailer, so only
+     * followers with the same trailer join (#86).
      *
      * Only `queued` candidates fold: a pending job already in
      * `kill-requested` (disconnect cleanup leaves it in the lane) would
@@ -430,6 +433,7 @@ export const makeLaneRuntime = (deps: LaneRuntimeDeps): Effect.Effect<LaneRuntim
             case 'nextest':
               leader.execArgv = composeTestFoldArgv(
                 leader.execArgv,
+                leader.intent,
                 absorbed.map((job) => job.intent),
               );
               break;
