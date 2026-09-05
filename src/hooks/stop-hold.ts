@@ -39,12 +39,7 @@ export interface StopHoldServices {
 // are clamped, since the wire schema rejects a larger `maxWaitMs` outright
 // and every ticket would then read as unfinished.
 const defaultMaxWaitMs = (() => {
-  const parsed = Number.parseInt(
-    process.env.CARGO_HAULER_STOP_WAIT_MS ??
-      process.env.CARGO_CONDUCTOR_STOP_WAIT_MS ??
-      '',
-    10,
-  );
+  const parsed = Number.parseInt(process.env.CARGO_HAULER_STOP_WAIT_MS ?? '', 10);
   return Number.isInteger(parsed) && parsed > 0 ? Math.min(parsed, awaitCeilingMs) : 30_000;
 })();
 const defaultMaxDenyCount = 8;

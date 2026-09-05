@@ -58,8 +58,8 @@ export const projectBeforeShellResult = (
 /**
  * The `tool/before` hook entry every host pack registers for its shell tool
  * (`hooks.beforeTool` in `agent-bundle.config.ts`). It decides on the raw
- * command string first: a command that names neither cargo, hauler, nor
- * conductor is `continue` — no decision, the host's own flow — before the
+ * command string first: a command that names neither cargo nor hauler is
+ * `continue` — no decision, the host's own flow — before the
  * rewrite machinery is even evaluated. Everything else is the same
  * `handleBeforeShell` the event route used to call: the rewrite onto
  * `hauler exec`, the `cargo clean` guard, the telemetry record.

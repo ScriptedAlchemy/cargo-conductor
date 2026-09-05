@@ -156,14 +156,6 @@ describe('daemon config platform posture', () => {
     ).toEqual([]);
   });
 
-  it('names the legacy alias in the warning when that is the variable set', () => {
-    const { warnings } = resolveDaemonConfigWithWarnings({
-      CARGO_CONDUCTOR_MAX_CONCURRENT: 'abc',
-    });
-    expect(warnings).toHaveLength(1);
-    expect(warnings[0]).toContain('CARGO_CONDUCTOR_MAX_CONCURRENT');
-  });
-
   it('disables pressure arms with 0 or off without warning', () => {
     const { config, warnings } = resolveDaemonConfigWithWarnings(
       {
@@ -275,35 +267,6 @@ describe('daemon config platform posture', () => {
     });
     expect(invalid.config).toMatchObject({ ledgerMaxRows: 50_000, ledgerRetentionDays: 30 });
     expect(invalid.warnings).toHaveLength(2);
-  });
-
-  it('retains legacy tuning aliases because they cannot change state identity', () => {
-    const legacy = resolveDaemonConfig({
-      CARGO_CONDUCTOR_BATCH: '0',
-      CARGO_CONDUCTOR_BATCH_WINDOW_MS: '275',
-      CARGO_CONDUCTOR_CPU_PRESSURE_THRESHOLD: '0',
-      CARGO_CONDUCTOR_JOBS_GRANT: '7',
-      CARGO_CONDUCTOR_LOAD_MIN: '3',
-      CARGO_CONDUCTOR_LOAD_THRESHOLD: '1.5',
-      CARGO_CONDUCTOR_MAX_CONCURRENT: '4',
-      CARGO_CONDUCTOR_REPLAY_BUFFER_BYTES: '2048',
-    });
-    expect(legacy).toMatchObject({
-      batchEnabled: false,
-      batchWindowMs: 275,
-      cpuStallThreshold: null,
-      jobsGrant: 7,
-      loadMinConcurrent: 3,
-      loadThresholdPerCore: 1.5,
-      maxConcurrent: 4,
-      replayBufferBytes: 2048,
-    });
-
-    const preferred = resolveDaemonConfig({
-      CARGO_CONDUCTOR_MAX_CONCURRENT: '4',
-      CARGO_HAULER_MAX_CONCURRENT: '6',
-    });
-    expect(preferred.maxConcurrent).toBe(6);
   });
 });
 

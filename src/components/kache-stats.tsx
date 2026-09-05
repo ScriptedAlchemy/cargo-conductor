@@ -17,34 +17,23 @@ export interface KacheStatsProps {
 
 /**
  * Store size against kache's limit, the last GC, `key_ms`, and the warnings
- * an operator should act on (over the limit, evictions skipped). A daemon
- * that predates the report says so instead of showing an empty panel.
+ * an operator should act on (over the limit, evictions skipped). Each line
+ * says why a value is unknown rather than leaving it blank.
  */
-const KachePressure = ({ pressure }: { readonly pressure: KachePressureModel }) => {
-  switch (pressure.kind) {
-    case 'unavailable':
-      return <UnavailableState what="kache store pressure">daemon predates the store-pressure report; upgrade it to see size, GC and key_ms.</UnavailableState>;
-    case 'available':
-      return (
-        <>
-          <DataList
-            fields={[
-              { label: 'store', value: pressure.store.text },
-              { label: 'last GC', value: pressure.gc },
-              { label: 'keying', value: pressure.keyTiming },
-            ]}
-          />
-          {pressure.warnings.map((warning) => (
-            <Agent.Context key={warning.kind}>{`kache warning: ${warning.text}`}</Agent.Context>
-          ))}
-        </>
-      );
-    default: {
-      const exhaustive: never = pressure;
-      return exhaustive;
-    }
-  }
-};
+const KachePressure = ({ pressure }: { readonly pressure: KachePressureModel }) => (
+  <>
+    <DataList
+      fields={[
+        { label: 'store', value: pressure.store.text },
+        { label: 'last GC', value: pressure.gc },
+        { label: 'keying', value: pressure.keyTiming },
+      ]}
+    />
+    {pressure.warnings.map((warning) => (
+      <Agent.Context key={warning.kind}>{`kache warning: ${warning.text}`}</Agent.Context>
+    ))}
+  </>
+);
 
 /**
  * Optional kache index: freshness, coverage, store pressure, and the slowest

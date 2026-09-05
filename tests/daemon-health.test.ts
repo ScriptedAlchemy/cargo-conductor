@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createServer, type Server, type Socket } from 'node:net';
 
+import { version } from 'agent-bundle/meta';
 import { describe, expect, it } from 'effect-rstest';
 import * as Effect from 'effect/Effect';
 
@@ -120,7 +121,7 @@ describe('probeDaemonHealth', () => {
       expect(health.state === 'unreachable' ? health.detail : '').toContain('EACCES');
     }).pipe(Effect.scoped, Effect.runPromise), 10_000);
 
-  it.live('reports a live broker as running with its permit, rider, queue, and lane summary', () =>
+  it.live('reports a live broker as running with its version, permit, rider, queue, and lane summary', () =>
     Effect.gen(function* () {
       const fixture = yield* scopedDaemon(3);
       const health = yield* Effect.promise(() => probeDaemonHealth(fixture.config));
@@ -131,6 +132,8 @@ describe('probeDaemonHealth', () => {
         riding: 0,
         running: 0,
         state: 'running',
+        // Straight off the status report: the probe is one round trip, never a follow-up ping.
+        version,
       });
       expect(health.state === 'running' ? health.pid : -1).toBeGreaterThan(0);
     }));

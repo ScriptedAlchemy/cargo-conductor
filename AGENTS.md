@@ -21,9 +21,8 @@
   component and a view-model.
 - Documents must stay honest: a daemon the probe could not reach renders as
   `stopped`/`unresponsive` with its typed reason, never as an empty success.
-- Names are `hauler` / `cargo-hauler` / `CARGO_HAULER_*`. `CARGO_CONDUCTOR_*`
-  survives only as a read-only compat alias for tuning values; never add a new
-  one, and never honor it for state, socket, or database location.
+- Names are `hauler` / `cargo-hauler` / `CARGO_HAULER_*`. No other prefix is
+  read; never add an alias.
 
 ## Effect version
 

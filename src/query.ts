@@ -23,18 +23,10 @@ import { stripAnsi } from './lib/ansi.js';
 import { shortId } from './lib/id.js';
 import { statusReportSchema, type DaemonStatus } from './lib/protocol-schemas.js';
 import { countWord } from './lib/text.js';
-import {
-  learnDaemonVersion,
-  validateDaemonReply,
-  versionSkewLine,
-  type DaemonVersionSkewError,
-} from './lib/version-skew.js';
 
 export interface HaulerSnapshot {
   readonly active: readonly RequestRecord[];
   readonly daemon: DaemonStatus;
-  /** The running daemon's release version, when it stated one (report or pong); absent when stopped. */
-  readonly daemonVersion?: string;
   readonly kache?: KacheStatusReport | null;
   readonly lanes: readonly LaneStatus[];
   readonly maxConcurrent: number | null;
@@ -79,7 +71,7 @@ export const stalledGuidance = (
 
 /**
  * `hauler result` / `hauler_result` explanation for a ticket the daemon
- * restart ended (#75): it was not killed by anyone and did not fail on its
+ * restart ended: it was not killed by anyone and did not fail on its
  * own, so a plain `killed` would send the reader looking for a cause.
  */
 export const orphanedGuidance = (
@@ -135,11 +127,10 @@ const stoppedSummary = (recentCount: number): string => {
   return `cargo-hauler daemon is not running; ${countWord(recentCount, 'recorded request')}`;
 };
 
-const runningSummary = (report: StatusReport, daemonVersion: string | undefined): string => {
+const runningSummary = (report: StatusReport): string => {
   const queued = report.lanes.reduce((sum, lane) => sum + lane.queued, 0);
   const running = report.active.filter((record) => record.status === 'running').length;
-  const skew = versionSkewLine(daemonVersion);
-  return `cargo-hauler daemon is running (pid ${report.pid}); ${queued} queued, ${running} running${skew === null ? '' : `; ${skew}`}`;
+  return `cargo-hauler daemon is running (pid ${report.pid}); ${queued} queued, ${running} running`;
 };
 
 /** Keep the internal raw report off the strict public status-result object spread. */
@@ -152,47 +143,38 @@ const withReport = (
     value: report,
   }) as HaulerSnapshot;
 
-const fromReport = (
-  report: StatusReport,
-  config: DaemonConfigShape,
-  daemonVersion: string | undefined,
-): HaulerSnapshot =>
+const fromReport = (report: StatusReport, config: DaemonConfigShape): HaulerSnapshot =>
   withReport(
     {
       active: report.active,
       daemon: 'running',
-      ...(daemonVersion === undefined ? {} : { daemonVersion }),
-      ...(report.kache === undefined ? {} : { kache: report.kache }),
-      ...(report.system === undefined ? {} : { system: report.system }),
+      kache: report.kache,
       lanes: report.lanes,
       maxConcurrent: report.maxConcurrent,
-      ...(report.metrics === undefined ? {} : { metrics: report.metrics }),
-      ...(report.savings === undefined ? {} : { savings: report.savings }),
+      metrics: report.metrics,
       pid: report.pid,
       recent: report.recent,
+      savings: report.savings,
       socketPath: report.socketPath,
       startedAtMs: report.startedAtMs,
       stateRoot: config.stateDir,
-      summary: runningSummary(report, daemonVersion),
+      summary: runningSummary(report),
+      system: report.system,
     },
     report,
   );
 
 /**
- * A live daemon's report, read with the lenient client schema so a daemon
- * left running across an upgrade still answers (#75). A report that does not
- * fit fails as version skew; the daemon's version rides the report from
- * 0.4.5 on and is fetched with one ping from older daemons.
+ * A live daemon's report, validated with the strict client schema. Mixed
+ * versions are unsupported — the client replaces a daemon of another build
+ * before submitting work to it — so a report that does not fit is a protocol
+ * defect between same-version peers (the `ZodError` dies), not a condition
+ * the reader is told about.
  */
-const fromLiveReport = (
-  raw: unknown,
-  config: DaemonConfigShape,
-): Effect.Effect<HaulerSnapshot, DaemonVersionSkewError> =>
-  Effect.gen(function* () {
-    const report = yield* validateDaemonReply(statusReportSchema, raw, config.socketPath);
-    const daemonVersion = yield* learnDaemonVersion(report, config.socketPath);
-    return fromReport(report, config, daemonVersion);
-  });
+const fromLiveReport = (raw: unknown, config: DaemonConfigShape): Effect.Effect<HaulerSnapshot> =>
+  Effect.sync(() => statusReportSchema.parse(raw)).pipe(
+    Effect.map((report) => fromReport(report, config)),
+  );
 
 const emptyStopped = (config: DaemonConfigShape): HaulerSnapshot =>
   withReport(
@@ -259,13 +241,10 @@ const fromLedger = (
 };
 
 /**
- * Fails only with `DaemonVersionSkew`: a daemon that answered with a report
- * this build cannot read. Every other way of not reaching the daemon is a
- * snapshot that says so (`stopped`, `unresponsive`).
+ * Never fails: every way of not reaching the daemon is a snapshot that says
+ * so (`stopped`, `unresponsive`), with the ledger standing in for the report.
  */
-export const loadHaulerSnapshot = (
-  options: LoadSnapshotOptions = {},
-): Effect.Effect<HaulerSnapshot, DaemonVersionSkewError> => {
+export const loadHaulerSnapshot = (options: LoadSnapshotOptions = {}): Effect.Effect<HaulerSnapshot> => {
   const config = options.config ?? resolveDaemonConfig();
   const recentLimit = options.recentLimit ?? defaultRecentLimit;
   return requestExpecting(

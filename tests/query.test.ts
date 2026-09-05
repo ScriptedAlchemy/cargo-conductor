@@ -2,6 +2,7 @@ import { mkdirSync } from 'node:fs';
 import { createServer, type Server, type Socket } from 'node:net';
 import { join } from 'node:path';
 
+import { version } from 'agent-bundle/meta';
 import { describe, expect, it } from 'effect-rstest';
 import * as Effect from 'effect/Effect';
 import * as Schedule from 'effect/Schedule';
@@ -115,6 +116,9 @@ const coloredRecord: RequestRecord = {
   outputTail: `${esc}[0m\n ${esc}[1m${esc}[94m--> ${esc}[0msrc/lib.rs:3:5\n`,
   queuedAtMs: 1,
   runMs: 1,
+  savedComputeMs: null,
+  savedComputeSource: null,
+  savedLatencyMs: null,
   session: null,
   signal: null,
   startedAtMs: 1,
@@ -164,6 +168,7 @@ describe('status scoping', () => {
   });
 
   it('distinguishes an unresponsive daemon from a stopped one in the header', () => {
+    expect(statusSummary('running', [], [])).toBe('cargo-hauler daemon is running; 0 active, 0 recent');
     expect(statusSummary('unresponsive', [running], [])).toContain(
       'daemon is up but did not answer in time',
     );
@@ -392,7 +397,9 @@ describe('loadHaulerSnapshot', () => {
       expect(snapshot.daemon).toBe('running');
       expect(snapshot.pid).toBe(process.pid);
       expect(snapshot.report?.pid).toBe(process.pid);
-      expect(snapshot.summary).toContain('daemon is running');
+      // The report states the daemon's version; the snapshot itself carries no version field.
+      expect(snapshot.report?.version).toBe(version);
+      expect(snapshot.summary).toBe(`cargo-hauler daemon is running (pid ${process.pid}); 0 queued, 0 running`);
     }),
     30_000,
   );

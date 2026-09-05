@@ -169,10 +169,7 @@ Daemon socket and ledger live under a per-user cache directory:
 `$XDG_CACHE_HOME/cargo-hauler` when `XDG_CACHE_HOME` is set, otherwise
 `~/.cache/cargo-hauler` on Linux, `~/Library/Caches/cargo-hauler` on
 macOS, and `%LOCALAPPDATA%\cargo-hauler` on Windows. Set
-`CARGO_HAULER_STATE_DIR` to relocate it. The pre-rename
-`CARGO_CONDUCTOR_STATE_DIR` is not honored; hand-run commands warn when it is
-still exported (see
-[incidents/2026-09-01-state-identity-split-brain.md](incidents/2026-09-01-state-identity-split-brain.md)).
+`CARGO_HAULER_STATE_DIR` to relocate it.
 
 kache is optional. When `CARGO_HAULER_KACHE_INDEX` is unset, the daemon
 reads kache's own config (`$XDG_CONFIG_HOME/kache/config.toml`, else

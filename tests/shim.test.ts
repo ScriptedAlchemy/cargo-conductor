@@ -70,15 +70,19 @@ describe('PATH cargo shim', () => {
     }
   });
 
-  it('retains the legacy recursion marker because it cannot change state identity', () => {
+  it('lets cargo spawned by the daemon itself straight through on the one recursion marker', () => {
     const script = renderCargoShim({
       haulerArgv: ['hauler'],
       realCargo: '/usr/bin/cargo',
     });
+    // The executor sets CARGO_HAULER_INSIDE=1 on every child it spawns; that
+    // is the only marker, and forwarding such a cargo would hand the broker's
+    // own work back to the broker.
     expect(script).toContain(
-      'if [ -n "${CARGO_HAULER_INSIDE:-}" ] || [ -n "${CARGO_CONDUCTOR_INSIDE:-}" ]; then',
+      'if [ -n "${CARGO_HAULER_INSIDE:-}" ]; then\n  exec /usr/bin/cargo "$@"\nfi\n',
     );
-    expect(script).toContain('  exec /usr/bin/cargo "$@"');
+    // No second guard variable of any spelling.
+    expect(script.match(/CARGO_[A-Z_]+_INSIDE/gu)).toEqual(['CARGO_HAULER_INSIDE']);
   });
 
   it('installs an executable shim and refuses to clobber a foreign cargo by default', () => {

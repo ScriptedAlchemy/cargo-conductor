@@ -27,17 +27,14 @@ export interface KacheStoreLine {
   readonly limitSource: string | null;
 }
 
-export type KachePressureModel =
-  | { readonly kind: 'unavailable'; readonly reason: 'older-daemon' }
-  | {
-      readonly kind: 'available';
-      readonly store: KacheStoreLine;
-      /** Last GC in one line, or why it is unknown. */
-      readonly gc: string;
-      /** `key_ms` distribution, or null when the events tail carried none. */
-      readonly keyTiming: string | null;
-      readonly warnings: readonly KachePressureWarning[];
-    };
+export interface KachePressureModel {
+  readonly store: KacheStoreLine;
+  /** Last GC in one line, or why it is unknown. */
+  readonly gc: string;
+  /** `key_ms` distribution, or null when the events tail carried none. */
+  readonly keyTiming: string | null;
+  readonly warnings: readonly KachePressureWarning[];
+}
 
 const limitUnknownText = (limit: Extract<KacheStoreLimitReport, { kind: 'unknown' }>): string => {
   switch (limit.reason) {
@@ -140,12 +137,9 @@ const warnings = (pressure: KacheStorePressureReport, store: KacheStoreLine): re
 };
 
 export const kachePressureModel = (
-  pressure: KacheStorePressureReport | undefined,
+  pressure: KacheStorePressureReport,
   nowMs: number,
 ): KachePressureModel => {
-  if (pressure === undefined) {
-    return { kind: 'unavailable', reason: 'older-daemon' };
-  }
   const store = storeLine(pressure);
   return {
     gc: gcLine(pressure.gc, nowMs),
@@ -153,7 +147,6 @@ export const kachePressureModel = (
       pressure.keyTiming === null
         ? null
         : `key_ms mean ${formatMs(pressure.keyTiming.meanMs)} · p95 ${formatMs(pressure.keyTiming.p95Ms)} (n=${pressure.keyTiming.count})`,
-    kind: 'available',
     store,
     warnings: warnings(pressure, store),
   };

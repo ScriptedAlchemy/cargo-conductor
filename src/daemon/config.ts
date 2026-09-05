@@ -173,7 +173,7 @@ const writeWarningToStderr: ConfigWarningSink = (warning) => {
   process.stderr.write(`[cargo-hauler] ${warning}\n`);
 };
 
-/** One environment variable read through its preferred name or legacy alias. */
+/** One environment variable, by name, with its raw value (if set). */
 interface EnvValue {
   readonly name: string;
   readonly raw: string | undefined;
@@ -230,19 +230,10 @@ const isDisableToken = (raw: string): boolean => disableTokens.has(raw.trim().to
 const falseTokens = new Set(['0', 'false', 'off', 'no']);
 const trueTokens = new Set(['1', 'true', 'on', 'yes']);
 
-const pick = (
-  env: Readonly<Record<string, string | undefined>>,
-  preferred: string,
-  legacy?: string,
-): EnvValue => {
-  if (env[preferred] !== undefined) {
-    return { name: preferred, raw: env[preferred] };
-  }
-  if (legacy !== undefined && env[legacy] !== undefined) {
-    return { name: legacy, raw: env[legacy] };
-  }
-  return { name: preferred, raw: undefined };
-};
+const pick = (env: Readonly<Record<string, string | undefined>>, name: string): EnvValue => ({
+  name,
+  raw: env[name],
+});
 
 /**
  * Builds the parsing helpers around one warning sink so an unparseable or
@@ -332,15 +323,12 @@ export const resolveDaemonConfigWithWarnings = (
     warnings.push(warning);
   });
   const stateDir = resolveStateDir(env);
-  // Legacy aliases remain compatible only when a stale value cannot select
-  // persistent daemon identity. Tuning values and the read-only kache index
-  // are safe; state, socket, and database locations accept CARGO_HAULER_* only.
   const maxConcurrent = number(
-    pick(env, 'CARGO_HAULER_MAX_CONCURRENT', 'CARGO_CONDUCTOR_MAX_CONCURRENT'),
+    pick(env, 'CARGO_HAULER_MAX_CONCURRENT'),
     defaultMaxConcurrentFor(cores),
     { integer: true, min: 1 },
   );
-  const kacheIndexValue = env.CARGO_HAULER_KACHE_INDEX ?? env.CARGO_CONDUCTOR_KACHE_INDEX;
+  const kacheIndexValue = env.CARGO_HAULER_KACHE_INDEX;
   // Divide the cores between the admitted builds so N concurrent cargos do
   // not each assume they own the whole machine (rheo's grant idea).
   const defaultJobsGrant = Math.max(4, Math.floor(cores / maxConcurrent));
@@ -405,7 +393,7 @@ export const resolveDaemonConfigWithWarnings = (
       { integer: true, min: 0 },
     ),
     replayBufferBytes: number(
-      pick(env, 'CARGO_HAULER_REPLAY_BUFFER_BYTES', 'CARGO_CONDUCTOR_REPLAY_BUFFER_BYTES'),
+      pick(env, 'CARGO_HAULER_REPLAY_BUFFER_BYTES'),
       defaultReplayBufferBytes,
       { integer: true, min: 0 },
     ),
@@ -413,28 +401,24 @@ export const resolveDaemonConfigWithWarnings = (
     // reports kache as unavailable, so no machine needs the path to exist.
     kacheIndexPath: kacheIndexValue ?? defaultKacheIndexPath(env),
     jobsGrant: number(
-      pick(env, 'CARGO_HAULER_JOBS_GRANT', 'CARGO_CONDUCTOR_JOBS_GRANT'),
+      pick(env, 'CARGO_HAULER_JOBS_GRANT'),
       defaultJobsGrant,
       { integer: true, min: 0 },
     ),
-    batchEnabled: flag(pick(env, 'CARGO_HAULER_BATCH', 'CARGO_CONDUCTOR_BATCH'), true),
+    batchEnabled: flag(pick(env, 'CARGO_HAULER_BATCH'), true),
     batchWindowMs: number(
-      pick(env, 'CARGO_HAULER_BATCH_WINDOW_MS', 'CARGO_CONDUCTOR_BATCH_WINDOW_MS'),
+      pick(env, 'CARGO_HAULER_BATCH_WINDOW_MS'),
       defaultBatchWindowMs,
       { integer: true, min: 0 },
     ),
     overlapExecution: flag(pick(env, 'CARGO_HAULER_OVERLAP_EXECUTION'), true),
-    loadThresholdPerCore: optionalNumber(
-      pick(env, 'CARGO_HAULER_LOAD_THRESHOLD', 'CARGO_CONDUCTOR_LOAD_THRESHOLD'),
-      null,
-    ),
-    loadMinConcurrent: number(
-      pick(env, 'CARGO_HAULER_LOAD_MIN', 'CARGO_CONDUCTOR_LOAD_MIN'),
-      defaultLoadMinConcurrent,
-      { integer: true, min: 1 },
-    ),
+    loadThresholdPerCore: optionalNumber(pick(env, 'CARGO_HAULER_LOAD_THRESHOLD'), null),
+    loadMinConcurrent: number(pick(env, 'CARGO_HAULER_LOAD_MIN'), defaultLoadMinConcurrent, {
+      integer: true,
+      min: 1,
+    }),
     cpuStallThreshold: optionalNumber(
-      pick(env, 'CARGO_HAULER_CPU_PRESSURE_THRESHOLD', 'CARGO_CONDUCTOR_CPU_PRESSURE_THRESHOLD'),
+      pick(env, 'CARGO_HAULER_CPU_PRESSURE_THRESHOLD'),
       defaultCpuStallThreshold,
       { max: 100 },
     ),

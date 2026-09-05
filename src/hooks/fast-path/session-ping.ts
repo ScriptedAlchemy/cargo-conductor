@@ -37,7 +37,7 @@ export interface SessionPingOptions {
  * `unavailable` value, not an error.
  *
  * The wire shape is exactly the one `listSessionCompleted` in `rpc.ts`
- * sends, so an older or newer daemon sees one and the same client.
+ * sends: one client on the wire, whichever entry point built the message.
  */
 export const pingSessionCompleted = async (
   session: string,

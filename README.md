@@ -81,7 +81,7 @@ checkout? See [Install](#install).
 | `hauler result <ticket> [--full]` | A stored ticket; running tickets include a live output tail. The document names the full on-disk output log (`Full output: <path> (size)`) and `--json` carries it as `request.outputPath`; `--full` prints that whole log instead of the tail (the last ~768 KiB when it does not fit, with the path for the rest). |
 | `hauler kill <ticket>` | Stop a ticket: drop it from the queue or SIGTERM (then SIGKILL) its cargo process group, freeing the lane. Riders return to their lane or fail with it. |
 | `hauler request [--session ID] [--host HOST] [--cwd DIR] [--after TICKET …] -- <cargo …>` | Submit a background request and return its ticket, with where it landed in its lane (`queued behind cc-3281 (~13m)`, `waiting for cc-3281`, or `attached to cc-3281`). `--after` works as for `exec`. |
-| `hauler daemon <run\|start\|stop\|status\|restart>` | Manage the daemon lifecycle. `restart` sends the graceful stop, waits up to 5 s for the old pid to exit, then starts a daemon from this install and prints both (`restarted: pid 741314 (0.4.1) → pid 742001 (0.4.4)`); a daemon that has not exited by then is reported, not killed, and nothing is started (exit `1`). Tickets in flight at the restart are not handed over: the new daemon marks them `killed` with the error `orphaned by daemon restart`. |
+| `hauler daemon <run\|start\|stop\|status\|restart>` | Manage the daemon lifecycle. `restart` is the manual replacement: it sends the graceful stop, waits up to 5 s for the old pid to exit, then starts a daemon from this install and prints both (`restarted: pid 741314 (0.6.0) → pid 742001 (0.6.1)`); a daemon that has not exited by then is reported, not killed, and nothing is started (exit `1`). Tickets in flight at the restart are not handed over: the new daemon marks them `killed` with the error `orphaned by daemon restart`. After upgrading the package, the next `hauler exec`, `hauler request`, hook rewrite, or `hauler daemon start` replaces a daemon from the previous install automatically the same way; when the old daemon has not exited within the grace, that call fails with `` cargo-hauler daemon pid N (X.Y.Z) is still running 5s after the shutdown request; not restarted — retry once it has exited, or stop it with `hauler daemon stop` `` instead of starting a second daemon. |
 | `hauler install-shim [--dir DIR] [--real-cargo PATH] [--force]` | Install the optional PATH shim. |
 | `hauler dashboard [--target claude\|codex\|cursor\|portable] [--port N] [--no-open]` | Open the dashboard in a plain browser tab: serve the MCP App standalone against the plugin's own `hauler` server on `127.0.0.1` (through `agent-bundle serve-app`), call `hauler_status` once so it opens populated, and stay in the foreground until Ctrl-C. A checkout command: it needs the built `artifact/` beside the CLI and `agent-bundle` under `node_modules` (`pnpm install && pnpm build`); the npm package ships no runtime dependencies and an installed host pack has no artifact, so both report what is missing. In an MCP host, call `hauler_status` instead. |
 
@@ -132,8 +132,8 @@ command.
 
 Both shell hooks run on every shell tool call, so they decide cheaply before
 they do anything else. The `tool/before` entry reads `tool_input.command` and
-answers `continue` for a command with no `cargo`, `hauler`, or `conductor`
-word in it (word-boundary aware: `mycargo` and `CARGO_HOME=… ls` are not
+answers `continue` for a command with no `cargo` or `hauler` word in it
+(word-boundary aware: `mycargo` and `CARGO_HOME=… ls` are not
 matches, `~/.cargo/bin/cargo`, `cargo-hauler`, and `echo cargo` are — a false
 negative would bypass the broker, so anything that looks like a mention takes
 the full path). Only a matching command evaluates the parser and the rewrite.
@@ -374,16 +374,11 @@ with the daemon, and the new daemon's first ledger pass marks each of them
 `killed` with the error `orphaned by daemon restart`, so `hauler result cc-N`
 answers `cc-N killed — orphaned by daemon restart: the daemon stopped while it
 was in flight and does not hand runs over; resubmit if the work is still
-needed` rather than looking like a failure of the command itself. Restart when
-the CLI or plugin was upgraded under a running daemon: every document then
-carries `daemon 0.4.2 ≠ cli 0.4.4 — restart it with \`hauler daemon restart\``,
-and a reply the newer client still cannot read is reported as `daemon is 0.4.2
-(pid N, since 3h ago), this CLI is 0.4.4 — restart it with \`hauler daemon
-restart\`` with the first schema mismatch on a second line — never as a raw
-validation dump. The client schemas default the fields older daemons never
-send (`outputPath`, `after`), so a plain version difference alone does not
-break `status`, `result`, or `await`; finish or `hauler kill` what is in
-flight before restarting if the work matters.
+needed` rather than looking like a failure of the command itself. After
+upgrading the package, the next `hauler exec`, `hauler request`, or hook call
+replaces a daemon from the previous install automatically the same way — its
+in-flight tickets end `killed` (`orphaned by daemon restart`) and callers
+resubmit — so finish or `hauler kill` what matters before upgrading.
 
 The `tool/after` hook checks the session's background tickets — `--bg`,
 `hauler_request`, and synchronous requests the client converted to a ticket
@@ -418,11 +413,11 @@ scripted Cargo through the broker again.
 ### Caller environment
 
 `hauler exec` (and therefore the shim and the hook rewrites) forwards the
-caller's whole environment to the daemon, except the `CARGO_HAULER_*` and
-legacy `CARGO_CONDUCTOR_*` settings, which configure the broker itself. The
-daemon lays the forwarded variables over its own environment when it spawns
-Cargo, so `FOO=bar cargo build` reaches `build.rs`, `env!()`, `cargo run`, and
-`cargo test` processes exactly as a direct invocation would. Request identity
+caller's whole environment to the daemon, except the `CARGO_HAULER_*`
+settings, which configure the broker itself. The daemon lays the forwarded
+variables over its own environment when it spawns Cargo, so `FOO=bar cargo build`
+reaches `build.rs`, `env!()`, `cargo run`, and `cargo test` processes exactly
+as a direct invocation would. Request identity
 for coalescing is digested from the build-relevant subset only (`CARGO_*`,
 `RUST*`, `CC`/`CXX`/`AR`/`CFLAGS`/`CXXFLAGS`/`LDFLAGS` with target-suffixed
 forms, and `PKG_CONFIG_PATH`); pass knobs a `build.rs` reads through
@@ -546,7 +541,7 @@ Per-host notes and hook timeouts are in [docs/install.md](docs/install.md).
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `CARGO_HAULER_STATE_DIR` | Per-user cache directory | Unix socket or Windows named pipe source, SQLite ledger, daemon log, pid lock, `hook-state.json`, `hook-events.jsonl`, and the per-ticket output logs under `tickets/`. No legacy alias. |
+| `CARGO_HAULER_STATE_DIR` | Per-user cache directory | Unix socket or Windows named pipe source, SQLite ledger, daemon log, pid lock, `hook-state.json`, `hook-events.jsonl`, and the per-ticket output logs under `tickets/`. |
 | `CARGO_HAULER_CARGO_BIN` | `$CARGO_HOME/bin/cargo` | Cargo binary for daemon-started work; bare `cargo` is the last fallback. Never resolved through `PATH`. Read from the daemon's own environment (export it where the daemon starts, or before `hauler daemon start`); clients do not forward it. |
 | `CARGO_HAULER_MAX_CONCURRENT` | cores ÷ 8, clamped to 5–16 | Global admission permits for Cargo processes across all lanes; an integer >= 1. |
 | `CARGO_HAULER_OVERLAP_EXECUTION` | `1` | Hand a lane to its next request once a `test`/`nextest`/`bench`/`run` leader reports its build finished, overlapping the next compile with the leader's execution phase. `0` keeps a lane strictly one process at a time. |
@@ -579,10 +574,6 @@ Per-host notes and hook timeouts are in [docs/install.md](docs/install.md).
 A numeric value that does not parse or falls outside its range is reported
 as a warning (daemon log, or stderr for hand-run commands) and the default
 applies; only `0` or `off` disables an arm that documents that contract.
-Each `CARGO_HAULER_*` tuning value takes precedence over its retained legacy
-`CARGO_CONDUCTOR_*` alias; `CARGO_CONDUCTOR_STATE_DIR` is ignored and hand-run
-commands warn when it is still exported (see
-[docs/incidents/2026-09-01-state-identity-split-brain.md](docs/incidents/2026-09-01-state-identity-split-brain.md)).
 The state directory defaults to `$XDG_CACHE_HOME/cargo-hauler`, otherwise
 `~/.cache/cargo-hauler` on Linux, `~/Library/Caches/cargo-hauler` on macOS, and
 `%LOCALAPPDATA%\cargo-hauler` on Windows. When `CARGO_HAULER_KACHE_INDEX` is
@@ -602,8 +593,9 @@ unset, the daemon reads kache's configured local store from
   `hauler_await` fail loudly when the daemon is unreachable instead of
   reporting a ticket as not found; `hauler_status`, `hauler_log`, and
   `hauler_last` read the ledger with the daemon marked `stopped` or
-  `unresponsive`. A daemon whose reply the client cannot read fails as a
-  version difference naming both versions and `hauler daemon restart`.
+  `unresponsive`. None of these documents replaces a daemon left running by
+  a previous install: they read the daemon that is there, and the next
+  `hauler exec`, `hauler request`, or hook call replaces it.
 - The state directory is not migrated between installs. Every rendered
   document names the one in use (`state dir …` in the header; `stateRoot` in
   `--json`), so a `CARGO_HAULER_STATE_DIR` change is visible on the next
@@ -670,9 +662,7 @@ through one layout, the way a page framework's `layout.tsx` wraps every page:
   2/5 permits +1 riding, 1 queued · 2 lanes busy · up since 3h ago · state dir
   /fast/cache/cargo-hauler`, or `daemon stopped · no socket; it starts on
   demand…`, or `daemon unresponsive · did not accept a connection within
-  750ms (machine saturated)…`. When the daemon is another build than the CLI
-  or MCP server rendering the document, a second line says so: `cargo-hauler
-  · daemon 0.4.2 ≠ cli 0.4.4 — restart it with \`hauler daemon restart\``.
+  750ms (machine saturated)…`.
 - **Body:** the route's own document, unchanged. The route keeps its
   `<Agent.Result value>`; the runtime merges it into the shell so
   `structuredContent` and `--json` are exactly what the route declared.
@@ -711,7 +701,7 @@ and a `health` value from one bounded `status` probe:
 
 | `health.state` | meaning |
 | --- | --- |
-| `running` | `pid`, `startedAtMs`, `latencyMs`, `running` (permit holders), `riding` (attached), `queued`, `busyLanes`, `maxConcurrent`, and `version` when the daemon states one (on the status report from 0.4.5, by one extra `ping` for older daemons) |
+| `running` | `pid`, `startedAtMs`, `latencyMs`, `running` (permit holders), `riding` (attached), `queued`, `busyLanes`, `maxConcurrent`, and `version` (the daemon's release version) |
 | `stopped` | `socket-missing` (starts on demand) or `connection-refused` (stale socket) |
 | `unresponsive` | `accept-timeout` (never accepted), `answer-timeout` (accepted, no `status-result`), or `connection-closed` within the probe budget (750 ms for the accept and for the answer); ledger reads still work |
 | `unreachable` | `open-failed` with the errno (`EACCES`, `EMFILE`, …): the socket is present but could not be opened, which is not evidence the daemon is down |
@@ -784,7 +774,7 @@ the same filter as its `session` field). Results carry
 | `tool:hauler/hauler_result` · `cli:result` | one ticket, live tail while running; `full` renders the whole on-disk output log | `ResultDocument` (`<FullOutput>`) |
 | `tool:hauler/hauler_kill` · `cli:kill` | stop a queued or running ticket | `KillDocument` |
 | `tool:hauler/hauler_request` · `cli:request` | submit a background request | `RequestDocument` |
-| `cli:daemon` | `run` / `start` / `stop` / `status` | plain JSON, exit code from the result |
+| `cli:daemon` | `run` / `start` / `stop` / `status` / `restart` | plain JSON, exit code from the result |
 | `event:session/start` | new session | daemon state and the no-kill rule as context |
 | `event:stop` | agent stopping | holds the stop while a foreground ticket is pending (bounded, re-deniable) |
 | `hooks.beforeTool` (`src/hooks/fast-path/shell-before.ts`) | shell tool about to run | `continue` without loading anything for a non-cargo command; otherwise rewrites `cargo …` to `hauler exec --session … --host … -- cargo …`, denies `cargo clean` during in-flight builds, brokers it while the daemon is too busy to answer |

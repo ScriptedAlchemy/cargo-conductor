@@ -17,6 +17,8 @@ import type {
   StatusMetricsHandBack,
   StatusMetricsPhaseSplit,
   StatusMetricsWaitSplit,
+  StatusMetricsWindow,
+  StatusMetricsWindowBySubcommand,
   StatusReport,
 } from '../daemon/protocol.js';
 
@@ -56,16 +58,18 @@ const stallReportSchema = z.object({
   since: z.number(),
 }) satisfies z.ZodType<StallReport>;
 
-// Daemon-sourced payloads deliberately STRIP unknown keys instead of
-// rejecting them (issue #4): plugin snapshots outlive daemon upgrades, and a
-// strict schema here turns every additive daemon field into a breaking
-// change for still-running MCP servers from older installs.
+// Daemon-sourced payloads keep zod's default of STRIPPING keys the schema
+// does not declare (issue #4). Every field the daemon sends is described
+// here, with one deliberate exception: the ledger's row mapper also emits
+// `buildFinishedAtMs`, a stamp only the metrics windows summarize, which the
+// record schema leaves out. A strict record schema would reject every
+// daemon row over it; stripping drops it at the client boundary instead.
 export const requestRecordSchema = z.object({
   argv: z.array(z.string()),
   attachMode: attachModeSchema.nullable(),
-  savedComputeMs: z.number().int().nonnegative().nullable().optional(),
-  savedComputeSource: savedComputeSourceSchema.nullable().optional(),
-  savedLatencyMs: z.number().int().nullable().optional(),
+  savedComputeMs: z.number().int().nonnegative().nullable(),
+  savedComputeSource: savedComputeSourceSchema.nullable(),
+  savedLatencyMs: z.number().int().nullable(),
   attachedTo: z.string().nullable(),
   createdAtMs: z.number(),
   cwd: z.string(),
@@ -84,10 +88,9 @@ export const requestRecordSchema = z.object({
   outputTailLive: z.boolean().optional(),
   /**
    * On-disk full output log (`<stateDir>/tickets/<ticket>.log`); null until
-   * the run starts. Daemons before 0.4.2 never send the field (#75): an
-   * absent path is "no log", the same as null.
+   * the run starts, and for requests that never ran.
    */
-  outputPath: z.string().nullable().default(null),
+  outputPath: z.string().nullable(),
   queuedAtMs: z.number().nullable(),
   runMs: z.number().nullable(),
   session: z.string().nullable(),
@@ -108,8 +111,8 @@ export const requestRecordSchema = z.object({
   estimateState: z.literal('overrun').optional(),
   p90Ms: z.number().nonnegative().optional(),
   execArgv: z.array(z.string()).nullable(),
-  // Daemons before `--after` never send the list; an absent field is "no prerequisites".
-  after: z.array(z.string()).default([]),
+  /** Tickets this request was submitted `--after`; empty when it had no prerequisites. */
+  after: z.array(z.string()),
   queue: queueContextSchema.optional(),
   waitingFor: z.array(prerequisiteContextSchema).optional(),
   delayed: z.boolean().optional(),
@@ -123,7 +126,7 @@ const laneStatusSchema = z.object({
   key: z.string(),
   queued: z.number().int(),
   runningTicket: z.string().nullable(),
-  executingTickets: z.array(z.string()).optional(),
+  executingTickets: z.array(z.string()),
   targetDir: z.string(),
   workspaceRoot: z.string(),
 }) satisfies z.ZodType<LaneStatus>;
@@ -147,12 +150,13 @@ const statusMetricsPhaseSplitSchema = z.object({
 
 const statusMetricsWindowBySubcommandSchema = z.object({
   subcommand: z.string(),
-  profile: z.string().optional(),
+  profile: z.string(),
   count: z.number().int().nonnegative(),
   p50Ms: z.number().nullable(),
   maxMs: z.number().nullable(),
-  phases: statusMetricsPhaseSplitSchema.nullable().optional(),
-});
+  // Null when no leader of this population carries the build-finished stamp.
+  phases: statusMetricsPhaseSplitSchema.nullable(),
+}) satisfies z.ZodType<StatusMetricsWindowBySubcommand>;
 
 const statusMetricsWaitSplitSchema = z.object({
   count: z.number().int().nonnegative(),
@@ -179,29 +183,26 @@ const statusMetricsWindowSchema = z.object({
   waitP50Ms: z.number().nullable(),
   waitP95Ms: z.number().nullable(),
   bySubcommand: z.array(statusMetricsWindowBySubcommandSchema),
-  // Additive since 0.5.1 (#92); daemons before it never send these.
-  runTotalMs: z.number().nonnegative().optional(),
-  waitTotalMs: z.number().nonnegative().optional(),
-  waitSplit: statusMetricsWaitSplitSchema.optional(),
-  handBack: statusMetricsHandBackSchema.optional(),
-});
+  runTotalMs: z.number().nonnegative(),
+  waitTotalMs: z.number().nonnegative(),
+  waitSplit: statusMetricsWaitSplitSchema,
+  handBack: statusMetricsHandBackSchema,
+}) satisfies z.ZodType<StatusMetricsWindow>;
 
 const statusMetricsSchema = z.object({
   attach_mode: frequencyMetricSchema,
-  attach_rejections: frequencyMetricSchema.optional(),
+  attach_rejections: frequencyMetricSchema,
   cargo_run_ms: histogramMetricSchema,
-  cargo_run_ms_by_kind: z.record(z.string(), histogramMetricSchema).optional(),
+  cargo_run_ms_by_kind: z.record(z.string(), histogramMetricSchema),
   job_outcome: frequencyMetricSchema,
-  windows: z.array(statusMetricsWindowSchema).optional(),
-  wait_ms_summary: z
-    .object({
-      count: z.number().int().nonnegative(),
-      max: z.number().nullable(),
-      min: z.number().nullable(),
-      quantiles: z.array(z.tuple([z.number(), z.number().nullable()])),
-      sum: z.number(),
-    })
-    .optional(),
+  windows: z.array(statusMetricsWindowSchema),
+  wait_ms_summary: z.object({
+    count: z.number().int().nonnegative(),
+    max: z.number().nullable(),
+    min: z.number().nullable(),
+    quantiles: z.array(z.tuple([z.number(), z.number().nullable()])),
+    sum: z.number(),
+  }),
 }) satisfies z.ZodType<StatusMetrics>;
 
 const systemLoadSchema = z.object({
@@ -222,7 +223,8 @@ const systemLoadSchema = z.object({
   memSomeAvg10: z.number().nonnegative().optional(),
   memAvailableBytes: z.number().int().nonnegative().optional(),
   memPressureLevel: z.union([z.literal(1), z.literal(2), z.literal(4)]).optional(),
-  memClamp: z.enum(['none', 'soft', 'hard']).optional(),
+  memClamp: z.enum(['none', 'soft', 'hard']),
+  // Absent when the heavy-leader cap is disabled.
   heavy: z
     .object({
       capActive: z.boolean(),
@@ -294,8 +296,7 @@ const kacheStatusSchema = z.object({
     ms: z.number().nonnegative(),
     profile: z.string(),
   })),
-  // Additive since 0.5.1 (#92).
-  pressure: kacheStorePressureSchema.optional(),
+  pressure: kacheStorePressureSchema,
 }) satisfies z.ZodType<KacheStatusReport>;
 
 const savingsModeSchema = z.object({
@@ -322,20 +323,21 @@ const savingsSchema = z.object({
   totals: savingsTotalsSchema,
 });
 
+/** The daemon's `status-result` report: every section is present on every reply. */
 export const statusReportSchema = z.object({
   active: z.array(requestRecordSchema),
-  kache: kacheStatusSchema.nullable().optional(),
-  savings: savingsSchema.optional(),
-  system: systemLoadSchema.optional(),
+  // Null when kache is not configured or its index has not been read yet.
+  kache: kacheStatusSchema.nullable(),
+  savings: savingsSchema,
+  system: systemLoadSchema,
   lanes: z.array(laneStatusSchema),
   maxConcurrent: z.number().int(),
-  metrics: statusMetricsSchema.optional(),
+  metrics: statusMetricsSchema,
   pid: z.number().int(),
   recent: z.array(requestRecordSchema),
   socketPath: z.string(),
   startedAtMs: z.number(),
-  // Daemons before 0.4.5 report their version only on `pong`.
-  version: z.string().optional(),
+  version: z.string(),
 }) satisfies z.ZodType<StatusReport>;
 
 
@@ -357,11 +359,14 @@ export const statusInputSchema = z
   })
   .strict();
 
+/**
+ * The `hauler status` document. The daemon-only sections (`kache`, `savings`,
+ * `system`, `metrics`) come from the report of a daemon the probe reached;
+ * a `stopped` or `unresponsive` daemon yields none of them.
+ */
 export interface StatusResult {
   readonly active: readonly RequestRecord[];
   readonly daemon: DaemonStatus;
-  /** The running daemon's release version when it stated one; compare with the CLI's to spot skew (#75). */
-  readonly daemonVersion?: string;
   readonly kache?: KacheStatusReport | null;
   readonly savings?: AttachmentSavingsReport;
   readonly system?: SystemLoadReport;
@@ -395,7 +400,10 @@ export interface DaemonResult {
   readonly message: string;
   readonly operation: 'daemon';
   readonly pid: number | null;
-  /** `restart` only: the pid that was serving before the restart, null when none was. */
+  /**
+   * `restart`, and a `start` that had to replace a daemon of another version:
+   * the pid that was serving before, null when none was.
+   */
   readonly previousPid?: number | null;
   readonly report: StatusReport | null;
   readonly running: boolean;
@@ -407,7 +415,6 @@ export const statusResultSchema = z
   .object({
     active: z.array(requestRecordSchema),
     daemon: daemonStatusSchema,
-    daemonVersion: z.string().optional(),
     kache: kacheStatusSchema.nullable().optional(),
     savings: savingsSchema.optional(),
     system: systemLoadSchema.optional(),

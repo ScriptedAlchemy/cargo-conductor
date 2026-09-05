@@ -33,8 +33,8 @@ Commands:
       Run cargo through the hauler daemon; --after queues it until those
       tickets finish (it fails if one of them fails or is killed)
   daemon <run|start|stop|status|restart>
-      Control the hauler daemon; restart replaces a daemon left running from
-      an older install (in-flight tickets end as "orphaned by daemon restart")
+      Control the hauler daemon; restart replaces the running daemon
+      (in-flight tickets end as "orphaned by daemon restart")
   install-shim [--dir DIR] [--real-cargo PATH] [--force]
       Install an optional PATH cargo shim
   status | log | last | await <ticket> | result <ticket> | request [--after TICKET] -- <cargo command> | dashboard
@@ -61,23 +61,6 @@ const defaultWriteStdout = (data: Uint8Array): void => {
 
 const defaultWriteStderr = (data: string | Uint8Array): void => {
   process.stderr.write(data);
-};
-
-/**
- * `exec` is the shim/hook hot path: its stderr lands in an agent's tool output
- * on every cargo call, so the reminder about the removed variable is only
- * printed for commands a person runs by hand.
- */
-export const warnRemovedLegacyStateDir = (
-  argv: readonly string[],
-  env: Readonly<Record<string, string | undefined>> = process.env,
-  writeStderr: (data: string | Uint8Array) => void = defaultWriteStderr,
-): void => {
-  if (argv[0] !== 'exec' && env.CARGO_CONDUCTOR_STATE_DIR !== undefined) {
-    writeStderr(
-      'warning: CARGO_CONDUCTOR_STATE_DIR is no longer supported; use CARGO_HAULER_STATE_DIR instead.\n',
-    );
-  }
 };
 
 /**
@@ -135,10 +118,8 @@ const runExecCommand = async (argv: readonly string[], options: ScriptOptions): 
     writeStdout: options.writeStdout ?? defaultWriteStdout,
   };
   const exec = options.runExec ?? runExecClient;
-  // The hauler names win; legacy conductor host/session settings remain valid
-  // for existing operator wrappers.
-  const envHost = process.env.CARGO_HAULER_HOST ?? process.env.CARGO_CONDUCTOR_HOST;
-  const envSession = process.env.CARGO_HAULER_SESSION ?? process.env.CARGO_CONDUCTOR_SESSION;
+  const envHost = process.env.CARGO_HAULER_HOST;
+  const envSession = process.env.CARGO_HAULER_SESSION;
   const session = parsed.session ?? envSession;
   return Effect.runPromise(
     exec({
@@ -292,7 +273,5 @@ export const runScript = async (
  * envelope probes the process's terminal once and hands it in as `context`
  * (agent-bundle#511), so `exec` never inspects `process.stdout` itself.
  */
-export const main = async (argv: readonly string[], context: ExecutableMainContext): Promise<number> => {
-  warnRemovedLegacyStateDir(argv);
-  return runScript(argv, { terminal: context.terminal });
-};
+export const main = async (argv: readonly string[], context: ExecutableMainContext): Promise<number> =>
+  runScript(argv, { terminal: context.terminal });

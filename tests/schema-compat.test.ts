@@ -13,17 +13,29 @@ import {
   ticketInputSchema,
 } from '../src/lib/protocol-schemas.js';
 
+/**
+ * A settled row exactly as the ledger's row mapper serializes it
+ * (`toRequestRecord` in src/daemon/ledger.ts): every column present, the
+ * nullable ones null, `after` an empty list. The live-only fields (`queue`,
+ * `waitingFor`, `stall`, ...) are overlaid on active rows and absent here.
+ */
 const baseRecord = {
+  after: [],
   argv: ['cargo', 'check'],
   attachMode: null,
   attachedTo: null,
+  background: false,
+  buildFinishedAtMs: null,
   createdAtMs: 1,
   cwd: '/ws',
   diagnostics: null,
   error: null,
   errorCount: null,
+  estimateMs: null,
+  execArgv: null,
   exitCode: 0,
   finishedAtMs: 2,
+  holdStop: false,
   host: 'cursor',
   id: 1,
   intentJson: null,
@@ -33,6 +45,9 @@ const baseRecord = {
   outputTail: null,
   queuedAtMs: 1,
   runMs: 1,
+  savedComputeMs: null,
+  savedComputeSource: null,
+  savedLatencyMs: null,
   session: null,
   signal: null,
   startedAtMs: 1,
@@ -42,13 +57,6 @@ const baseRecord = {
   waitMs: 0,
   warningCount: null,
   workspaceRoot: '/ws',
-  background: false,
-  holdStop: false,
-  estimateMs: null,
-  execArgv: null,
-  savedComputeMs: null,
-  savedComputeSource: null,
-  savedLatencyMs: null,
 };
 
 const savings = {
@@ -91,66 +99,203 @@ const savings = {
   },
 };
 
-/**
- * A record exactly as a 0.4.1 daemon serializes it (`git show
- * v0.4.1:src/lib/protocol-schemas.ts`): no `outputPath` (0.4.2, #68), no
- * `after`/`waitingFor` (0.4.4, #45), no `stall`/`orphaned` (0.4.3, #46). A
- * CLI upgraded under a still-running older daemon must read these (#75).
- */
-const { outputPath: _legacyOutputPath, ...legacyDaemonRecord } = baseRecord;
+const histogram = (value: number) => ({
+  buckets: [[1_000, 1], [null, 1]],
+  count: 1,
+  max: value,
+  min: value,
+  sum: value,
+});
 
-const legacyDaemonReport = {
-  active: [{ ...legacyDaemonRecord, exitCode: null, finishedAtMs: null, status: 'running', ticket: 'cc-3518' }],
-  lanes: [{ key: '["/ws","/ws/target"]', queued: 0, runningTicket: 'cc-3518', targetDir: '/ws/target', workspaceRoot: '/ws' }],
-  maxConcurrent: 5,
-  pid: 741314,
-  recent: [legacyDaemonRecord],
-  socketPath: '/home/me/.cache/cargo-hauler/daemon.sock',
-  startedAtMs: 1,
-  system: { clampThresholdPerCore: null, cores: 16, loadAvg1: 3.2 },
+/** One window as `metricsWindows` (src/daemon/ledger.ts) returns it; the broker adds the id. */
+const metricsWindow = (id: 'hour' | 'day' | 'all') => ({
+  id,
+  count: 12,
+  done: 9,
+  failed: 2,
+  killed: 1,
+  runP50Ms: 1_200,
+  runP95Ms: 5_900,
+  runMeanMs: 1_800,
+  waitP50Ms: 110,
+  waitP95Ms: 640,
+  bySubcommand: [
+    { subcommand: 'check', profile: 'dev', count: 7, p50Ms: 900, maxMs: 2_300, phases: null },
+    {
+      subcommand: 'test',
+      profile: 'test',
+      count: 5,
+      p50Ms: 2_100,
+      maxMs: 5_900,
+      phases: {
+        count: 5,
+        compileP50Ms: 1_500,
+        executeP50Ms: 600,
+        compileTotalMs: 8_000,
+        executeTotalMs: 3_200,
+      },
+    },
+  ],
+  runTotalMs: 21_600,
+  waitTotalMs: 2_400,
+  waitSplit: { count: 12, laneBoundMs: 1_800, permitBoundMs: 400, otherMs: 200, permits: 5 },
+  handBack: { leaders: 5, laneReleasedMs: 3_200 },
+});
+
+const metrics = {
+  attach_mode: { identity: 1 },
+  attach_rejections: { subcommand: 2 },
+  cargo_run_ms: histogram(12),
+  cargo_run_ms_by_kind: { check: histogram(12) },
+  job_outcome: { done: 1 },
+  wait_ms_summary: {
+    count: 1,
+    max: 500,
+    min: 500,
+    quantiles: [[0.5, 500], [0.9, 500], [0.95, 500]],
+    sum: 500,
+  },
+  windows: [metricsWindow('hour'), metricsWindow('day'), metricsWindow('all')],
 };
 
-describe('legacy daemon replies (issue #75)', () => {
-  it('parses a 0.4.1-shaped status report with today\'s schema, defaulting the fields it lacks', () => {
-    const parsed = statusReportSchema.parse(legacyDaemonReport);
-    expect(parsed.active[0]?.outputPath).toBeNull();
-    expect(parsed.active[0]?.after).toEqual([]);
-    expect(parsed.active[0]?.waitingFor).toBeUndefined();
-    expect(parsed.active[0]?.stall).toBeUndefined();
-    expect(parsed.active[0]?.orphaned).toBeUndefined();
-    expect(parsed.recent[0]?.outputPath).toBeNull();
-    expect(parsed.system?.heavy).toBeUndefined();
-    expect(parsed.version).toBeUndefined();
-  });
+const kache = {
+  available: true,
+  distinctCrates: 2,
+  entryCount: 3,
+  eventsFreshMs: 750,
+  indexSizeBytes: 4_096,
+  recentHeartbeatRoots: [{ count: 2, root: '/srv/projects/alpha' }],
+  topCrates: [{ crate: 'alpha', ms: 12_000, profile: 'release' }],
+  pressure: {
+    storeBytes: 2 * 1024 ** 3,
+    limit: { kind: 'known', bytes: 20 * 1024 ** 3, source: '/home/me/.config/kache/config.toml' },
+    gc: { kind: 'unavailable', reason: 'missing' },
+    keyTiming: null,
+  },
+};
 
-  it('parses a 0.4.1-shaped result and await reply with today\'s schema', () => {
-    const result = resultFetchResultSchema.parse({
-      operation: 'result',
-      request: legacyDaemonRecord,
-      summary: 'cc-1 done',
-      ticket: 'cc-1',
-    });
-    expect(result.request?.outputPath).toBeNull();
-    const awaited = awaitResultSchema.parse({
-      operation: 'await',
-      request: legacyDaemonRecord,
-      summary: 'cc-1 done',
-      ticket: 'cc-1',
-      timedOut: false,
-    });
-    expect(awaited.request?.after).toEqual([]);
-  });
+/** `system` with only the fields every platform reports; the /proc and macOS samples are added per test. */
+const system = { clampThresholdPerCore: null, cores: 16, loadAvg1: 3.2, memClamp: 'none' };
 
-  it('carries the daemon version on a status report from a current daemon', () => {
-    const parsed = statusReportSchema.parse({ ...legacyDaemonReport, version: '0.4.4' });
-    expect(parsed.version).toBe('0.4.4');
-  });
-});
+/** A status report exactly as the daemon answers `status`: the broker's report plus the server's `version`. */
+const report = {
+  active: [
+    { ...baseRecord, exitCode: null, finishedAtMs: null, runMs: null, status: 'running', ticket: 'cc-2' },
+  ],
+  kache,
+  lanes: [
+    {
+      key: '["/ws","/ws/target"]',
+      queued: 0,
+      runningTicket: 'cc-2',
+      executingTickets: [],
+      targetDir: '/ws/target',
+      workspaceRoot: '/ws',
+    },
+  ],
+  maxConcurrent: 5,
+  metrics,
+  pid: 42,
+  recent: [baseRecord],
+  savings,
+  socketPath: '/tmp/cc/daemon.sock',
+  startedAtMs: 1,
+  system,
+  version: '0.6.0',
+};
+
+const { version: _daemonVersion, ...reportBody } = report;
+
+/** The `hauler status` document built from a report the probe reached. */
+const runningResult = {
+  ...reportBody,
+  daemon: 'running',
+  operation: 'status',
+  stateRoot: '/tmp/cc',
+  summary: 'running',
+};
+
+/** The `hauler status` document when no daemon answered: no report, so none of its sections. */
+const stoppedResult = {
+  active: [],
+  daemon: 'stopped',
+  lanes: [],
+  maxConcurrent: null,
+  operation: 'status',
+  pid: null,
+  recent: [],
+  socketPath: '/tmp/cc/daemon.sock',
+  startedAtMs: null,
+  stateRoot: '/tmp/cc',
+  summary: 'stopped',
+};
 
 describe('CLI status filter literal', () => {
   it('spells exactly the protocol request statuses (the validator needs the literal, AB4814)', () => {
     const statusFilter = cliStatusInputSchema.shape.status.unwrap().element;
     expect([...statusFilter.options]).toEqual([...requestStatuses]);
+  });
+});
+
+describe('status report contract', () => {
+  it('parses a full status report from the current daemon', () => {
+    const parsed = statusReportSchema.parse(report);
+    expect(parsed.version).toBe('0.6.0');
+    expect(parsed.metrics).toEqual(metrics);
+    expect(parsed.system).toEqual(system);
+    expect(parsed.savings).toEqual(savings);
+    expect(parsed.kache).toEqual(kache);
+    expect(parsed.lanes).toEqual(report.lanes);
+    expect(parsed.active[0]?.status).toBe('running');
+    expect(parsed.recent[0]?.after).toEqual([]);
+    expect(parsed.recent[0]?.outputPath).toBeNull();
+    expect(parsed.recent[0]?.savedComputeMs).toBeNull();
+  });
+
+  it('rejects a report without the daemon version', () => {
+    expect(statusReportSchema.safeParse(reportBody).success).toBe(false);
+  });
+
+  it('rejects a report missing any of its sections', () => {
+    for (const section of ['kache', 'metrics', 'savings', 'system'] as const) {
+      const { [section]: _omitted, ...withoutSection } = report;
+      expect(statusReportSchema.safeParse(withoutSection).success).toBe(false);
+    }
+  });
+
+  it('carries a null kache while kache is disabled or unread', () => {
+    expect(statusReportSchema.parse({ ...report, kache: null }).kache).toBeNull();
+  });
+
+  it('rejects a record without outputPath or after', () => {
+    const { outputPath: _outputPath, ...withoutOutputPath } = baseRecord;
+    expect(requestRecordSchema.safeParse(withoutOutputPath).success).toBe(false);
+    const { after: _after, ...withoutAfter } = baseRecord;
+    expect(requestRecordSchema.safeParse(withoutAfter).success).toBe(false);
+  });
+
+  it('rejects a metrics window without its totals and splits', () => {
+    for (const field of ['runTotalMs', 'waitTotalMs', 'waitSplit', 'handBack'] as const) {
+      const { [field]: _omitted, ...window } = metricsWindow('hour');
+      expect(
+        statusReportSchema.safeParse({ ...report, metrics: { ...metrics, windows: [window] } }).success,
+      ).toBe(false);
+    }
+  });
+
+  it('lets the status document omit the daemon-only sections when no daemon answered', () => {
+    const stopped = statusResultSchema.parse(stoppedResult);
+    expect(stopped.daemon).toBe('stopped');
+    expect(stopped.metrics).toBeUndefined();
+    expect(stopped.system).toBeUndefined();
+    expect(stopped.savings).toBeUndefined();
+    expect(stopped.kache).toBeUndefined();
+
+    const running = statusResultSchema.parse(runningResult);
+    expect(running.metrics?.windows).toHaveLength(3);
+    expect(running.system?.memClamp).toBe('none');
+    expect(running.savings?.totals.savedComputeMs).toBe(16_800);
+    expect(running.kache?.pressure.limit).toEqual(kache.pressure.limit);
   });
 });
 
@@ -172,17 +317,7 @@ describe('status/result contract completeness (issue #16)', () => {
   };
 
   it('accepts diagnostics-bearing records under every durable status', () => {
-    const statuses = [
-      'requested',
-      'queued',
-      'running',
-      'done',
-      'failed',
-      'killed',
-      'denied',
-      'passthrough',
-    ] as const;
-    for (const status of statuses) {
+    for (const status of requestStatuses) {
       const parsed = requestRecordSchema.parse({ ...diagnosedRecord, status });
       expect(parsed.status).toBe(status);
       expect(parsed.errorCount).toBe(1);
@@ -226,14 +361,14 @@ describe('status/result contract completeness (issue #16)', () => {
       ticket: 'cc-1',
     });
     expect(parsed.request?.outputTailLive).toBe(true);
-    // Older daemons never send the flag; records without it still parse.
-    const withoutFlag = resultFetchResultSchema.parse({
+    // The flag is overlaid on in-flight rows only; a settled row has none.
+    const settled = resultFetchResultSchema.parse({
       operation: 'result',
       request: diagnosedRecord,
       summary: 'cc-1 failed',
       ticket: 'cc-1',
     });
-    expect(withoutFlag.request?.outputTailLive).toBeUndefined();
+    expect(settled.request?.outputTailLive).toBeUndefined();
   });
 
   it('accepts optional queue, delayed-wait, and quiet-output status fields', () => {
@@ -261,12 +396,13 @@ describe('status/result contract completeness (issue #16)', () => {
     });
     expect(running.quietMs).toBe(301_000);
 
-    const legacy = requestRecordSchema.parse(baseRecord);
-    expect(legacy.queue).toBeUndefined();
-    expect(legacy.delayed).toBeUndefined();
-    expect(legacy.quietMs).toBeUndefined();
-    expect(legacy.stall).toBeUndefined();
-    expect(legacy.orphaned).toBeUndefined();
+    // Live fields are overlaid while a request is active; a settled row carries none.
+    const settled = requestRecordSchema.parse(baseRecord);
+    expect(settled.queue).toBeUndefined();
+    expect(settled.delayed).toBeUndefined();
+    expect(settled.quietMs).toBeUndefined();
+    expect(settled.stall).toBeUndefined();
+    expect(settled.orphaned).toBeUndefined();
   });
 
   it('accepts the stall report and orphaned flag on a running record (#46)', () => {
@@ -295,10 +431,11 @@ describe('status/result contract completeness (issue #16)', () => {
     expect(overrun.phase).toBe('execute');
     expect(overrun.estimateState).toBe('overrun');
     expect(overrun.p90Ms).toBe(90_000);
-    const legacy = requestRecordSchema.parse(baseRecord);
-    expect(legacy.compileEstimateMs).toBeUndefined();
-    expect(legacy.estimateState).toBeUndefined();
-    expect(legacy.phase).toBeUndefined();
+    // Estimates and phase are computed for in-flight rows only.
+    const settled = requestRecordSchema.parse(baseRecord);
+    expect(settled.compileEstimateMs).toBeUndefined();
+    expect(settled.estimateState).toBeUndefined();
+    expect(settled.phase).toBeUndefined();
 
     const behindOverrun = requestRecordSchema.parse({
       ...baseRecord,
@@ -318,7 +455,7 @@ describe('status/result contract completeness (issue #16)', () => {
     expect(behindOverrun.queue?.headPhase).toBe('execute');
   });
 
-  it('accepts --after prerequisites and their live wait state, defaulting older daemons to none', () => {
+  it('accepts --after prerequisites and their live wait state', () => {
     const dependent = requestRecordSchema.parse({
       ...baseRecord,
       after: ['cc-3', 'cc-4'],
@@ -327,21 +464,17 @@ describe('status/result contract completeness (issue #16)', () => {
     });
     expect(dependent.after).toEqual(['cc-3', 'cc-4']);
     expect(dependent.waitingFor?.[0]?.ticket).toBe('cc-3');
-    // Daemons before `--after` send neither field.
-    const legacy = requestRecordSchema.parse(baseRecord);
-    expect(legacy.after).toEqual([]);
-    expect(legacy.waitingFor).toBeUndefined();
+    // `after` is stored on every row; `waitingFor` is overlaid only while prerequisites are unsettled.
+    const settled = requestRecordSchema.parse(baseRecord);
+    expect(settled.after).toEqual([]);
+    expect(settled.waitingFor).toBeUndefined();
   });
 
   it('accepts diagnosed records in status report active/recent lists', () => {
     const parsed = statusReportSchema.parse({
+      ...report,
       active: [{ ...diagnosedRecord, status: 'running' }],
-      lanes: [],
-      maxConcurrent: 5,
-      pid: 42,
       recent: [diagnosedRecord],
-      socketPath: '/tmp/cc/daemon.sock',
-      startedAtMs: 1,
     });
     expect(parsed.recent[0]?.diagnostics).toHaveLength(1);
     expect(parsed.active[0]?.status).toBe('running');
@@ -360,7 +493,7 @@ describe('status/result contract completeness (issue #16)', () => {
   });
 });
 
-describe('schema forward compatibility (issue #4)', () => {
+describe('daemon-sourced payload shape (issue #4)', () => {
   it('accepts structured status filters that replace CLI jq workarounds', () => {
     expect(
       statusInputSchema.parse({
@@ -381,209 +514,48 @@ describe('schema forward compatibility (issue #4)', () => {
     });
   });
 
-  it('strips unknown daemon fields instead of rejecting the record', () => {
-    const parsed = requestRecordSchema.parse({
-      ...baseRecord,
-      futureDaemonField: 'added by a newer daemon',
-    });
+  it('strips record keys the schema does not declare instead of rejecting the row', () => {
+    // The ledger's row mapper also emits `buildFinishedAtMs`, a stamp only the
+    // metrics windows summarize; the record schema leaves it out, so it is
+    // dropped at the client boundary.
+    const parsed = requestRecordSchema.parse(baseRecord);
     expect(parsed.ticket).toBe('cc-1');
-    expect('futureDaemonField' in parsed).toBe(false);
+    expect('buildFinishedAtMs' in parsed).toBe(false);
   });
 
-  it('accepts status metrics without the additive optional fields', () => {
-    const parsed = statusResultSchema.parse({
-      active: [],
-      daemon: 'running',
-      lanes: [],
-      maxConcurrent: 5,
-      metrics: {
-        attach_mode: { identity: 1 },
-        cargo_run_ms: {
-          buckets: [[1_000, 1], [null, 1]],
-          count: 1,
-          max: 12,
-          min: 12,
-          sum: 12,
-        },
-        job_outcome: { done: 1 },
-      },
-      operation: 'status',
-      pid: 42,
-      recent: [],
-      socketPath: '/tmp/cc/daemon.sock',
-      startedAtMs: 1,
-      stateRoot: '/tmp/cc',
-      summary: 'running',
-    });
-
-    expect(parsed.metrics?.cargo_run_ms.count).toBe(1);
-    expect(parsed.metrics?.job_outcome.done).toBe(1);
-    expect(parsed.metrics?.wait_ms_summary).toBeUndefined();
-    expect(parsed.metrics?.cargo_run_ms_by_kind).toBeUndefined();
-    expect(parsed.metrics?.windows).toBeUndefined();
-  });
-
-  it('accepts status metrics with wait summary and per-kind histograms', () => {
-    const parsed = statusResultSchema.parse({
-      active: [],
-      daemon: 'running',
-      lanes: [],
-      maxConcurrent: 5,
-      metrics: {
-        attach_mode: { identity: 1 },
-        cargo_run_ms: {
-          buckets: [[1_000, 1], [null, 1]],
-          count: 1,
-          max: 12,
-          min: 12,
-          sum: 12,
-        },
-        cargo_run_ms_by_kind: {
-          check: {
-            buckets: [[1_000, 1], [null, 1]],
-            count: 1,
-            max: 12,
-            min: 12,
-            sum: 12,
-          },
-        },
-        job_outcome: { done: 1 },
-        windows: [
-          {
-            id: 'hour',
-            count: 12,
-            done: 9,
-            failed: 2,
-            killed: 1,
-            runP50Ms: 1_200,
-            runP95Ms: 5_900,
-            runMeanMs: 1_800,
-            waitP50Ms: 110,
-            waitP95Ms: 640,
-            bySubcommand: [
-              { subcommand: 'check', profile: 'perf', count: 7, p50Ms: 900, maxMs: 2_300 },
-              { subcommand: 'test', count: 5, p50Ms: 2_100, maxMs: 5_900 },
-            ],
-          },
-        ],
-        wait_ms_summary: {
-          count: 1,
-          max: 500,
-          min: 500,
-          quantiles: [[0.5, 500], [0.9, 500], [0.95, 500]],
-          sum: 500,
-        },
-      },
-      operation: 'status',
-      pid: 42,
-      recent: [],
-      socketPath: '/tmp/cc/daemon.sock',
-      startedAtMs: 1,
-      stateRoot: '/tmp/cc',
-      summary: 'running',
-    });
-
-    expect(parsed.metrics?.cargo_run_ms_by_kind?.check?.count).toBe(1);
-    expect(parsed.metrics?.wait_ms_summary?.quantiles).toEqual([
+  it('round-trips the metrics windows with their per-population phase splits', () => {
+    const parsed = statusResultSchema.parse(runningResult);
+    expect(parsed.metrics?.cargo_run_ms_by_kind.check?.count).toBe(1);
+    expect(parsed.metrics?.attach_rejections).toEqual({ subcommand: 2 });
+    expect(parsed.metrics?.wait_ms_summary.quantiles).toEqual([
       [0.5, 500],
       [0.9, 500],
       [0.95, 500],
     ]);
-    expect(parsed.metrics?.windows?.[0]).toEqual({
-      id: 'hour',
-      count: 12,
-      done: 9,
-      failed: 2,
-      killed: 1,
-      runP50Ms: 1_200,
-      runP95Ms: 5_900,
-      runMeanMs: 1_800,
-      waitP50Ms: 110,
-      waitP95Ms: 640,
-      bySubcommand: [
-        { subcommand: 'check', profile: 'perf', count: 7, p50Ms: 900, maxMs: 2_300 },
-        { subcommand: 'test', count: 5, p50Ms: 2_100, maxMs: 5_900 },
-      ],
-    });
+    expect(parsed.metrics?.windows[0]).toEqual(metricsWindow('hour'));
+    expect(parsed.metrics?.windows.map((window) => window.id)).toEqual(['hour', 'day', 'all']);
   });
 
-  it('round-trips kache status results while an old daemon schema strips it', () => {
-    const report = {
-      active: [],
-      kache: {
-        available: true,
-        distinctCrates: 2,
-        entryCount: 3,
-        eventsFreshMs: 750,
-        indexSizeBytes: 4_096,
-        recentHeartbeatRoots: [{ count: 2, root: '/srv/projects/alpha' }],
-        topCrates: [{ crate: 'alpha', ms: 12_000, profile: 'release' }],
-      },
-      lanes: [],
-      maxConcurrent: 5,
-      pid: 42,
-      recent: [],
-      socketPath: '/tmp/cc/daemon.sock',
-      startedAtMs: 1,
-    };
-
-    const result = statusResultSchema.parse({
-      ...report,
-      daemon: 'running',
-      operation: 'status',
-      stateRoot: '/tmp/cc',
-      summary: 'running',
-    });
-    expect(result.kache).toEqual(report.kache);
-    const oldClient = statusReportSchema.omit({ kache: true }).parse(report);
-    expect('kache' in oldClient).toBe(false);
+  it('round-trips kache status with its store pressure, and null while kache is disabled', () => {
+    const result = statusResultSchema.parse(runningResult);
+    expect(result.kache).toEqual(kache);
+    const disabled = statusResultSchema.parse({ ...runningResult, kache: null });
+    expect(disabled.kache).toBeNull();
   });
 
-  it('accepts additive savings aggregates and lets old schemas omit them', () => {
-    const report = {
-      active: [],
-      lanes: [],
-      maxConcurrent: 5,
-      pid: 42,
-      recent: [],
-      savings,
-      socketPath: '/tmp/cc/daemon.sock',
-      startedAtMs: 1,
-    };
-    const result = statusResultSchema.parse({
-      ...report,
-      daemon: 'running',
-      operation: 'status',
-      stateRoot: '/tmp/cc',
-      summary: 'running',
-    });
+  it('round-trips attachment savings aggregates', () => {
+    const result = statusResultSchema.parse(runningResult);
     expect(result.savings?.totals.savedComputeMs).toBe(16_800);
-    const oldClient = statusReportSchema.omit({ savings: true }).parse(report);
-    expect('savings' in oldClient).toBe(false);
+    expect(result.savings?.byMode.map((mode) => mode.mode)).toEqual(['identity', 'coverage', 'batch']);
   });
 
-  it('round-trips disk/io pressure fields and tolerates their absence', () => {
-    const base = {
-      active: [],
-      daemon: 'running',
-      lanes: [],
-      maxConcurrent: 5,
-      operation: 'status',
-      pid: 42,
-      recent: [],
-      socketPath: '/tmp/cc/daemon.sock',
-      startedAtMs: 1,
-      stateRoot: '/tmp/cc',
-      summary: 'running',
-    };
+  it('round-trips disk/io pressure fields and accepts their absence', () => {
     const withIo = statusResultSchema.parse({
-      ...base,
+      ...runningResult,
       system: {
-        clampThresholdPerCore: null,
-        cores: 16,
+        ...system,
         disks: [{ device: 'nvme0n1p2', utilPercent: 63.2 }],
         ioWaitPercent: 12.5,
-        loadAvg1: 3.2,
       },
     });
     expect(withIo.system?.ioWaitPercent).toBe(12.5);
@@ -592,33 +564,18 @@ describe('schema forward compatibility (issue #4)', () => {
     // A daemon without an honest sample (first report, macOS, Windows)
     // omits the fields entirely rather than sending zeros.
     const withoutIo = statusResultSchema.parse({
-      ...base,
-      system: { clampThresholdPerCore: 1.5, cores: 16, loadAvg1: 3.2 },
+      ...runningResult,
+      system: { ...system, clampThresholdPerCore: 1.5 },
     });
     expect(withoutIo.system?.ioWaitPercent).toBeUndefined();
     expect(withoutIo.system?.disks).toBeUndefined();
   });
 
-  it('round-trips additive memory pressure fields and tolerates older daemons', () => {
-    const base = {
-      active: [],
-      daemon: 'running',
-      lanes: [],
-      maxConcurrent: 5,
-      operation: 'status',
-      pid: 42,
-      recent: [],
-      socketPath: '/tmp/cc/daemon.sock',
-      startedAtMs: 1,
-      stateRoot: '/tmp/cc',
-      summary: 'running',
-    };
+  it('round-trips memory pressure fields; memClamp is always present, the samples per platform', () => {
     const withMemory = statusResultSchema.parse({
-      ...base,
+      ...runningResult,
       system: {
-        clampThresholdPerCore: null,
-        cores: 16,
-        loadAvg1: 3.2,
+        ...system,
         memAvailableBytes: 12 * 1024 ** 3,
         memClamp: 'hard',
         memFullAvg10: 24.5,
@@ -634,12 +591,14 @@ describe('schema forward compatibility (issue #4)', () => {
       memSomeAvg10: 30.1,
     });
 
-    const older = statusResultSchema.parse({
-      ...base,
-      system: { clampThresholdPerCore: null, cores: 16, loadAvg1: 3.2 },
-    });
-    expect(older.system?.memClamp).toBeUndefined();
-    expect(older.system?.memAvailableBytes).toBeUndefined();
+    // No PSI, MemAvailable, or macOS level where the platform has none; the clamp verdict is still sent.
+    const withoutSamples = statusResultSchema.parse(runningResult);
+    expect(withoutSamples.system?.memClamp).toBe('none');
+    expect(withoutSamples.system?.memAvailableBytes).toBeUndefined();
+    expect(withoutSamples.system?.memPressureLevel).toBeUndefined();
+
+    const { memClamp: _memClamp, ...withoutClamp } = system;
+    expect(statusResultSchema.safeParse({ ...runningResult, system: withoutClamp }).success).toBe(false);
   });
 
   it('accepts denied and passthrough terminal request records', () => {

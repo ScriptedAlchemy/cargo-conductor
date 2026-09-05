@@ -6,9 +6,7 @@ import * as Effect from 'effect/Effect';
 import type * as Scope from 'effect/Scope';
 
 import {
-  backfillAttachmentSavingsSelect,
   createLedgerApi,
-  ledgerUserVersion,
   openLedgerDatabase,
 } from '../src/daemon/ledger.js';
 import type { CreateRequestInput, LedgerApi } from '../src/daemon/ledger.js';
@@ -991,109 +989,15 @@ describe('ledger transactions', () => {
 });
 
 describe('ledger migrations', () => {
-  it.effect('joins riders to leaders through the rowid index during the savings backfill', () =>
-    Effect.gen(function* () {
-      const directory = yield* scopedTempDir('cc-ledger-backfill-plan-');
-      const db = yield* scopedDatabase(() => openLedgerDatabase(join(directory, 'ledger.db')));
-      const plan = db
-        .prepare(`EXPLAIN QUERY PLAN ${backfillAttachmentSavingsSelect}`)
-        .all()
-        .map((row) => String(row.detail));
-      expect(plan.some((detail) => /^SCAN l\b/u.test(detail))).toBe(false);
-      expect(plan.some((detail) => /^SEARCH l USING INTEGER PRIMARY KEY/u.test(detail))).toBe(
-        true,
-      );
-    }));
-
-  it.effect('runs the savings backfill once and records it in user_version', () =>
-    Effect.gen(function* () {
-      const directory = yield* scopedTempDir('cc-ledger-backfill-once-');
-      const databasePath = join(directory, 'ledger.db');
-      yield* Effect.scoped(
-        Effect.gen(function* () {
-          const initial = yield* scopedDatabase(() => openLedgerDatabase(databasePath));
-          expect(initial.prepare('PRAGMA user_version').get()?.user_version).toBe(
-            ledgerUserVersion,
-          );
-          const ledger = createLedgerApi(initial);
-          const leader = yield* ledger.createRequest(
-            makeInput({ createdAtMs: 1_000, estimateMs: 900 }),
-          );
-          yield* ledger.markRunning(leader.id, 1_100);
-          yield* ledger.markFinished(leader.id, { atMs: 2_000, status: 'done' });
-          const follower = yield* ledger.createRequest(
-            makeInput({ createdAtMs: 1_200, estimateMs: 600 }),
-          );
-          yield* ledger.markAttached(follower.id, {
-            atMs: 1_250,
-            leaderTicket: leader.ticket,
-            mode: 'identity',
-          });
-          yield* ledger.markRunning(follower.id, 1_100);
-          // Settled without savings on a database already past the backfill:
-          // reopening must not retroactively invent them.
-          yield* ledger.markFinished(follower.id, { atMs: 2_000, status: 'done' });
-        }),
-      );
-      const reopened = yield* scopedDatabase(() => openLedgerDatabase(databasePath));
-      const record = yield* createLedgerApi(reopened).getRequest(2);
-      expect(record?.savedComputeMs).toBeNull();
-    }));
-
-  it.effect('backfills savings for riders settled before savings columns were populated', () =>
-    Effect.gen(function* () {
-      const directory = yield* scopedTempDir('cc-ledger-savings-backfill-');
-      const databasePath = join(directory, 'ledger.db');
-      // The first handle must close before the reopen below runs the backfill.
-      const followerId = yield* Effect.scoped(
-        Effect.gen(function* () {
-          const initial = yield* scopedDatabase(() => openLedgerDatabase(databasePath));
-          const ledger = createLedgerApi(initial);
-          const leader = yield* ledger.createRequest(
-            makeInput({ createdAtMs: 1_000, estimateMs: 900 }),
-          );
-          yield* ledger.markQueued(leader.id, 1_050);
-          yield* ledger.markRunning(leader.id, 1_100);
-          yield* ledger.markFinished(leader.id, { atMs: 2_000, status: 'done' });
-          const follower = yield* ledger.createRequest(
-            makeInput({ createdAtMs: 1_200, estimateMs: 600 }),
-          );
-          yield* ledger.markAttached(follower.id, {
-            atMs: 1_250,
-            leaderTicket: leader.ticket,
-            mode: 'identity',
-          });
-          yield* ledger.markRunning(follower.id, 1_100);
-          // Simulates an older daemon that settled the rider without savings.
-          yield* ledger.markFinished(follower.id, { atMs: 2_000, status: 'done' });
-          // Older daemons never stamped user_version, so the backfill is due.
-          initial.exec('PRAGMA user_version = 0');
-          return follower.id;
-        }),
-      );
-      const reopened = yield* scopedDatabase(() => openLedgerDatabase(databasePath));
-      const record = yield* createLedgerApi(reopened).getRequest(followerId);
-      expect(record).toEqual(
-        expect.objectContaining({
-          savedComputeMs: 900,
-          savedComputeSource: 'exact',
-          savedLatencyMs: -200,
-        }),
-      );
-      expect(reopened.prepare('PRAGMA user_version').get()?.user_version).toBe(
-        ledgerUserVersion,
-      );
-    }));
-
-  it.effect('adds savings columns to a legacy table and round-trips markFinished', () =>
+  it.effect('adds the savings columns to a table created before them and round-trips markFinished', () =>
     Effect.gen(function* () {
       const directory = yield* scopedTempDir('cc-ledger-migrate-');
       const databasePath = join(directory, 'ledger.db');
-      // The legacy handle must close before `openLedgerDatabase` migrates the file.
+      // The first handle must close before `openLedgerDatabase` migrates the file.
       yield* Effect.scoped(
         Effect.gen(function* () {
-          const legacy = yield* scopedDatabase(() => new DatabaseSync(databasePath));
-          legacy.exec(`
+          const initial = yield* scopedDatabase(() => new DatabaseSync(databasePath));
+          initial.exec(`
             CREATE TABLE requests (
               id INTEGER PRIMARY KEY AUTOINCREMENT,
               created_at_ms INTEGER NOT NULL,
@@ -1153,7 +1057,7 @@ describe('ledger migrations', () => {
     }));
 });
 
-describe('build-finished stamps and the saved-latency recompute', () => {
+describe('build-finished stamps', () => {
   it.effect('stamps build_finished once on a running leader and the riders sharing its process', () =>
     Effect.gen(function* () {
       const ledger = yield* scopedLedger;
@@ -1181,57 +1085,6 @@ describe('build-finished stamps and the saved-latency recompute', () => {
       yield* ledger.markFinished(leader.id, { atMs: 2_000, status: 'done' });
       yield* ledger.markBuildFinished(queued.id, 2_100);
       expect((yield* ledger.getRequest(queued.id))?.buildFinishedAtMs).toBeNull();
-    }));
-
-  it.effect('recomputes saved latency from the leader start when upgrading a version-1 ledger', () =>
-    Effect.gen(function* () {
-      const directory = yield* scopedTempDir('cc-ledger-latency-recompute-');
-      const databasePath = join(directory, 'ledger.db');
-      const riderId = yield* Effect.scoped(
-        Effect.gen(function* () {
-          const initial = yield* scopedDatabase(() => openLedgerDatabase(databasePath));
-          const ledger = createLedgerApi(initial);
-          const leader = yield* ledger.createRequest(
-            makeInput({ createdAtMs: 1_000, estimateMs: 10_000 }),
-          );
-          yield* ledger.markQueued(leader.id, 1_050);
-          // A minute queued behind other work before the leader started.
-          yield* ledger.markRunning(leader.id, 61_000);
-          yield* ledger.markFinished(leader.id, { atMs: 71_000, status: 'done' });
-          const rider = yield* ledger.createRequest(
-            makeInput({ createdAtMs: 1_200, estimateMs: 10_000 }),
-          );
-          yield* ledger.markAttached(rider.id, {
-            atMs: 1_250,
-            leaderTicket: leader.ticket,
-            mode: 'identity',
-          });
-          yield* ledger.markRunning(rider.id, 61_000);
-          // A version-1 daemon charged the whole wait since creation to attaching.
-          yield* ledger.markFinished(rider.id, {
-            atMs: 71_000,
-            status: 'done',
-            savedComputeMs: 10_000,
-            savedComputeSource: 'exact',
-            savedLatencyMs: 10_000 - (71_000 - 1_200),
-          });
-          initial.exec('PRAGMA user_version = 1');
-          return rider.id;
-        }),
-      );
-      const reopened = yield* scopedDatabase(() => openLedgerDatabase(databasePath));
-      const record = yield* createLedgerApi(reopened).getRequest(riderId);
-      expect(record).toEqual(
-        expect.objectContaining({
-          savedComputeMs: 10_000,
-          savedComputeSource: 'exact',
-          savedLatencyMs: 0,
-        }),
-      );
-      expect(reopened.prepare('PRAGMA user_version').get()?.user_version).toBe(2);
-      const totals = yield* createLedgerApi(reopened).attachmentSavings();
-      expect(totals.totals.savedLatencyMs).toBe(0);
-      expect(totals.totals.negativeLatencyRiders).toBe(0);
     }));
 });
 

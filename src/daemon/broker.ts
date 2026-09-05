@@ -62,6 +62,9 @@ export type {
   SubmitInput,
 } from './job-state.js';
 
+/** Everything in a status report except `version`, which `server.ts` stamps from its build. */
+export type BrokerStatusReport = Omit<StatusReport, 'version'>;
+
 export interface AttemptInput {
   readonly argv: readonly string[];
   readonly cwd: string;
@@ -120,7 +123,8 @@ export interface BrokerApi {
   readonly markOwnerGone: (ticket: string) => Effect.Effect<boolean>;
   /** Record that the submitting client stopped streaming the ticket; false when the ticket is unknown. */
   readonly detach: (ticket: string) => Effect.Effect<boolean>;
-  readonly report: (recentLimit?: number) => Effect.Effect<StatusReport>;
+  /** The status report minus `version`, which the server stamps from its own build. */
+  readonly report: (recentLimit?: number) => Effect.Effect<BrokerStatusReport>;
   readonly getTicket: (ticket: string) => Effect.Effect<RequestRecord | null>;
   readonly awaitTicket: (ticket: string, maxWaitMs: number) => Effect.Effect<AwaitTicketResult>;
   /** Test-only visibility for interruption cleanup assertions. */
@@ -594,7 +598,7 @@ export const BrokerLive: Layer.Layer<
       daemonScope,
     );
 
-    const report = (recentLimit = 50): Effect.Effect<StatusReport> =>
+    const report = (recentLimit = 50): Effect.Effect<BrokerStatusReport> =>
       Effect.gen(function* () {
         const histogramSnapshot = (snapshot: {
           readonly buckets: ReadonlyArray<readonly [number, number]>;

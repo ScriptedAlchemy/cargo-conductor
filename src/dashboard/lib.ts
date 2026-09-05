@@ -127,16 +127,8 @@ export const pollStatus = <A, E, R>(
   );
 };
 
-export interface RunHistogramShape {
-  readonly buckets?: unknown;
-  readonly count?: unknown;
-  readonly min?: unknown;
-  readonly max?: unknown;
-  readonly sum?: unknown;
-}
-
 /**
- * Below this run count the p95 column is hidden: on a tiny histogram the 95th
+ * Below this run count the p95 column is hidden: on a tiny sample the 95th
  * percentile is just "the slowest run so far" dressed up as a distribution
  * (a real n=3 dashboard showed p50 = p95 = the same bucket ceiling).
  */
@@ -161,8 +153,8 @@ export interface DashboardMetricsWindowBySubcommand {
   readonly count: number;
   readonly p50Ms: number | null;
   readonly maxMs: number | null;
-  /** Absent from daemons older than the phase split; null when no leader handed back. */
-  readonly phases?: DashboardPhaseSplit | null;
+  /** Null when no leader of this population carries the build-finished stamp (pure compiles never do). */
+  readonly phases: DashboardPhaseSplit | null;
 }
 
 /** Queue wait of the window's leaders attributed to its cause (#92). */
@@ -191,32 +183,33 @@ export interface DashboardMetricsWindow {
   readonly waitP50Ms: number | null;
   readonly waitP95Ms: number | null;
   readonly bySubcommand: readonly DashboardMetricsWindowBySubcommand[];
-  /** The #92 additions; absent from daemons that predate them. */
-  readonly runTotalMs?: number;
-  readonly waitTotalMs?: number;
-  readonly waitSplit?: DashboardWaitSplit;
-  readonly handBack?: DashboardHandBack;
+  /** Sum of leader run time in the window. */
+  readonly runTotalMs: number;
+  /** Sum of leader queue wait in the window. */
+  readonly waitTotalMs: number;
+  readonly waitSplit: DashboardWaitSplit;
+  readonly handBack: DashboardHandBack;
 }
 
 export interface PickedMetricsWindow {
   readonly id: MetricsWindowId;
-  readonly source: 'ledger-windows' | 'daemon-lifetime';
+  /** Null when the status carried no metrics windows (daemon stopped or unresponsive). */
   readonly window: DashboardMetricsWindow | null;
 }
 
 export const pickMetricsWindow = (
-  windows: readonly DashboardMetricsWindow[] | undefined,
+  windows: readonly DashboardMetricsWindow[],
   selectedId: MetricsWindowId,
 ): PickedMetricsWindow => {
-  if (windows === undefined || windows.length === 0) {
-    return { id: selectedId, source: 'daemon-lifetime', window: null };
+  if (windows.length === 0) {
+    return { id: selectedId, window: null };
   }
   const selected = windows.find((window) => window.id === selectedId);
   if (selected !== undefined) {
-    return { id: selected.id, source: 'ledger-windows', window: selected };
+    return { id: selected.id, window: selected };
   }
   const fallback = windows.find((window) => window.id === defaultMetricsWindowId) ?? windows[0];
-  return { id: fallback.id, source: 'ledger-windows', window: fallback };
+  return { id: fallback.id, window: fallback };
 };
 
 export const metricsWindowLabel = (id: MetricsWindowId): string => {
@@ -234,104 +227,25 @@ export const metricsWindowLabel = (id: MetricsWindowId): string => {
   }
 };
 
-/** Upper-bound estimate of the given percentile from histogram buckets ([le, cumulativeCount]). */
-export const histogramPercentile = (
-  histogram: RunHistogramShape,
-  percentile: number,
-): number | null => {
-  const count = typeof histogram.count === 'number' ? histogram.count : 0;
-  if (count === 0 || !Array.isArray(histogram.buckets)) {
-    return null;
-  }
-  const target = count * percentile;
-  for (const bucket of histogram.buckets) {
-    if (!Array.isArray(bucket)) {
-      continue;
-    }
-    const le: unknown = bucket[0];
-    const cumulative: unknown = bucket[1];
-    if (typeof le === 'number' && typeof cumulative === 'number' && cumulative >= target) {
-      return le;
-    }
-  }
-  return typeof histogram.max === 'number' ? histogram.max : null;
-};
-
-export interface RunMetricsView {
-  readonly count: number;
-  readonly meanMs: number | null;
-  readonly p50Ms: number | null;
-  /** null until the histogram reaches {@link percentileMinSamples} runs. */
-  readonly p95Ms: number | null;
-}
-
-export const runMetricsView = (runs: RunHistogramShape | undefined): RunMetricsView => {
-  const count = typeof runs?.count === 'number' ? runs.count : 0;
-  if (runs === undefined || count === 0) {
-    return { count, meanMs: null, p50Ms: null, p95Ms: null };
-  }
-  return {
-    count,
-    meanMs: typeof runs.sum === 'number' ? runs.sum / count : null,
-    p50Ms: histogramPercentile(runs, 0.5),
-    p95Ms: count >= percentileMinSamples ? histogramPercentile(runs, 0.95) : null,
-  };
-};
-
-export interface WaitSummaryShape {
-  readonly count?: unknown;
-  readonly max?: unknown;
-  readonly quantiles?: unknown;
-}
-
 export interface WaitMetricsView {
-  readonly source: 'daemon-1h' | 'visible-window';
+  /** Finished rows on screen that recorded a queue wait. */
   readonly count: number;
   readonly p50Ms: number | null;
-  readonly p90Ms: number | null;
-  readonly p95Ms: number | null;
-  readonly maxMs: number | null;
 }
 
-const summaryQuantile = (summary: WaitSummaryShape, target: number): number | null => {
-  if (!Array.isArray(summary.quantiles)) {
-    return null;
-  }
-  for (const entry of summary.quantiles) {
-    if (!Array.isArray(entry) || entry.length !== 2) {
-      continue;
-    }
-    const quantile = entry[0];
-    const value = entry[1];
-    if (typeof quantile === 'number' && quantile === target) {
-      return typeof value === 'number' ? value : null;
-    }
-  }
-  return null;
-};
-
-export const waitMetricsView = (
-  summary: WaitSummaryShape | undefined,
-  waits: readonly number[],
-): WaitMetricsView => {
-  if (summary !== undefined && typeof summary.count === 'number' && summary.count >= 0) {
-    return {
-      source: 'daemon-1h',
-      count: summary.count,
-      p50Ms: summaryQuantile(summary, 0.5),
-      p90Ms: summaryQuantile(summary, 0.9),
-      p95Ms: summaryQuantile(summary, 0.95),
-      maxMs: typeof summary.max === 'number' ? summary.max : null,
-    };
-  }
+/**
+ * Queue wait of the finished rows on screen. Without daemon metrics (the
+ * daemon is stopped or did not answer) the ledger rows the status still
+ * carries are the only wait sample, so this is what the wait tiles show; a
+ * live daemon's ledger windows carry their own percentiles instead. No p95:
+ * over at most a screen of rows it would be the slowest row dressed up as a
+ * distribution.
+ */
+export const waitMetricsView = (waits: readonly number[]): WaitMetricsView => {
   const sorted = [...waits].sort((left, right) => left - right);
   return {
-    source: 'visible-window',
     count: sorted.length,
     p50Ms: sorted.length === 0 ? null : sorted[Math.floor((sorted.length - 1) * 0.5)],
-    p90Ms: null,
-    p95Ms: null,
-    maxMs: sorted.length === 0 ? null : sorted[sorted.length - 1],
   };
 };
 
@@ -350,7 +264,7 @@ export interface WaitSplitPart {
 }
 
 export type WaitVsRunView =
-  | { readonly kind: 'unavailable'; readonly reason: 'no-window' | 'older-daemon' }
+  | { readonly kind: 'unavailable'; readonly reason: 'no-window' }
   | {
       readonly kind: 'available';
       /** Leaders whose wait was classified (queued and started inside the scan). */
@@ -368,17 +282,15 @@ export type WaitVsRunView =
  * The per-window wait-vs-run tile. Lane-bound wait is time a same-lane leader
  * was still compiling; permit-bound is time every admission permit was held
  * (with no same-lane compile to blame); the rest is admission holds,
- * `--after` prerequisites and scheduling latency. Older daemons send windows
- * without the split, which renders as unavailable rather than as zero wait.
+ * `--after` prerequisites and scheduling latency. Without a window (the
+ * status carried no metrics: daemon stopped or unresponsive) the tile says
+ * so rather than showing zero wait.
  */
 export const waitVsRunView = (window: DashboardMetricsWindow | null): WaitVsRunView => {
   if (window === null) {
     return { kind: 'unavailable', reason: 'no-window' };
   }
   const split = window.waitSplit;
-  if (split === undefined || window.waitTotalMs === undefined || window.runTotalMs === undefined) {
-    return { kind: 'unavailable', reason: 'older-daemon' };
-  }
   const classifiedMs = split.laneBoundMs + split.permitBoundMs + split.otherMs;
   const share = (ms: number): number => (classifiedMs <= 0 ? 0 : (ms / classifiedMs) * 100);
   const permitTitle =
@@ -434,12 +346,11 @@ export interface PhaseSplitView {
 
 /**
  * Compile vs execution time for a by-command row, from the leaders that
- * handed their lane back at Cargo's `Finished` line. Null when the daemon
- * predates the split or no leader of this command handed back (pure compiles
- * never do).
+ * handed their lane back at Cargo's `Finished` line. Null when no leader of
+ * this command handed back (pure compiles never do).
  */
-export const phaseSplitView = (phases: DashboardPhaseSplit | null | undefined): PhaseSplitView | null => {
-  if (phases === undefined || phases === null || phases.count <= 0) {
+export const phaseSplitView = (phases: DashboardPhaseSplit | null): PhaseSplitView | null => {
+  if (phases === null || phases.count <= 0) {
     return null;
   }
   const total = phases.compileTotalMs + phases.executeTotalMs;
@@ -456,12 +367,16 @@ export type HandBackView =
   | { readonly kind: 'unavailable' }
   | { readonly kind: 'available'; readonly leaders: number; readonly laneReleasedMs: number; readonly text: string };
 
-/** Lane time the execution-phase hand-back released: every test/run execution phase ran with its lane already free. */
+/**
+ * Lane time the execution-phase hand-back released: every test/run execution
+ * phase ran with its lane already free. Unavailable without a window (the
+ * status carried no metrics).
+ */
 export const handBackView = (window: DashboardMetricsWindow | null): HandBackView => {
-  const handBack = window?.handBack;
-  if (handBack === undefined) {
+  if (window === null) {
     return { kind: 'unavailable' };
   }
+  const { handBack } = window;
   return {
     kind: 'available',
     laneReleasedMs: handBack.laneReleasedMs,
@@ -533,8 +448,8 @@ const asKacheGc = (value: unknown): KacheGcReport | null => {
 
 /**
  * The daemon's `kache.pressure` report from the untyped status payload the
- * widget receives; null when absent (an older daemon) or not the shape the
- * protocol promises, so the panel can say so instead of inventing zeros.
+ * widget receives; null when absent or not the shape the protocol promises,
+ * so the panel can say so instead of inventing zeros.
  */
 export const asKachePressure = (value: unknown): KacheStorePressureReport | null => {
   if (!isRecord(value)) {
@@ -556,9 +471,14 @@ export const asKachePressure = (value: unknown): KacheStorePressureReport | null
   return { gc, keyTiming, limit, storeBytes: finiteOrNull(value.storeBytes) };
 };
 
-/** The kache panel's pressure block from the untyped status payload. */
-export const kachePressureView = (value: unknown, nowMs: number): KachePressureModel =>
-  kachePressureModel(asKachePressure(value) ?? undefined, nowMs);
+/**
+ * The kache panel's pressure block from the untyped status payload; null when
+ * the payload carried no report of the promised shape.
+ */
+export const kachePressureView = (value: unknown, nowMs: number): KachePressureModel | null => {
+  const pressure = asKachePressure(value);
+  return pressure === null ? null : kachePressureModel(pressure, nowMs);
+};
 
 export const frequencyEntries = (
   record: Readonly<Record<string, unknown>> | undefined,
@@ -925,7 +845,11 @@ export const memoryStatView = (system: {
 export const admissionHoldDetail = (value: unknown): string | null =>
   isRecord(value) && typeof value.detail === 'string' && value.detail.length > 0 ? value.detail : null;
 
-/** Heavy-cap admission note from an untyped daemon `system.heavy` payload; null for older daemons. */
+/**
+ * Heavy-cap admission note from an untyped daemon `system.heavy` payload;
+ * null when the cap is disabled (the daemon omits `heavy`) or the payload is
+ * not the promised shape.
+ */
 export const heavyAdmissionNote = (system: { readonly heavy?: unknown }): string | null => {
   const heavy = system.heavy;
   if (!isRecord(heavy)) {
@@ -1119,10 +1043,11 @@ export interface SubcommandTiming {
 }
 
 /**
- * Run timings split by subcommand, from the finished rows on screen. The
- * daemon's since-start histogram cannot be split retroactively, so this
- * window is the only place check and test can be reported as the separate
- * populations they are; each line carries its own n.
+ * Run timings split by subcommand, from the finished rows on screen. This is
+ * the by-command split when the status carried no metrics windows (the
+ * daemon is stopped or did not answer, and the rows come from the ledger);
+ * check and test stay the separate populations they are, each line carrying
+ * its own n.
  */
 export const subcommandTimings = (
   rows: readonly {
@@ -1168,10 +1093,8 @@ export const subcommandDisplayLabel = (timing: {
   readonly subcommand: string;
   readonly profile?: string;
 }): string => {
-  const profile = timing.profile;
-  // Rows recorded before the broker rejected non-cargo programs carry a path here.
-  const subcommand = pathBasename(timing.subcommand);
-  return profile === undefined || profile === defaultCargoProfile(timing.subcommand)
+  const { profile, subcommand } = timing;
+  return profile === undefined || profile === defaultCargoProfile(subcommand)
     ? `cargo ${subcommand}`
     : `cargo ${subcommand} · ${profile}`;
 };
@@ -1186,52 +1109,6 @@ export const latencySavedStat = (latencyMs: number): { readonly label: string; r
   latencyMs < 0
     ? { label: 'latency added by attaching (all time)', value: formatMs(-latencyMs) }
     : { label: 'latency saved (all time)', value: formatMs(latencyMs) };
-
-export interface SubcommandMetricsView {
-  readonly source: 'daemon-lifetime' | 'visible-window';
-  readonly rows: readonly SubcommandTiming[];
-}
-
-export const subcommandMetricsView = (
-  byKind: Readonly<Record<string, RunHistogramShape>> | undefined,
-  rows: readonly {
-    readonly intentJson?: unknown;
-    readonly argv?: unknown;
-    readonly runMs?: unknown;
-  }[],
-): SubcommandMetricsView => {
-  if (byKind !== undefined) {
-    const fromDaemon = Object.entries(byKind)
-      .map(([subcommand, histogram]): SubcommandTiming | null => {
-        const count = typeof histogram.count === 'number' ? histogram.count : 0;
-        if (count <= 0) {
-          return null;
-        }
-        const maxMs = typeof histogram.max === 'number' ? histogram.max : null;
-        const meanMs =
-          typeof histogram.sum === 'number' && count > 0 ? histogram.sum / count : null;
-        const p50Ms = histogramPercentile(histogram, 0.5);
-        if (maxMs === null || meanMs === null || p50Ms === null) {
-          return null;
-        }
-        return {
-          subcommand,
-          profile: defaultCargoProfile(subcommand),
-          count,
-          p50Ms,
-          maxMs,
-          meanMs,
-        };
-      })
-      .filter((row): row is SubcommandTiming => row !== null)
-      .sort(
-        (left, right) =>
-          right.count - left.count || left.subcommand.localeCompare(right.subcommand),
-      );
-    return { source: 'daemon-lifetime', rows: fromDaemon };
-  }
-  return { source: 'visible-window', rows: subcommandTimings(rows) };
-};
 
 export interface DiagnosticBadge {
   readonly kind: 'errors' | 'warnings';
@@ -1260,7 +1137,7 @@ export const queuedWaitThresholdMs = 1_000;
 export const queuedWaitMs = (waitMs: unknown): number | null =>
   typeof waitMs === 'number' && waitMs >= queuedWaitThresholdMs ? waitMs : null;
 
-/** `overrun` from an untyped queued row's `queue.headEstimateState`; null for older daemons or an on-track head. */
+/** `overrun` from an untyped queued row's `queue.headEstimateState`; null for an on-track head or a row without queue detail. */
 export const queueHeadEstimateState = (queue: unknown): string | null =>
   isRecord(queue) && queue.headEstimateState === 'overrun' ? 'overrun' : null;
 

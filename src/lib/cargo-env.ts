@@ -9,7 +9,6 @@ const exactEnvironmentNames = new Set([
 ]);
 
 const haulerPrefix = 'CARGO_HAULER_';
-const legacyConductorPrefix = 'CARGO_CONDUCTOR_';
 
 const targetToolPattern =
   /^(?:AR|CC|CFLAGS|CXX|CXXFLAGS|LDFLAGS)_[A-Za-z0-9_-]+$/u;
@@ -20,7 +19,7 @@ const targetToolPattern =
  * the daemon-spawned cargo, and none of them affect what cargo builds.
  */
 export const isHaulerInternalEnvironmentVariable = (name: string): boolean =>
-  name.startsWith(haulerPrefix) || name.startsWith(legacyConductorPrefix);
+  name.startsWith(haulerPrefix);
 
 /**
  * The variables that participate in request identity (coalescing). Two
