@@ -145,6 +145,28 @@ describe('ticketCardModel', () => {
     expect(model.stalled).toBeNull();
   });
 
+  it('says the lane head is overrunning but alive when the queue context flags it (#91)', () => {
+    const model = ticketCardModel(
+      record({
+        queue: {
+          aheadTickets: ['cc-6'],
+          headElapsedMs: 900_000,
+          headEstimateMs: 300_000,
+          headEstimateState: 'overrun',
+          headTicket: 'cc-6',
+          position: 1,
+          waitEtaMs: 300_000,
+        },
+        startedAtMs: null,
+        status: 'queued',
+      }),
+      nowMs,
+    );
+    expect(model.queue).toBe(
+      '1 ahead behind cc-6 (running 15m), wait ~5m; head overrunning its estimate but alive',
+    );
+  });
+
   it('shows what a dependent waits for and keeps its prerequisites on the card', () => {
     const blocked = ticketCardModel(
       record({

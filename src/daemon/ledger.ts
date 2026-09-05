@@ -164,6 +164,23 @@ export interface LedgerApi {
     intentKey: string,
     limit: number,
   ) => Effect.Effect<readonly number[]>;
+  /**
+   * Newest-first compile/execute splits for completed leaders that stamped
+   * `build_finished_at_ms`. Rows without a split are omitted.
+   */
+  readonly recentPhaseDurations: (
+    intentKey: string,
+    limit: number,
+  ) => Effect.Effect<readonly PhaseDurationSample[]>;
+  /**
+   * Newest-first compile evidence from a same-package `--test <name>`
+   * neighbor (a different intent key that selected the same integration-test
+   * binary): the row's compile phase when it was split, else its whole run.
+   * Used when the exact intent has no history of its own.
+   */
+  readonly recentNeighborDurations: (
+    input: NeighborDurationQuery,
+  ) => Effect.Effect<readonly number[]>;
   readonly sessionPending: (
     session: string,
   ) => Effect.Effect<readonly SessionPendingRecord[]>;
@@ -189,6 +206,18 @@ export interface LedgerApi {
   readonly metricsWindow: (sinceMs: number | null) => Effect.Effect<MetricsWindowReport>;
   /** One cached scan supplies all dashboard windows. */
   readonly metricsWindows: (nowMs: number) => Effect.Effect<MetricsWindowsReport>;
+}
+
+export interface PhaseDurationSample {
+  readonly compileMs: number;
+  readonly executeMs: number;
+}
+
+export interface NeighborDurationQuery {
+  readonly packageName: string;
+  readonly testTarget: string;
+  readonly excludeIntentKey: string;
+  readonly limit: number;
 }
 
 export class Ledger extends Context.Service<Ledger, LedgerApi>()('cargo-hauler/Ledger') {}
@@ -539,6 +568,13 @@ export const openLedgerDatabase = (databasePath: string): DatabaseSync => {
      WHERE attached_to IS NULL
        AND run_ms IS NOT NULL`,
   );
+  db.exec(
+    `CREATE INDEX IF NOT EXISTS requests_intent_phase_idx
+     ON requests (intent_key, id DESC)
+     WHERE status = 'done'
+       AND attached_to IS NULL
+       AND build_finished_at_ms IS NOT NULL`,
+  );
   return db;
 };
 
@@ -683,6 +719,46 @@ export const createLedgerApi = (db: DatabaseSync): LedgerApi => {
     `SELECT run_ms FROM requests
      WHERE intent_key = ? AND status = 'done' AND run_ms IS NOT NULL
        AND attached_to IS NULL
+     ORDER BY id DESC LIMIT ?`,
+  );
+  const selectRecentPhaseDurations = db.prepare(
+    `SELECT (build_finished_at_ms - started_at_ms) AS compile_ms,
+            (finished_at_ms - build_finished_at_ms) AS execute_ms
+     FROM requests
+     WHERE intent_key = ? AND status = 'done' AND attached_to IS NULL
+       AND started_at_ms IS NOT NULL
+       AND build_finished_at_ms IS NOT NULL
+       AND finished_at_ms IS NOT NULL
+       AND build_finished_at_ms >= started_at_ms
+       AND finished_at_ms >= build_finished_at_ms
+     ORDER BY id DESC LIMIT ?`,
+  );
+  // A neighbor's evidence is the compile of the shared test binary: its
+  // compile phase when the row was split, else its whole run.
+  const selectRecentNeighborDurations = db.prepare(
+    `SELECT CASE
+              WHEN build_finished_at_ms IS NOT NULL
+                   AND started_at_ms IS NOT NULL
+                   AND build_finished_at_ms > started_at_ms
+              THEN build_finished_at_ms - started_at_ms
+              ELSE run_ms
+            END AS run_ms
+     FROM requests
+     WHERE status = 'done' AND attached_to IS NULL AND run_ms IS NOT NULL
+       AND intent_key IS NOT NULL AND intent_key != ?
+       AND EXISTS (
+         SELECT 1 FROM json_each(json_extract(intent_json, '$.packages')) AS packages
+         WHERE packages.value = ?
+       )
+       AND (SELECT COUNT(*) FROM json_each(json_extract(intent_json, '$.packages'))) = 1
+       AND EXISTS (
+         SELECT 1 FROM json_each(json_extract(intent_json, '$.targets')) AS targets
+         WHERE targets.value = ?
+       )
+       AND (
+         SELECT COUNT(*) FROM json_each(json_extract(intent_json, '$.targets')) AS targets
+         WHERE typeof(targets.value) = 'text' AND targets.value LIKE 'test:%'
+       ) = 1
      ORDER BY id DESC LIMIT ?`,
   );
   const selectSessionPending = db.prepare(
@@ -1159,6 +1235,22 @@ export const createLedgerApi = (db: DatabaseSync): LedgerApi => {
     recentDurations: (intentKey, limit) =>
       Effect.sync(() =>
         selectRecentDurations.all(intentKey, limit).map((row) => toNumber(row.run_ms)),
+      ),
+
+    recentPhaseDurations: (intentKey, limit) =>
+      Effect.sync(() =>
+        selectRecentPhaseDurations.all(intentKey, limit).flatMap((row) => {
+          const compileMs = toNumber(row.compile_ms);
+          const executeMs = toNumber(row.execute_ms);
+          return compileMs > 0 && executeMs >= 0 ? [{ compileMs, executeMs }] : [];
+        }),
+      ),
+
+    recentNeighborDurations: (input) =>
+      Effect.sync(() =>
+        selectRecentNeighborDurations
+          .all(input.excludeIntentKey, input.packageName, input.testTarget, input.limit)
+          .map((row) => toNumber(row.run_ms)),
       ),
 
     sessionPending: (session) =>

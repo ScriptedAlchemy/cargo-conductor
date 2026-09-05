@@ -67,6 +67,20 @@ export type AttachRejectionGate = (typeof attachRejectionGates)[number];
 export type EstimateSource = 'ewma' | 'kache' | 'default';
 export type SavedComputeSource = 'exact' | 'estimate';
 
+/**
+ * Live phase of a running cargo: `compile` until Cargo's `Finished` line,
+ * `execute` after it. Omitted when the daemon cannot see the split (an
+ * execution subcommand with overlap execution disabled).
+ */
+export type RunPhase = 'compile' | 'execute';
+
+/**
+ * A running head that is past `stallEstimateFactor` × its estimate but still
+ * producing output or CPU. Distinct from `stall`: agents may background this
+ * rather than kill it.
+ */
+export type EstimateState = 'overrun';
+
 /** Live, lane-local context for a queued request. Never persisted to the ledger. */
 export interface QueueContext {
   /** Number of running or queued leaders expected to run before this request. */
@@ -76,7 +90,15 @@ export interface QueueContext {
   readonly headTicket?: string;
   readonly headElapsedMs?: number;
   readonly headEstimateMs?: number;
-  /** Sum of work ahead, less elapsed time on the running head, clamped at zero. */
+  /** Phase of the running head once it has a compile/execute split. */
+  readonly headPhase?: RunPhase;
+  /** `overrun` when the head is past its estimate but alive, so `waitEtaMs` rests on its history p90. */
+  readonly headEstimateState?: EstimateState;
+  /**
+   * Lane time still ahead of this request: each ticket's remaining compile
+   * (plus execute unless overlap hands the lane back), with an overrun-but-alive
+   * head re-estimated from its history p90, clamped at zero.
+   */
   readonly waitEtaMs: number;
 }
 
@@ -196,6 +218,19 @@ export interface RequestRecord {
   readonly background: boolean;
   readonly holdStop: boolean;
   readonly estimateMs: number | null;
+  /**
+   * Compile-phase estimate (started → build-finished) of the run this request
+   * leads or rides; equals that run's `estimateMs` when there is no split.
+   */
+  readonly compileEstimateMs?: number;
+  /** Execution-phase estimate (build-finished → exit) of that run; omitted for compile-only subcommands. */
+  readonly executeEstimateMs?: number;
+  /** Current phase of a running leader (or the leader this request rides). */
+  readonly phase?: RunPhase;
+  /** Live overrun flag; never persisted. Absent while the estimate still holds or the head is stalled. */
+  readonly estimateState?: EstimateState;
+  /** Intent-history p90 used to re-estimate remaining time once `estimateState` is `overrun`. */
+  readonly p90Ms?: number;
   /** Tickets this request was submitted `--after`: it stays queued until every one has settled. */
   readonly after: readonly string[];
   /** Live queue context, present only while this request is queued. */

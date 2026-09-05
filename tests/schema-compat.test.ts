@@ -280,6 +280,44 @@ describe('status/result contract completeness (issue #16)', () => {
     expect(stalled.orphaned).toBe(true);
   });
 
+  it('accepts per-phase estimates and the overrun flag on a running record (#91)', () => {
+    const overrun = requestRecordSchema.parse({
+      ...baseRecord,
+      compileEstimateMs: 20_000,
+      estimateState: 'overrun',
+      executeEstimateMs: 60_000,
+      p90Ms: 90_000,
+      phase: 'execute',
+      status: 'running',
+    });
+    expect(overrun.compileEstimateMs).toBe(20_000);
+    expect(overrun.executeEstimateMs).toBe(60_000);
+    expect(overrun.phase).toBe('execute');
+    expect(overrun.estimateState).toBe('overrun');
+    expect(overrun.p90Ms).toBe(90_000);
+    const legacy = requestRecordSchema.parse(baseRecord);
+    expect(legacy.compileEstimateMs).toBeUndefined();
+    expect(legacy.estimateState).toBeUndefined();
+    expect(legacy.phase).toBeUndefined();
+
+    const behindOverrun = requestRecordSchema.parse({
+      ...baseRecord,
+      queue: {
+        aheadTickets: ['cc-1'],
+        headElapsedMs: 900_000,
+        headEstimateMs: 300_000,
+        headEstimateState: 'overrun',
+        headPhase: 'execute',
+        headTicket: 'cc-1',
+        position: 1,
+        waitEtaMs: 300_000,
+      },
+      status: 'queued',
+    });
+    expect(behindOverrun.queue?.headEstimateState).toBe('overrun');
+    expect(behindOverrun.queue?.headPhase).toBe('execute');
+  });
+
   it('accepts --after prerequisites and their live wait state, defaulting older daemons to none', () => {
     const dependent = requestRecordSchema.parse({
       ...baseRecord,

@@ -996,8 +996,22 @@ export const queuedWaitThresholdMs = 1_000;
 export const queuedWaitMs = (waitMs: unknown): number | null =>
   typeof waitMs === 'number' && waitMs >= queuedWaitThresholdMs ? waitMs : null;
 
-export const delayedWaitCue = (delayed: unknown): string | null =>
-  delayed === true ? 'wait exceeds estimate' : null;
+/** `overrun` from an untyped queued row's `queue.headEstimateState`; null for older daemons or an on-track head. */
+export const queueHeadEstimateState = (queue: unknown): string | null =>
+  isRecord(queue) && queue.headEstimateState === 'overrun' ? 'overrun' : null;
+
+/**
+ * Why a queued row is waiting longer than expected: its own wait past the
+ * estimate, the lane head overrunning its estimate while still alive (#91),
+ * or both.
+ */
+export const delayedWaitCue = (delayed: unknown, headEstimateState?: unknown): string | null => {
+  const cues = [
+    delayed === true ? 'wait exceeds estimate' : null,
+    headEstimateState === 'overrun' ? 'head overrunning' : null,
+  ].filter((cue): cue is string => cue !== null);
+  return cues.length === 0 ? null : cues.join(' · ');
+};
 
 export const quietOutputHint = (
   quietMs: unknown,

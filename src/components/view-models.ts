@@ -349,6 +349,7 @@ const queueText = (record: RequestRecord): string | null => {
     queue === undefined ? null : `${queue.position} ahead${head}, wait ~${formatMs(queue.waitEtaMs)}`,
     record.admissionHold === undefined ? null : `waiting: ${record.admissionHold.detail}`,
     record.delayed === true ? 'wait exceeds estimate — lane busy' : null,
+    queue?.headEstimateState === 'overrun' ? 'head overrunning its estimate but alive' : null,
   ].filter((part) => part !== null);
   return parts.length === 0 ? null : parts.join('; ');
 };

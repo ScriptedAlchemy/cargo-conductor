@@ -23,6 +23,10 @@ clippy, fmt, nextest) or is waiting on someone else's cargo.
   is a rider), then resubmit. If the session that submitted a stalled ticket
   has already disconnected the daemon kills it itself and records
   `stalled: … killed automatically` as the error; resubmit in that case too.
+  `estimateState: overrun` is the other case: the head is past three times
+  its estimate but still producing output or CPU, so the queue ETA uses the
+  intent's p90 remaining instead of zero. Background that ticket if you can
+  wait; do not kill it as stalled.
 - Scope work with `-p <crate>` instead of workspace-wide `--all-features` when
   a single crate answers the question.
 - Prefer `hauler status`, `hauler last`, and the `hauler_status` MCP

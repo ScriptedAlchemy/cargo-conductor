@@ -182,6 +182,10 @@ export interface Job {
   log: TicketLogWriter | null;
   /** Cost-model estimate at submission; feeds lane scheduling. */
   readonly estimateMs: number;
+  /** Compile-phase estimate; equals `estimateMs` when the run has no execute split. */
+  readonly compileEstimateMs: number;
+  /** Execution-phase estimate for test/nextest/bench/run; null when unknown. */
+  readonly executeEstimateMs: number | null;
   /** Provenance of `estimateMs`; a `default` prior must never trip a client's auto-background. */
   readonly estimateSource: EstimateSource;
   /** Real start of the cargo process, shared by attached ledger rows. */
@@ -404,8 +408,15 @@ export const attachmentReceives = (attachment: Attachment, audience: ReplayAudie
   }
 };
 
-export const remainingEstimateMs = (job: Job, atMs: number): number =>
-  job.startedAtMs === null ? job.estimateMs : Math.max(0, job.estimateMs - (atMs - job.startedAtMs));
+export const remainingEstimateMs = (job: Job, atMs: number): number => {
+  if (job.startedAtMs === null) {
+    return job.estimateMs;
+  }
+  if (job.buildFinishedAtMs !== null && job.executeEstimateMs !== null) {
+    return Math.max(0, job.executeEstimateMs - (atMs - job.buildFinishedAtMs));
+  }
+  return Math.max(0, job.estimateMs - (atMs - job.startedAtMs));
+};
 
 export const delayedWaitFloorMs = 10 * 60_000;
 export const quietOutputThresholdMs = 5 * 60_000;

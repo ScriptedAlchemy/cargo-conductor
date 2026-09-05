@@ -209,7 +209,9 @@ stdout.
 
 ![cargo-hauler request normalization, lane-local serialization, scheduling, admission, and concurrent Cargo processes](docs/media/how-it-works.png)
 
-The scheduler estimates run cost from per-intent EWMA history. It can also use
+The scheduler estimates run cost from per-intent EWMA history, split into a
+compile phase and an execution phase once the ledger has seen
+`buildFinishedAtMs` on that intent. It can also use
 per-crate timing data from kache. Lower-cost work, requests with more attached
 callers, dependency-unblocking work, and recently edited packages receive a
 lower scheduling score. Waiting time lowers the score further so broad work
@@ -268,10 +270,10 @@ own `-j` flag or `CARGO_BUILD_JOBS` always wins over both.
 | Lane isolation | A workspace-root and target-directory pair is serialized independently from other lanes. |
 | Admission | Per-core load, Linux CPU PSI, Linux memory PSI and `MemAvailable`, macOS VM pressure, configured thresholds, and the global permit cap control new starts. |
 | Parallelism | One daemon-owned jobserver FIFO shared by every spawned Cargo; a per-run `CARGO_BUILD_JOBS` grant only when the FIFO could not be armed. |
-| Scheduling | EWMA estimates, optional kache priors, fan-out, dependency topology, recent edits, and request age determine lane order; `--after cc-N` holds a request until the named tickets settle. |
+| Scheduling | Per-phase EWMA estimates (compile vs execute), optional kache priors, fan-out, dependency topology, recent edits, and request age determine lane order; `--after cc-N` holds a request until the named tickets settle. |
 | Persistence | Tickets, output tails, timings, outcomes, and savings are stored in SQLite; every leader run's whole combined output is kept on disk as `<state dir>/tickets/<ticket>.log`. |
 | Caller output and status | Output streams to attached callers; late callers receive buffered replay. After 30 seconds without output, the client emits a progress heartbeat every 15 seconds with lane queue position, the lane-head ticket, and an aggregate wait ETA. |
-| Wait escalation | A queued request waiting longer than the larger of twice its own estimate and ten minutes is flagged as delayed; running jobs silent for more than five minutes show a quiet-duration hint. A running job past three times its estimate whose process tree has burned no CPU and printed nothing for ten minutes is flagged `stalled`; only a stalled job whose submitting connection is gone is killed automatically. |
+| Wait escalation | A queued request waiting longer than the larger of twice its own estimate and ten minutes is flagged as delayed; running jobs silent for more than five minutes show a quiet-duration hint. A live head past three times its estimate that is still burning CPU or printing is flagged `estimateState: overrun` (its followers see `queue.headEstimateState`) and contributes its history p90 remaining — never less than one more estimate's worth — to the queue ETA instead of zero. A running job past three times its estimate whose process tree has burned no CPU and printed nothing for ten minutes is flagged `stalled`; only a stalled job whose submitting connection is gone is killed automatically. |
 | Daemon status | `running`, `stopped`, or `unresponsive`: a socket that exists but does not answer within its budget is reported as unresponsive, never as stopped. |
 
 ### Tickets and long-running requests
@@ -324,7 +326,12 @@ macOS; other platforms do not detect stalls). A ticket is flagged `stalled`
 when its elapsed time exceeds `CARGO_HAULER_STALL_ESTIMATE_FACTOR` (3) times
 its estimate, the tree's CPU time has not changed for
 `CARGO_HAULER_STALL_IDLE_MS` (ten minutes), and it printed nothing in that
-window. `hauler status`, `hauler_status`, and the dashboard show `stalled`
+window. A head that has crossed that estimate multiple but is still burning
+CPU or printing is flagged `estimateState: overrun` instead (with the
+intent's `p90Ms`, and `queue.headEstimateState: overrun` on the tickets
+behind it): the queue ETA uses the intent's p90 remaining — never less than
+one more estimate's worth — rather than zero, and agents can background it
+without treating it as deadlocked. `hauler status`, `hauler_status`, and the dashboard show `stalled`
 with the idle duration; `hauler result` and `hauler_result` answer `ticket
 looks stalled (no CPU for Nm) — hauler kill cc-N`; `hauler await` heartbeats
 say the same. Riders of a stalled leader report the leader's stall and its
