@@ -7,7 +7,7 @@ import { describe, expect, it } from 'effect-rstest';
 import {
   globalHaulerArgv,
   haulerEntryLocation,
-} from '../src/scripts/entry-location.js';
+} from '../src/shim/entry-location.js';
 
 describe('hauler entry location', () => {
   it.each([

@@ -21,7 +21,7 @@ import {
   globalHaulerArgv,
   haulerEntryLocation,
   type HaulerEntryLocation,
-} from './entry-location.js';
+} from '../shim/entry-location.js';
 
 /**
  * The process-level entry: `exec` owns stdout/stderr byte-for-byte for the
