@@ -1,8 +1,0 @@
----
-'cargo-hauler': minor
----
-
-Fold more queued work into one Cargo run: compile batches with a `--` trailer, and test runs whose filters differ.
-
-- `cargo build` / `check` / `clippy` requests with the same arguments after `--` now batch: `cargo clippy -p a -- -D warnings` and `cargo clippy -p b -- -D warnings` run as `cargo clippy -p a -p b -- -D warnings`, the trailer once. Such runs are demultiplexed like any other compile (the `--message-format` rewrite goes before the `--`), so under `-D warnings` a participant whose own units compiled cleanly is released as done when another participant's warnings fail the composite; the rest rerun alone. Trailers that differ, or a trailer on one side only, still keep the runs apart, as do differing `--all-targets` / `--tests` / `--features`. (#86)
-- `cargo test` requests naming different packages fold even when their bare name filters differ: `cargo test -p a -- f1` and `cargo test -p b -- f2` run as `cargo test -p a -p b --no-fail-fast -- f1 f2`, the union of packages with the union of filters. An identical set of `--test-threads=N`, `--nocapture`, `--quiet` (or `-q`) after `--` folds too, carried once from the leader; a mismatched set does not, and `--exact`, `--skip`, `--ignored`, `--include-ignored`, `--list`, `--format`, `--logfile`, or any other harness flag keeps a run out of composites. `--lib` runs fold like `--test NAME` runs; the target selection still has to match. Requests naming the same packages still need the same filters, and unfiltered runs fold only with unfiltered runs. A folded participant inherits a composite failure only when it asked for every package and every filter the composite ran; otherwise it reruns alone. (#87)
