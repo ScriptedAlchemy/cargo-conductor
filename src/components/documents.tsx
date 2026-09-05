@@ -69,7 +69,7 @@ export const StatusDocument = ({
       nowMs={nowMs}
       records={result.recent}
     />
-    <KacheStats kache={result.kache} />
+    <KacheStats kache={result.kache} nowMs={nowMs} />
     <StoppedWithActive status={result} />
     {result.active.length > 0 ? (
       <Agent.Context>

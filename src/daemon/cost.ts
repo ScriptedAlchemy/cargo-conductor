@@ -450,24 +450,6 @@ interface CostModelWithPrewarm extends CostModelApi {
   readonly prewarmIndexPriors: Effect.Effect<void>;
 }
 
-const lruSet = <K, V>(
-  current: ReadonlyMap<K, V>,
-  key: K,
-  value: V,
-): ReadonlyMap<K, V> => {
-  const updated = new Map(current);
-  updated.delete(key);
-  updated.set(key, value);
-  while (updated.size > observationCacheLimit) {
-    const oldest = updated.keys().next().value as K | undefined;
-    if (oldest === undefined) {
-      break;
-    }
-    updated.delete(oldest);
-  }
-  return updated;
-};
-
 const lruSetMutable = <K, V>(map: Map<K, V>, key: K, value: V): void => {
   map.delete(key);
   map.set(key, value);
@@ -480,10 +462,21 @@ const lruSetMutable = <K, V>(map: Map<K, V>, key: K, value: V): void => {
   }
 };
 
+/**
+ * In-place LRU touch for a map held in a `SynchronizedRef`: the ref
+ * serializes every `modifyEffect`/`update`, so mutating the current map and
+ * handing the same reference back is safe, and it keeps a cold estimate
+ * O(1) instead of copying up to `observationCacheLimit` entries per call.
+ */
+const lruTouch = <K, V>(map: Map<K, V>, key: K, value: V): Map<K, V> => {
+  lruSetMutable(map, key, value);
+  return map;
+};
+
 export const createCostModel = (options: CreateCostModelOptions): CostModelWithPrewarm => {
   /** intentKey -> per-mode EWMA of observed run durations (a seeded entry may hold nulls). */
-  const ewma = SynchronizedRef.makeUnsafe<ReadonlyMap<string, IntentEwma>>(new Map());
-  const phaseEwma = SynchronizedRef.makeUnsafe<ReadonlyMap<string, PhaseEwma>>(new Map());
+  const ewma = SynchronizedRef.makeUnsafe<Map<string, IntentEwma>>(new Map());
+  const phaseEwma = SynchronizedRef.makeUnsafe<Map<string, PhaseEwma>>(new Map());
   const p90Cache = new Map<string, { readonly atMs: number; readonly value: number | null }>();
   const crateObservations = new Map<string, number>();
   const intentContexts = new Map<string, IntentObservationContext>();
@@ -510,7 +503,7 @@ export const createCostModel = (options: CreateCostModelOptions): CostModelWithP
     SynchronizedRef.modifyEffect(ewma, (current) => {
       const existing = current.get(intentKey);
       if (existing !== undefined) {
-        return Effect.succeed([existing, lruSet(current, intentKey, existing)] as const);
+        return Effect.succeed([existing, lruTouch(current, intentKey, existing)] as const);
       }
       return options.seedDurations(intentKey, ewmaSeedLimit).pipe(
         Effect.catchCause(() => Effect.succeed([])),
@@ -528,7 +521,7 @@ export const createCostModel = (options: CreateCostModelOptions): CostModelWithP
           // estimate then floors at the crate compile priors instead of
           // inheriting a seconds-long average for a rebuild.
           const seeded: IntentEwma = { clean: value, edited: null };
-          return [seeded, lruSet(current, intentKey, seeded)] as const;
+          return [seeded, lruTouch(current, intentKey, seeded)] as const;
         }),
       );
     });
@@ -537,11 +530,11 @@ export const createCostModel = (options: CreateCostModelOptions): CostModelWithP
     SynchronizedRef.modifyEffect(phaseEwma, (current) => {
       const existing = current.get(intentKey);
       if (existing !== undefined) {
-        return Effect.succeed([existing, lruSet(current, intentKey, existing)] as const);
+        return Effect.succeed([existing, lruTouch(current, intentKey, existing)] as const);
       }
       const seed = options.seedPhaseDurations;
       if (seed === undefined) {
-        return Effect.succeed([emptyPhaseEwma, lruSet(current, intentKey, emptyPhaseEwma)] as const);
+        return Effect.succeed([emptyPhaseEwma, lruTouch(current, intentKey, emptyPhaseEwma)] as const);
       }
       return seed(intentKey, ewmaSeedLimit).pipe(
         Effect.catchCause(() => Effect.succeed([])),
@@ -559,7 +552,7 @@ export const createCostModel = (options: CreateCostModelOptions): CostModelWithP
             }
           }
           const seeded: PhaseEwma = { compile: { clean: compile, edited: null }, execute };
-          return [seeded, lruSet(current, intentKey, seeded)] as const;
+          return [seeded, lruTouch(current, intentKey, seeded)] as const;
         }),
       );
     });
@@ -596,7 +589,7 @@ export const createCostModel = (options: CreateCostModelOptions): CostModelWithP
           }
           // Same-package `--test <name>` neighbor, not the crate-wide prior.
           const seeded: IntentEwma = { clean: value, edited: null };
-          return [seeded, lruSet(current, intent.key, seeded)] as const;
+          return [seeded, lruTouch(current, intent.key, seeded)] as const;
         }),
       );
     });
@@ -855,7 +848,7 @@ export const createCostModel = (options: CreateCostModelOptions): CostModelWithP
               : edited
                 ? { ...observed, edited: blendEwma(observed.edited, validRunMs) }
                 : { ...observed, clean: blendEwma(observed.clean, validRunMs) };
-          return lruSet(current, intentKey, next);
+          return lruTouch(current, intentKey, next);
         });
         const compileMs = finitePositiveMs(recordOptions?.compileMs ?? Number.NaN);
         const executeMs = finitePositiveMs(recordOptions?.executeMs ?? Number.NaN);
@@ -875,7 +868,7 @@ export const createCostModel = (options: CreateCostModelOptions): CostModelWithP
                     : { ...observed.compile, clean: blendEwma(observed.compile.clean, compileMs) };
             const nextExecute =
               executeMs === null ? observed.execute : blendEwma(observed.execute, executeMs);
-            return lruSet(current, intentKey, { compile: nextCompile, execute: nextExecute });
+            return lruTouch(current, intentKey, { compile: nextCompile, execute: nextExecute });
           });
         }
         const context = intentContexts.get(intentKey);

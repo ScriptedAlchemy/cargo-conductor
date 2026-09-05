@@ -267,6 +267,65 @@ describe('kacheModel and lineageModel', () => {
     expect(kacheModel({ available: false, distinctCrates: 0, entryCount: 0, eventsFreshMs: null, indexSizeBytes: 0, recentHeartbeatRoots: [], topCrates: [] })).toEqual({ kind: 'unavailable' });
   });
 
+  it('carries the store-pressure lines and warnings beside the index summary', () => {
+    const model = kacheModel(
+      {
+        available: true,
+        distinctCrates: 40,
+        entryCount: 1_200,
+        eventsFreshMs: 5_000,
+        indexSizeBytes: 2 * 1024 ** 2,
+        recentHeartbeatRoots: [],
+        topCrates: [],
+        pressure: {
+          storeBytes: 541 * 1024 ** 3,
+          limit: { kind: 'known', bytes: 429 * 1024 ** 3, source: 'KACHE_MAX_SIZE' },
+          gc: {
+            kind: 'ran',
+            lastRunAtMs: nowMs - 90_000,
+            durationMs: 83_000,
+            entriesEvicted: 0,
+            bytesFreed: 1_050_074,
+            diskBytesReclaimed: 0,
+            blobsRemoved: 2,
+            declined: false,
+            entriesPinned: null,
+            entriesUnreclaimable: null,
+            evictionErrors: 4,
+            evictionErrorSample: 'database is locked',
+          },
+          keyTiming: { count: 3, meanMs: 1_000, p95Ms: 1_100 },
+        },
+      },
+      5,
+      nowMs,
+    );
+    expect(model.kind).toBe('available');
+    if (model.kind !== 'available') {
+      return;
+    }
+    expect(model.summary).toBe('1200 entries across 40 crates (2.0 MB)');
+    expect(model.pressure).toEqual({
+      gc: 'ran 2m ago in 1m 23s, 0 entries evicted, 2 blobs removed, 1.0 MB freed, 4 evictions skipped',
+      keyTiming: 'key_ms mean 1.0s · p95 1.1s (n=3)',
+      kind: 'available',
+      store: { limitSource: 'KACHE_MAX_SIZE', percent: (541 / 429) * 100, text: '541.0 GB of 429.0 GB (126%)' },
+      warnings: [
+        { kind: 'over-limit', text: 'store is over its limit (541.0 GB of 429.0 GB (126%)); kache GC is not keeping up' },
+        { kind: 'gc-eviction-errors', text: 'last GC skipped 4 evictions: database is locked' },
+      ],
+    });
+  });
+
+  it('marks store pressure unavailable for a daemon that predates the report', () => {
+    const model = kacheModel(
+      { available: true, distinctCrates: 1, entryCount: 1, eventsFreshMs: null, indexSizeBytes: 10, recentHeartbeatRoots: [], topCrates: [] },
+      5,
+      nowMs,
+    );
+    expect(model.kind === 'available' ? model.pressure : null).toEqual({ kind: 'unavailable', reason: 'older-daemon' });
+  });
+
   it('describes where a request sits in its conversation tree', () => {
     const model = lineageModel({
       source: 'native',

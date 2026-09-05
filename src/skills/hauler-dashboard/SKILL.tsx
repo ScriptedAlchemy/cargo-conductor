@@ -58,8 +58,27 @@ export default () => (
         attaching — and negative values (the leader ran longer than the rider alone would have) are included.
       </li>
       <li>
+        <strong>Queue wait vs run:</strong> per window, total queue wait against total run time for leaders,
+        and the wait split by cause. <em>Lane-bound</em> is time a same-lane leader was still compiling (before
+        its <code>Finished</code> line or exit); <em>permit-bound</em> is time every admission permit was held
+        with no same-lane compile to blame; <em>other</em> is admission holds, <code>--after</code>{' '}
+        prerequisites, and scheduling latency. The permit split assumes the daemon's current permit count —
+        the caption says so — and "lane time released by hand-back" is the execution time of test and run
+        leaders that ran with their lane already handed to the next compile.
+      </li>
+      <li>
+        <strong>By command:</strong> run timings per subcommand and profile, each with its own n. Commands
+        that execute after building (test, run, bench) add a compile-vs-exec line from the leaders that handed
+        back; pure compiles never do, so <code>cargo check</code> shows none.
+      </li>
+      <li>
         <strong>Kache:</strong> optional machine-wide cache freshness, active compile roots, and slowest crates
-        grouped by profile. No panel means kache is unavailable or disabled, not that the daemon failed.
+        grouped by profile, plus store pressure: blob bytes against kache's <code>local_max_size</code> (read
+        from <code>KACHE_MAX_SIZE</code> or its config; "limit unknown" names why when it cannot be), the last
+        GC from <code>gc_stats.json</code> with any <code>skipping eviction</code> warnings matched from kache's
+        logs, and <code>key_ms</code> mean/p95 from the events sidecar. Warnings appear when the store is over
+        its limit or the last GC declined or skipped evictions. No panel means kache is unavailable or
+        disabled, not that the daemon failed.
       </li>
       <li>
         <strong>Lanes:</strong> work grouped by resolved <code>(workspace root, target dir)</code>. Only lanes

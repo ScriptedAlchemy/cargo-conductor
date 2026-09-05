@@ -10,6 +10,7 @@ import {
   DEMUX_FLAG,
   argvText,
   argvTitle,
+  asKachePressure,
   attachSavings,
   compactArgvText,
   defaultMetricsWindowId,
@@ -19,12 +20,15 @@ import {
   formatMs,
   frequencyEntries,
   frequencyTotal,
+  handBackView,
   kacheColumns,
+  kachePressureView,
   kacheProfileGroups,
   laneIsActive,
   outputTextFor,
   pathBasename,
   percentileMinSamples,
+  phaseSplitView,
   pickMetricsWindow,
   pollStatus,
   queueHeadEstimateState,
@@ -49,10 +53,12 @@ import {
   terminalStatuses,
   ticketDetailFrom,
   waitMetricsView,
+  waitVsRunView,
   metricsWindowLabel,
   memoryStatView,
   admissionHoldDetail,
   heavyAdmissionNote,
+  type DashboardMetricsWindow,
 } from '../src/dashboard/lib.js';
 
 const repoRoot = fileURLToPath(new URL('..', import.meta.url));
@@ -1126,5 +1132,202 @@ describe('attachSavings (runs avoided is attach coalescing, not kache)', () => {
       savedEstimatedMs: 0,
       savedExactMs: 0,
     });
+  });
+});
+
+describe('waitVsRunView (queue wait vs run, split by cause)', () => {
+  const window: DashboardMetricsWindow = {
+    id: 'day',
+    count: 12,
+    done: 10,
+    failed: 2,
+    killed: 0,
+    runP50Ms: 40_000,
+    runP95Ms: 90_000,
+    runMeanMs: 45_000,
+    waitP50Ms: 20_000,
+    waitP95Ms: 200_000,
+    bySubcommand: [],
+    runTotalMs: 600_000,
+    waitTotalMs: 960_000,
+    waitSplit: { count: 12, laneBoundMs: 480_000, permitBoundMs: 240_000, otherMs: 240_000, permits: 5 },
+    handBack: { leaders: 3, laneReleasedMs: 90_000 },
+  };
+
+  it('reports totals, wait as a share of run, and each cause as a share of the wait', () => {
+    const view = waitVsRunView(window);
+    expect(view.kind).toBe('available');
+    if (view.kind !== 'available') {
+      return;
+    }
+    expect(view.count).toBe(12);
+    expect(view.waitTotalMs).toBe(960_000);
+    expect(view.runTotalMs).toBe(600_000);
+    expect(view.waitToRunPercent).toBe(160);
+    expect(view.parts.map((part) => [part.kind, part.ms, part.percent])).toEqual([
+      ['lane', 480_000, 50],
+      ['permit', 240_000, 25],
+      ['other', 240_000, 25],
+    ]);
+    // The permit assumption is stated, with the caveat about earlier caps.
+    expect(view.permitsNote).toContain('5-permit cap');
+    expect(view.permitsNote).toContain('earlier cap');
+  });
+
+  it('says so when permits were not classified, and divides nothing by zero', () => {
+    const view = waitVsRunView({
+      ...window,
+      runTotalMs: 0,
+      waitTotalMs: 0,
+      waitSplit: { count: 0, laneBoundMs: 0, permitBoundMs: 0, otherMs: 0, permits: null },
+    });
+    expect(view.kind).toBe('available');
+    if (view.kind !== 'available') {
+      return;
+    }
+    expect(view.waitToRunPercent).toBeNull();
+    expect(view.parts.every((part) => part.percent === 0)).toBe(true);
+    expect(view.permitsNote).toContain('no permit count');
+  });
+
+  it('is unavailable, with the reason, without a window or from an older daemon', () => {
+    expect(waitVsRunView(null)).toEqual({ kind: 'unavailable', reason: 'no-window' });
+    const { handBack: _handBack, runTotalMs: _run, waitSplit: _split, waitTotalMs: _wait, ...legacy } = window;
+    expect(waitVsRunView(legacy)).toEqual({ kind: 'unavailable', reason: 'older-daemon' });
+  });
+
+  it('summarises the lane time the hand-back released', () => {
+    expect(handBackView(window)).toEqual({
+      kind: 'available',
+      laneReleasedMs: 90_000,
+      leaders: 3,
+      text: '1m 30s across 3 leaders',
+    });
+    expect(handBackView({ ...window, handBack: { leaders: 0, laneReleasedMs: 0 } })).toMatchObject({
+      kind: 'available',
+      text: 'no leader handed back',
+    });
+    expect(handBackView(null)).toEqual({ kind: 'unavailable' });
+  });
+});
+
+describe('phaseSplitView (compile vs execution per command)', () => {
+  it('renders both p50s once the sample is large enough and the compile share for the meter', () => {
+    const view = phaseSplitView({
+      count: 14,
+      compileP50Ms: 12_000,
+      executeP50Ms: 3_100,
+      compileTotalMs: 180_000,
+      executeTotalMs: 60_000,
+    });
+    expect(view).toEqual({
+      compilePercent: 75,
+      count: 14,
+      text: 'compile p50 12.0s · exec p50 3.1s (n=14)',
+    });
+  });
+
+  it('hides percentiles below the sample floor but still shows n', () => {
+    expect(
+      phaseSplitView({ count: 2, compileP50Ms: 12_000, executeP50Ms: 3_100, compileTotalMs: 24_000, executeTotalMs: 6_200 })?.text,
+    ).toBe(`compile p50 n<${percentileMinSamples} · exec p50 n<${percentileMinSamples} (n=2)`);
+  });
+
+  it('is null for pure compiles, empty splits and older daemons', () => {
+    expect(phaseSplitView(null)).toBeNull();
+    expect(phaseSplitView(undefined)).toBeNull();
+    expect(
+      phaseSplitView({ count: 0, compileP50Ms: null, executeP50Ms: null, compileTotalMs: 0, executeTotalMs: 0 }),
+    ).toBeNull();
+  });
+});
+
+describe('kache store pressure (widget adapter + panel model)', () => {
+  const nowMs = Date.parse('2026-09-05T00:00:00Z');
+  const pressure = {
+    storeBytes: 541 * 1024 ** 3,
+    limit: { kind: 'known', bytes: 429 * 1024 ** 3, source: '/home/me/.config/kache/config.toml' },
+    gc: {
+      kind: 'ran',
+      lastRunAtMs: nowMs - 2 * 3_600_000,
+      durationMs: 83_000,
+      entriesEvicted: 0,
+      bytesFreed: 1_050_074,
+      diskBytesReclaimed: 0,
+      blobsRemoved: 2,
+      declined: false,
+      entriesPinned: null,
+      entriesUnreclaimable: null,
+      evictionErrors: 2_907,
+      evictionErrorSample: 'database is locked',
+    },
+    keyTiming: { count: 4_096, meanMs: 1_020, p95Ms: 2_400 },
+  };
+
+  it('accepts the protocol shape and rejects anything else instead of inventing zeros', () => {
+    expect(asKachePressure(pressure)).toEqual(pressure);
+    expect(asKachePressure(undefined)).toBeNull();
+    expect(asKachePressure({ storeBytes: 1 })).toBeNull();
+    expect(asKachePressure({ ...pressure, limit: { kind: 'unknown', reason: 'made-up', detail: '' } })).toBeNull();
+    expect(asKachePressure({ ...pressure, gc: { kind: 'ran' } })).toBeNull();
+    expect(asKachePressure({ ...pressure, keyTiming: { count: 'many' } })).toMatchObject({ keyTiming: null });
+  });
+
+  it('warns when the store is over its limit and when the last GC skipped evictions', () => {
+    const model = kachePressureView(pressure, nowMs);
+    expect(model.kind).toBe('available');
+    if (model.kind !== 'available') {
+      return;
+    }
+    expect(model.store).toEqual({
+      limitSource: '/home/me/.config/kache/config.toml',
+      percent: (541 / 429) * 100,
+      text: '541.0 GB of 429.0 GB (126%)',
+    });
+    expect(model.gc).toBe('ran 2h ago in 1m 23s, 0 entries evicted, 2 blobs removed, 1.0 MB freed, 2907 evictions skipped');
+    expect(model.keyTiming).toBe('key_ms mean 1.0s · p95 2.4s (n=4096)');
+    expect(model.warnings.map((warning) => warning.kind)).toEqual(['over-limit', 'gc-eviction-errors']);
+    expect(model.warnings[1]?.text).toBe('last GC skipped 2907 evictions: database is locked');
+  });
+
+  it('renders unknown limits, missing gc_stats and a declined GC honestly, without warnings it cannot support', () => {
+    const model = kachePressureView(
+      {
+        ...pressure,
+        limit: { kind: 'unknown', reason: 'not-configured', detail: 'no local_max_size' },
+        gc: { kind: 'unavailable', reason: 'missing' },
+        keyTiming: null,
+      },
+      nowMs,
+    );
+    expect(model).toEqual({
+      gc: 'no GC recorded (gc_stats.json missing)',
+      keyTiming: null,
+      kind: 'available',
+      store: { limitSource: null, percent: null, text: '541.0 GB, limit unknown: local_max_size not set' },
+      warnings: [],
+    });
+
+    const declined = kachePressureView(
+      {
+        ...pressure,
+        storeBytes: null,
+        gc: { ...pressure.gc, declined: true, entriesPinned: 12, evictionErrors: 0, evictionErrorSample: null },
+      },
+      nowMs,
+    );
+    expect(declined.kind).toBe('available');
+    if (declined.kind !== 'available') {
+      return;
+    }
+    expect(declined.store.text).toBe('size unknown (index has no blobs table) of 429.0 GB');
+    expect(declined.gc).toBe('ran 2h ago in 1m 23s, declined to evict');
+    expect(declined.warnings).toEqual([
+      { kind: 'gc-declined', text: 'last GC declined to evict anything (12 entries pinned)' },
+    ]);
+  });
+
+  it('is unavailable from an older daemon rather than an empty store', () => {
+    expect(kachePressureView(undefined, nowMs)).toEqual({ kind: 'unavailable', reason: 'older-daemon' });
   });
 });

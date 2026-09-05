@@ -5,12 +5,18 @@ import type {
   AdmissionHold,
   AttachmentSavingsReport,
   SystemLoadReport,
+  KacheGcReport,
   KacheStatusReport,
+  KacheStoreLimitReport,
+  KacheStorePressureReport,
   LaneStatus,
   PrerequisiteContext,
   RequestRecord,
   StallReport,
   StatusMetrics,
+  StatusMetricsHandBack,
+  StatusMetricsPhaseSplit,
+  StatusMetricsWaitSplit,
   StatusReport,
 } from '../daemon/protocol.js';
 
@@ -131,13 +137,35 @@ const histogramMetricSchema = z.object({
   sum: z.number(),
 });
 
+const statusMetricsPhaseSplitSchema = z.object({
+  count: z.number().int().nonnegative(),
+  compileP50Ms: z.number().nullable(),
+  executeP50Ms: z.number().nullable(),
+  compileTotalMs: z.number().nonnegative(),
+  executeTotalMs: z.number().nonnegative(),
+}) satisfies z.ZodType<StatusMetricsPhaseSplit>;
+
 const statusMetricsWindowBySubcommandSchema = z.object({
   subcommand: z.string(),
   profile: z.string().optional(),
   count: z.number().int().nonnegative(),
   p50Ms: z.number().nullable(),
   maxMs: z.number().nullable(),
+  phases: statusMetricsPhaseSplitSchema.nullable().optional(),
 });
+
+const statusMetricsWaitSplitSchema = z.object({
+  count: z.number().int().nonnegative(),
+  laneBoundMs: z.number().nonnegative(),
+  permitBoundMs: z.number().nonnegative(),
+  otherMs: z.number().nonnegative(),
+  permits: z.number().int().positive().nullable(),
+}) satisfies z.ZodType<StatusMetricsWaitSplit>;
+
+const statusMetricsHandBackSchema = z.object({
+  leaders: z.number().int().nonnegative(),
+  laneReleasedMs: z.number().nonnegative(),
+}) satisfies z.ZodType<StatusMetricsHandBack>;
 
 const statusMetricsWindowSchema = z.object({
   id: z.enum(['hour', 'day', 'all']),
@@ -151,6 +179,11 @@ const statusMetricsWindowSchema = z.object({
   waitP50Ms: z.number().nullable(),
   waitP95Ms: z.number().nullable(),
   bySubcommand: z.array(statusMetricsWindowBySubcommandSchema),
+  // Additive since 0.5.1 (#92); daemons before it never send these.
+  runTotalMs: z.number().nonnegative().optional(),
+  waitTotalMs: z.number().nonnegative().optional(),
+  waitSplit: statusMetricsWaitSplitSchema.optional(),
+  handBack: statusMetricsHandBackSchema.optional(),
 });
 
 const statusMetricsSchema = z.object({
@@ -199,6 +232,53 @@ const systemLoadSchema = z.object({
     .optional(),
 }) satisfies z.ZodType<SystemLoadReport>;
 
+const kacheStoreLimitSchema = z.discriminatedUnion('kind', [
+  z.object({
+    kind: z.literal('known'),
+    bytes: z.number().nonnegative(),
+    source: z.string(),
+  }),
+  z.object({
+    kind: z.literal('unknown'),
+    reason: z.enum(['config-missing', 'not-configured', 'unparsable', 'store-mismatch']),
+    detail: z.string(),
+  }),
+]) satisfies z.ZodType<KacheStoreLimitReport>;
+
+const kacheGcSchema = z.discriminatedUnion('kind', [
+  z.object({
+    kind: z.literal('unavailable'),
+    reason: z.enum(['missing', 'unparsable']),
+  }),
+  z.object({
+    kind: z.literal('ran'),
+    lastRunAtMs: z.number(),
+    durationMs: z.number().nonnegative().nullable(),
+    entriesEvicted: z.number().int().nonnegative().nullable(),
+    bytesFreed: z.number().nonnegative().nullable(),
+    diskBytesReclaimed: z.number().nonnegative().nullable(),
+    blobsRemoved: z.number().int().nonnegative().nullable(),
+    declined: z.boolean(),
+    entriesPinned: z.number().int().nonnegative().nullable(),
+    entriesUnreclaimable: z.number().int().nonnegative().nullable(),
+    evictionErrors: z.number().int().nonnegative().nullable(),
+    evictionErrorSample: z.string().nullable(),
+  }),
+]) satisfies z.ZodType<KacheGcReport>;
+
+const kacheStorePressureSchema = z.object({
+  storeBytes: z.number().nonnegative().nullable(),
+  limit: kacheStoreLimitSchema,
+  gc: kacheGcSchema,
+  keyTiming: z
+    .object({
+      count: z.number().int().nonnegative(),
+      meanMs: z.number().nonnegative(),
+      p95Ms: z.number().nonnegative(),
+    })
+    .nullable(),
+}) satisfies z.ZodType<KacheStorePressureReport>;
+
 const kacheStatusSchema = z.object({
   available: z.boolean(),
   distinctCrates: z.number().int().nonnegative(),
@@ -214,6 +294,8 @@ const kacheStatusSchema = z.object({
     ms: z.number().nonnegative(),
     profile: z.string(),
   })),
+  // Additive since 0.5.1 (#92).
+  pressure: kacheStorePressureSchema.optional(),
 }) satisfies z.ZodType<KacheStatusReport>;
 
 const savingsModeSchema = z.object({
