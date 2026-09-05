@@ -735,6 +735,7 @@ const ensureForExec = (
     Effect.as<PassthroughMode | null>(null),
     Effect.catchTags({
       ControlTimeout: () => Effect.succeed(null),
+      DaemonNewer: (error) => Effect.succeed({ reason: error.message, spool: true }),
       DaemonNotReplaced: (error) => Effect.succeed({ reason: error.message, spool: true }),
     }),
     Effect.catchCause((cause) =>

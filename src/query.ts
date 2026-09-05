@@ -13,7 +13,7 @@ import {
 import { resolveDaemonConfig } from './daemon/config.js';
 import type { DaemonConfigShape } from './daemon/config.js';
 import { requestExpecting } from './daemon/control.js';
-import type { DaemonNotReplacedError } from './daemon/shutdown.js';
+import type { DaemonNewerError, DaemonNotReplacedError } from './daemon/shutdown.js';
 import { createLedgerApi, openLedgerDatabase, openLedgerDatabaseReadOnly } from './daemon/ledger.js';
 import { isOrphanedByRestart, orphanedByRestartError, toStatusRow } from './daemon/protocol.js';
 import type {
@@ -280,7 +280,7 @@ export const loadHaulerSnapshot = (
   options: LoadSnapshotOptions = {},
 ): Effect.Effect<
   HaulerSnapshot,
-  SpawnDaemonError | DaemonNotReplacedError | DaemonReplacementFailedError
+  SpawnDaemonError | DaemonNewerError | DaemonNotReplacedError | DaemonReplacementFailedError
 > => {
   const config = options.config ?? resolveDaemonConfig();
   const recentLimit = options.recentLimit ?? defaultRecentLimit;

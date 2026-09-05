@@ -634,8 +634,12 @@ unset, the daemon reads kache's configured local store from
   `hauler_last` read the ledger with the daemon marked `stopped` or
   `unresponsive`. Before any live daemon reply is parsed, these reads apply
   the one-version rule and replace a daemon left running by a previous
-  install. If replacement fails, they report that failure instead of reading
-  the stale payload.
+  install. Replacement is directional: only a newer install replaces a
+  daemon. A client older than the daemon it finds — a session still on a
+  previous plugin — never shuts it down (the daemon refuses a shutdown from
+  an older or unversioned client), reports the daemon as newer, and runs
+  cargo directly. If replacement fails, the reads report that failure
+  instead of reading the stale payload.
 - The state directory is not migrated between installs. Every rendered
   document names the one in use (`state dir …` in the header; `stateRoot` in
   `--json`), so a `CARGO_HAULER_STATE_DIR` change is visible on the next

@@ -22,6 +22,7 @@ import {
   ensureDaemonRunning,
   spawnDetachedDaemon,
   type EnsureDaemonDependencies,
+  ensureDaemonVersion,
 } from '../src/client/ensure-daemon.js';
 import { pingDaemon } from '../src/daemon/control.js';
 import { runDaemon } from '../src/daemon/main.js';
@@ -369,5 +370,46 @@ describe('daemonIsAbsent', () => {
       // `.reason`; a walk that only follows `.cause` never finds the code,
       // classifies the daemon as non-absent, and clients never spawn it.
       expect(daemonIsAbsent(error.cause)).toBe(true);
+    }));
+});
+
+describe('directional replacement', () => {
+  const config = configAt('/tmp/cargo-hauler-directional-unit');
+  const newer: PongMessage = { id: 'n', pid: 77, startedAtMs: 1, type: 'pong', version: '999.0.0' };
+  const older: PongMessage = { id: 'o', pid: 78, startedAtMs: 1, type: 'pong', version: '0.0.1' };
+  const tracking = (overrides: Partial<EnsureDaemonDependencies>) => {
+    const calls: string[] = [];
+    const dependencies: EnsureDaemonDependencies = {
+      exitGraceMs: 100,
+      pingDaemon: () => Effect.succeed(newer),
+      pollMs: 5,
+      processAlive: () => false,
+      requestShutdown: () => Effect.sync(() => { calls.push('shutdown'); return 'acknowledged' as const; }),
+      spawnDetachedDaemon: () => Effect.sync(() => { calls.push('spawn'); }),
+      waitForDaemon: () => Effect.succeed(newer),
+      ...overrides,
+    };
+    return { calls, dependencies };
+  };
+
+  it.effect('never shuts down a daemon newer than this client; fails as DaemonNewer naming both', () =>
+    Effect.gen(function* () {
+      const { calls, dependencies } = tracking({});
+      const error = yield* ensureDaemonVersion(config, dependencies).pipe(Effect.flip);
+      expect(error._tag).toBe('DaemonNewer');
+      expect(error.message).toContain('pid 77 (999.0.0) is newer than this client');
+      expect(error.message).toContain(`(${version})`);
+      expect(calls).toEqual([]);
+    }));
+
+  it.effect('treats a refused shutdown as a newer daemon and does not spawn', () =>
+    Effect.gen(function* () {
+      const { calls, dependencies } = tracking({
+        pingDaemon: () => Effect.succeed(older),
+        requestShutdown: () => Effect.sync(() => { calls.push('shutdown'); return 'refused' as const; }),
+      });
+      const error = yield* ensureDaemonVersion(config, dependencies).pipe(Effect.flip);
+      expect(error._tag).toBe('DaemonNewer');
+      expect(calls).toEqual(['shutdown']);
     }));
 });

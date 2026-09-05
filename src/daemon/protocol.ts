@@ -377,6 +377,13 @@ export const pingRequestSchema = z.object({
 export const shutdownRequestSchema = z.object({
   type: z.literal('shutdown'),
   id: z.string().min(1),
+  /**
+   * The requesting client's release version. The daemon refuses a shutdown
+   * from a client older than itself, or from one that sends no version
+   * (every client before this field): replacement is directional, a newer
+   * install replaces an older daemon and never the reverse.
+   */
+  version: z.string().min(1).optional(),
 });
 
 export const clientMessageSchema = z.discriminatedUnion('type', [
@@ -829,7 +836,7 @@ export interface AttemptRecordedMessage {
 export interface ErrorMessage {
   readonly type: 'error';
   readonly id: string | null;
-  readonly code: 'bad-message' | 'bad-intent' | 'internal';
+  readonly code: 'bad-message' | 'bad-intent' | 'internal' | 'shutdown-refused';
   readonly message: string;
 }
 

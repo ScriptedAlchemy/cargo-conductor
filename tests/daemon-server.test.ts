@@ -378,3 +378,62 @@ describe('daemon connection defect boundaries', () => {
       });
     }));
 });
+
+describe('directional shutdown', () => {
+  const shutdownWith = (fields: Record<string, unknown>) =>
+    Effect.gen(function* () {
+      const written = yield* Deferred.make<void>();
+      const replies: ServerMessage[] = [];
+      const socket = {
+        [Socket.TypeId]: Socket.TypeId,
+        writer: Effect.succeed((chunk: Uint8Array | string) =>
+          Effect.sync(() => {
+            const text = typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('utf8');
+            for (const line of text.split('\n')) {
+              if (line.length > 0) {
+                replies.push(JSON.parse(line) as ServerMessage);
+              }
+            }
+          }).pipe(Effect.andThen(Deferred.succeed(written, undefined)), Effect.asVoid),
+        ),
+        run: (handler: (chunk: Uint8Array) => Effect.Effect<unknown> | void) =>
+          Effect.gen(function* () {
+            const handled = handler(Buffer.from(`${JSON.stringify({ type: 'shutdown', id: 's1', ...fields })}\n`));
+            if (Effect.isEffect(handled)) {
+              yield* handled;
+            }
+            yield* Deferred.await(written).pipe(Effect.timeout('500 millis'));
+          }),
+        runRaw: () => Effect.void,
+      } as unknown as Socket.Socket;
+      const shutdownLatch = yield* Deferred.make<void>();
+      yield* makeConnectionHandler({
+        broker: brokerWith(),
+        shutdownLatch,
+        startedAtMs: 0,
+        version: '0.6.7',
+      })(socket);
+      const latched = yield* Deferred.isDone(shutdownLatch);
+      return { latched, replies };
+    });
+
+  it.effect('refuses a shutdown from an older or unversioned client and stays up', () =>
+    Effect.gen(function* () {
+      for (const fields of [{}, { version: '0.6.6' }, { version: '0.3.5' }]) {
+        const { latched, replies } = yield* shutdownWith(fields);
+        expect(latched).toBe(false);
+        expect(replies).toHaveLength(1);
+        expect(replies[0]).toMatchObject({ type: 'error', id: 's1', code: 'shutdown-refused' });
+        expect(replies[0]?.type === 'error' ? replies[0].message : '').toContain('this daemon is 0.6.7');
+      }
+    }));
+
+  it.effect('acknowledges a shutdown from the same or a newer client', () =>
+    Effect.gen(function* () {
+      for (const fields of [{ version: '0.6.7' }, { version: '0.7.0' }]) {
+        const { latched, replies } = yield* shutdownWith(fields);
+        expect(latched).toBe(true);
+        expect(replies[0]).toEqual({ type: 'shutting-down', id: 's1' });
+      }
+    }));
+});

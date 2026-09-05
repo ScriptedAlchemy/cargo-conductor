@@ -1,5 +1,6 @@
 import { join } from 'node:path';
 
+import { version } from 'agent-bundle/meta';
 import { describe, expect, it } from 'effect-rstest';
 import * as Effect from 'effect/Effect';
 import * as Fiber from 'effect/Fiber';
@@ -468,7 +469,8 @@ describe('hauler daemon', () => {
 
       yield* requestOverSocket({
         socketPath: fixture.config.socketPath,
-        message: { type: 'shutdown', id: shortId() },
+        // The daemon refuses an unversioned shutdown as an older client's.
+        message: { type: 'shutdown', id: shortId(), version },
         isTerminal: (message) => message.type === 'shutting-down',
         timeoutMs: 3_000,
       }).pipe(

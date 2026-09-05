@@ -5,6 +5,7 @@
  * `lifecycle.ts` imports `ensure-daemon.ts`, and both import this.
  */
 
+import { version } from 'agent-bundle/meta';
 import * as Data from 'effect/Data';
 import * as Effect from 'effect/Effect';
 
@@ -79,27 +80,67 @@ export const waitForExit = (pid: number, options: ExitWaitOptions): Effect.Effec
  * hung up first (already on its way out), it never answered, or nothing was
  * listening.
  */
-export type ShutdownAck = 'acknowledged' | 'connection-closed' | 'timeout' | 'unreachable';
+export type ShutdownAck =
+  | 'acknowledged'
+  | 'connection-closed'
+  | 'timeout'
+  | 'unreachable'
+  /** The daemon is newer than this client (or this client sent no version) and stays up. */
+  | 'refused';
 
 export const requestShutdown = (
   socketPath: string,
   timeoutMs = 5_000,
+  clientVersion: string = version,
 ): Effect.Effect<ShutdownAck> =>
-  Effect.suspend(() =>
-    requestOverSocket({
-      isTerminal: (message) => message.type === 'shutting-down',
-      message: { id: shortId(), type: 'shutdown' },
+  Effect.suspend(() => {
+    const id = shortId();
+    return requestOverSocket({
+      isTerminal: (message) =>
+        message.type === 'shutting-down' || (message.type === 'error' && message.id === id),
+      message: { id, type: 'shutdown', version: clientVersion },
       socketPath,
       timeoutMs,
-    }),
-  ).pipe(
-    Effect.as<ShutdownAck>('acknowledged'),
+    });
+  }).pipe(
+    Effect.map(
+      (messages): ShutdownAck =>
+        messages.some((message) => message.type === 'error' && message.code === 'shutdown-refused')
+          ? 'refused'
+          : 'acknowledged',
+    ),
     Effect.catchTags({
       ConnectionClosed: () => Effect.succeed<ShutdownAck>('connection-closed'),
       ControlTimeout: () => Effect.succeed<ShutdownAck>('timeout'),
       DaemonUnreachable: () => Effect.succeed<ShutdownAck>('unreachable'),
     }),
   );
+
+/** The one text for a daemon newer than the client that asked it to go. */
+export const newerDaemonMessage = (daemon: DaemonIdentity, clientVersion: string): string =>
+  `cargo-hauler daemon pid ${daemon.pid} (${daemon.version}) is newer than this client (${clientVersion}); not replaced — upgrade this install, or restart the session so its hooks and MCP server come from the current plugin`;
+
+/**
+ * The daemon behind the socket is a newer build than this client, or refused
+ * the shutdown as one. Replacement is directional: an older client never
+ * takes a newer daemon down, so a long-lived session on a previous plugin
+ * cannot fight the daemon the upgraded install runs. The caller keeps using
+ * cargo directly (or reads the ledger) and says so.
+ */
+export class DaemonNewerError extends Data.TaggedError('DaemonNewer')<{
+  readonly socketPath: string;
+  readonly daemon: DaemonIdentity;
+  readonly clientVersion: string;
+  readonly message: string;
+}> {
+  constructor(fields: {
+    readonly socketPath: string;
+    readonly daemon: DaemonIdentity;
+    readonly clientVersion: string;
+  }) {
+    super({ ...fields, message: newerDaemonMessage(fields.daemon, fields.clientVersion) });
+  }
+}
 
 /** The one text for a daemon that outlived the grace after a shutdown request. */
 export const notReplacedMessage = (daemon: DaemonIdentity, graceMs: number): string =>
