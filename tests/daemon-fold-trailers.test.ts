@@ -311,7 +311,7 @@ describe('test folding across filters and harness flags (#87)', () => {
       expect(decodeOutput(messages[1] ?? [], 'stdout')).toContain(composite);
     }));
 
-  it.live('folds --lib runs sharing --test-threads=4, keeping the leader trailer once and appending the new filters', () =>
+  it.live('folds --lib runs sharing --test-threads=4, keeping the leader trailer once with the new filters ahead of it', () =>
     Effect.gen(function* () {
       const fixture = yield* scopedDaemon(1);
       const { exits, report } = yield* queueBehindHead(fixture, [
@@ -336,8 +336,8 @@ describe('test folding across filters and harness flags (#87)', () => {
         '--no-fail-fast',
         '--',
         'f1',
-        '--test-threads=4',
         'f2',
+        '--test-threads=4',
       ]);
     }));
 
@@ -359,19 +359,123 @@ describe('test folding across filters and harness flags (#87)', () => {
       expect(beta?.execArgv).toEqual(['cargo', 'test', '-p', 'beta', '--', 'f2', '--test-threads=2']);
     }));
 
-  it.live('never folds --exact runs, even with the same filter', () =>
+});
+
+describe('test folding with --exact (#97)', () => {
+  it.live('folds two --exact runs on different packages into one run over both filters, carrying --exact once', () =>
     Effect.gen(function* () {
       const fixture = yield* scopedDaemon(1);
-      const { exits, report } = yield* queueBehindHead(fixture, [
-        { argv: ['cargo', 'test', '-p', 'alpha', '--', 'f1', '--exact'] },
-        { argv: ['cargo', 'test', '-p', 'beta', '--', 'f1', '--exact'] },
-        { argv: ['cargo', 'test', '-p', 'gamma', '--', 'f1'] },
+      const { messages, exits, report } = yield* queueBehindHead(fixture, [
+        { argv: ['cargo', 'test', '-p', 'alpha', '--test', 'suite', '--', 'x::y', '--exact'] },
+        { argv: ['cargo', 'test', '-p', 'beta', '--test', 'suite', '--', 'z::w', '--exact'] },
       ]);
-      for (const exit of exits) {
-        expect(exit.status).toBe('done');
-        const record = recordFor(report, exit.ticket);
-        expect(record?.attachedTo).toBeNull();
-        expect(record?.execArgv).toEqual(record?.argv);
-      }
+      const [alphaExit, betaExit] = exits;
+      expect(alphaExit?.status).toBe('done');
+      expect(betaExit?.status).toBe('done');
+      const alpha = recordFor(report, alphaExit?.ticket ?? '');
+      const beta = recordFor(report, betaExit?.ticket ?? '');
+      expect(beta?.attachedTo).toBe(alphaExit?.ticket);
+      expect(beta?.attachMode).toBe('batch');
+      // libtest OR-s the filters and applies `--exact` to each: the union
+      // of packages with the union of filters, the flag once, last.
+      expect(alpha?.execArgv).toEqual([
+        'cargo',
+        'test',
+        '-p',
+        'alpha',
+        '--test',
+        'suite',
+        '-p',
+        'beta',
+        '--no-fail-fast',
+        '--',
+        'x::y',
+        'z::w',
+        '--exact',
+      ]);
+      expect(alpha?.execArgv?.filter((argument) => argument === '--exact')).toHaveLength(1);
+      // One cargo ran, and both tickets settled from it: each caller sees
+      // the argv the fake cargo received, and beta never ran its own.
+      const composite =
+        'fake-out:test -p alpha --test suite -p beta --no-fail-fast -- x::y z::w --exact';
+      expect(decodeOutput(messages[0] ?? [], 'stdout')).toContain(composite);
+      expect(decodeOutput(messages[1] ?? [], 'stdout')).toContain(composite);
+      expect(decodeOutput(messages[1] ?? [], 'stdout')).not.toContain('fake-out:test -p beta');
+      expect(findRequeued(messages[1] ?? [])).toBeUndefined();
+    }));
+
+  it.live('does not fold an --exact run with a substring run on the same filter: two separate cargo runs', () =>
+    Effect.gen(function* () {
+      const fixture = yield* scopedDaemon(1);
+      const { messages, exits, report } = yield* queueBehindHead(fixture, [
+        { argv: ['cargo', 'test', '-p', 'alpha', '--', 'x::y', '--exact'] },
+        { argv: ['cargo', 'test', '-p', 'beta', '--', 'x::y'] },
+      ]);
+      const [alphaExit, betaExit] = exits;
+      expect(alphaExit?.status).toBe('done');
+      expect(betaExit?.status).toBe('done');
+      const alpha = recordFor(report, alphaExit?.ticket ?? '');
+      const beta = recordFor(report, betaExit?.ticket ?? '');
+      expect(alpha?.attachedTo).toBeNull();
+      expect(beta?.attachedTo).toBeNull();
+      expect(alpha?.execArgv).toEqual(['cargo', 'test', '-p', 'alpha', '--', 'x::y', '--exact']);
+      expect(beta?.execArgv).toEqual(['cargo', 'test', '-p', 'beta', '--', 'x::y']);
+      // Each ran its own cargo: the substring run never saw `--exact`.
+      expect(decodeOutput(messages[0] ?? [], 'stdout')).toContain(
+        'fake-out:test -p alpha -- x::y --exact',
+      );
+      const betaStdout = decodeOutput(messages[1] ?? [], 'stdout');
+      expect(betaStdout).toContain('fake-out:test -p beta -- x::y');
+      expect(betaStdout).not.toContain('--exact');
+    }));
+
+  it.live('requeues an --exact participant that did not name every package when the composite fails, while one that did inherits it', () =>
+    Effect.gen(function* () {
+      const fixture = yield* scopedDaemon(1);
+      const { messages, exits, report } = yield* queueBehindHead(fixture, [
+        // The composite runs with the leader's environment: it fails.
+        {
+          argv: ['cargo', 'test', '-p', 'alpha', '--', 'x::y', '--exact'],
+          extraEnv: { FAKE_EXIT: '101' },
+        },
+        { argv: ['cargo', 'test', '-p', 'beta', '--', 'z::w', '--exact'] },
+        { argv: ['cargo', 'test', '-p', 'alpha', '-p', 'beta', '--', 'x::y', 'z::w', '--exact'] },
+      ]);
+      const [alphaExit, betaExit, wideExit] = exits;
+      // The leader keeps the composite's exit.
+      expect(alphaExit?.status).toBe('failed');
+      expect(alphaExit?.exitCode).toBe(101);
+      const alpha = recordFor(report, alphaExit?.ticket ?? '');
+      expect(alpha?.execArgv).toEqual([
+        'cargo',
+        'test',
+        '-p',
+        'alpha',
+        '-p',
+        'beta',
+        '--no-fail-fast',
+        '--',
+        'x::y',
+        'z::w',
+        '--exact',
+      ]);
+      // beta asked for neither alpha nor x::y, so the failing test may be
+      // alpha's: it reruns alone, with its own argv and environment.
+      expect(findRequeued(messages[1] ?? [])?.reason).toContain('batched run failed');
+      expect(betaExit?.status).toBe('done');
+      expect(betaExit?.exitCode).toBe(0);
+      const beta = recordFor(report, betaExit?.ticket ?? '');
+      expect(beta?.execArgv).toEqual(['cargo', 'test', '-p', 'beta', '--', 'z::w', '--exact']);
+      expect(decodeOutput(messages[1] ?? [], 'stdout')).toContain(
+        'fake-out:test -p beta -- z::w --exact',
+      );
+      // The wide participant asked for every package and every filter the
+      // composite ran: the failure is its own.
+      expect(findRequeued(messages[2] ?? [])).toBeUndefined();
+      expect(wideExit?.status).toBe('failed');
+      expect(wideExit?.exitCode).toBe(101);
+      const wide = recordFor(report, wideExit?.ticket ?? '');
+      expect(wide?.attachedTo).toBe(alphaExit?.ticket);
+      expect(wide?.attachMode).toBe('batch');
     }));
 });

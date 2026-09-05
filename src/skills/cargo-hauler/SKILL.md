@@ -72,10 +72,13 @@ clippy, fmt, nextest) or is waiting on someone else's cargo.
   output is in the ticket log, `hauler result cc-N --full`.
 - Folded test runs share one process. Queued `cargo test` requests with the
   same `--test` / `--lib` selection and harness flags (`--test-threads=N`,
-  `--nocapture`, `--quiet` only) may fold across different packages, with
-  different bare name filters, into one composite run over the union of
-  both, with `--no-fail-fast`; requests naming the same packages fold only
-  on the same filters, and `cargo nextest run` requests only on an identical
+  `--nocapture`, `--quiet`, `--exact` only) may fold across different
+  packages, with different bare name filters, into one composite run over
+  the union of both, with `--no-fail-fast` — `-- x::y --exact` and
+  `-- z::w --exact` run as `-- x::y z::w --exact`, since libtest applies
+  `--exact` to each filter. Exact and substring runs never mix; requests
+  naming the same packages fold only on the same filters, and
+  `cargo nextest run` requests only on an identical
   filterset. Every participant gets the composite's full output,
   so it may show tests another participant selected. A passing composite is
   everyone's pass. If it fails, a participant that did not ask for every

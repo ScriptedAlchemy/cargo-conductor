@@ -198,14 +198,20 @@ become `cargo clippy -p a -p b -- -D warnings`, with the trailer once. Under
 whose own units compiled cleanly is still released as done, the rest rerun
 alone. Folded tests share the composite process and output. `cargo test`
 requests fold when their `--test` / `--lib` selection and harness flags match
-— `--test-threads=N`, `--nocapture`, and `--quiet` are the only flags a
-composite carries, and only when every participant asked for the same set.
-Requests naming different packages may also differ in bare name filters:
+— `--test-threads=N`, `--nocapture`, `--quiet`, and `--exact` are the only
+flags a composite carries, and only when every participant asked for the same
+set. Requests naming different packages may also differ in bare name filters:
 `cargo test -p a -- f1` and `cargo test -p b -- f2` become `cargo test -p a -p
 b --no-fail-fast -- f1 f2`, a run over the union of packages with the union of
-filters (a filter for one package may also match test names in another).
+filters (a filter for one package may also match test names in another). The
+same holds under `--exact`, which libtest applies to each filter it OR-s:
+`cargo test -p a -- x::y --exact` and `cargo test -p b -- z::w --exact` become
+`cargo test -p a -p b --no-fail-fast -- x::y z::w --exact`, the flag once, and
+the only cross-package spill is a test of the same full name in the other
+package. Exact and substring never mix: a run with `--exact` never joins a
+composite without it, and vice versa.
 Requests naming the same packages share no compile and still need the same
-filters; unfiltered runs fold only with unfiltered runs; `--exact`, `--skip`,
+filters; unfiltered runs fold only with unfiltered runs; `--skip`,
 `--ignored`, `--include-ignored`, `--list`, `--format`, `--logfile`, or any
 other harness flag keeps a run out of composites. `cargo nextest run`
 requests fold only on an identical filterset. On success every participant

@@ -98,36 +98,47 @@ const onlyNoFailFast = (opaque: readonly string[]): boolean =>
  * select and how they run it.
  */
 export interface TestTrailer {
-  /** Bare name filters (substring matches, OR-ed by libtest), in argv order. */
+  /**
+   * Bare name filters in argv order. libtest OR-s them: a test runs when any
+   * filter matches its name, as a substring or — under `--exact` — whole.
+   */
   readonly filters: readonly string[];
   /**
-   * Foldable harness flags in canonical spelling, sorted: `--test-threads=N`,
-   * `--nocapture`, `--quiet`. They change how tests run, never which tests
-   * run, so participants carrying the same set can share one run.
+   * Foldable harness flags in canonical spelling, sorted: `--exact`,
+   * `--nocapture`, `--quiet`, `--test-threads=N`. Participants carrying the
+   * same set can share one run: the last three change how tests run, never
+   * which run, and `--exact` applies to each filter of the union alike, so
+   * the composite still selects exactly what every participant asked for.
    */
   readonly harness: readonly string[];
 }
 
+/** One libtest argument of a `cargo test` trailer, ending just before `end`. */
+interface TrailerArgument {
+  readonly kind: 'filter' | 'harness';
+  /** The filter itself, or the harness flag in canonical spelling. */
+  readonly value: string;
+  /** Index in the trailer just past this argument's tokens. */
+  readonly end: number;
+}
+
 /**
- * Classifies a `cargo test` trailer for folding (#87). The foldable harness
- * flags are deliberately few: `--test-threads=N` (also the two-token
- * `--test-threads N`), `--nocapture`, and `--quiet` / `-q`. Every other
- * flag returns null and keeps the run out of composites — `--exact`,
- * `--skip`, `--ignored`, `--include-ignored`, `--list`, `--format`,
- * `--logfile`, or anything unmodeled changes which tests run, how their
- * names match, or what the run produces, and a composite would apply it to
- * every participant.
+ * Walks a `cargo test` trailer one libtest argument at a time — a bare name
+ * filter, or a foldable harness flag — or returns null at the first argument
+ * that is neither. `--test-threads` may take its value as the next token, so
+ * every entry records where it ends. The single source of what a composite
+ * may carry: `classifyTestTrailer` sums it up, `filterInsertOffset` places
+ * the followers' filters by it.
  */
-export const classifyTestTrailer = (passthrough: readonly string[]): TestTrailer | null => {
-  const filters: string[] = [];
-  const harness = new Set<string>();
+const readTestTrailer = (passthrough: readonly string[]): readonly TrailerArgument[] | null => {
+  const entries: TrailerArgument[] = [];
   for (let index = 0; index < passthrough.length; index += 1) {
     const argument = passthrough[index];
     if (argument === undefined) {
       continue;
     }
     if (!argument.startsWith('-')) {
-      filters.push(argument);
+      entries.push({ kind: 'filter', value: argument, end: index + 1 });
       continue;
     }
     const [option, inlineValue] = optionParts(argument);
@@ -140,27 +151,85 @@ export const classifyTestTrailer = (passthrough: readonly string[]): TestTrailer
         if (inlineValue === undefined) {
           index += 1;
         }
-        harness.add(`--test-threads=${value}`);
+        entries.push({ kind: 'harness', value: `--test-threads=${value}`, end: index + 1 });
         break;
       }
+      case '--exact':
       case '--nocapture':
         if (inlineValue !== undefined) {
           return null;
         }
-        harness.add('--nocapture');
+        entries.push({ kind: 'harness', value: option, end: index + 1 });
         break;
       case '-q':
       case '--quiet':
         if (inlineValue !== undefined) {
           return null;
         }
-        harness.add('--quiet');
+        entries.push({ kind: 'harness', value: '--quiet', end: index + 1 });
         break;
       default:
         return null;
     }
   }
+  return entries;
+};
+
+/**
+ * Classifies a `cargo test` trailer for folding (#87, #97). The foldable
+ * harness flags are deliberately few: `--test-threads=N` (also the two-token
+ * `--test-threads N`), `--nocapture`, `--quiet` / `-q`, and `--exact`.
+ * `--exact` folds because libtest applies it to every filter it OR-s, so a
+ * composite over the union of the participants' filters still runs precisely
+ * the union of their selections — provided every participant asked for it,
+ * which the harness-set equality in `testSelectionsFold` enforces (a
+ * substring filter would otherwise start matching whole names, or an exact
+ * one substrings). Every other flag returns null and keeps the run out of
+ * composites — `--skip`, `--ignored`, `--include-ignored`, `--list`,
+ * `--format`, `--logfile`, or anything unmodeled changes which tests run or
+ * what the run produces, and a composite would apply it to every
+ * participant.
+ */
+export const classifyTestTrailer = (passthrough: readonly string[]): TestTrailer | null => {
+  const entries = readTestTrailer(passthrough);
+  if (entries === null) {
+    return null;
+  }
+  const filters: string[] = [];
+  const harness = new Set<string>();
+  for (const entry of entries) {
+    switch (entry.kind) {
+      case 'filter':
+        filters.push(entry.value);
+        break;
+      case 'harness':
+        harness.add(entry.value);
+        break;
+      default: {
+        const exhaustive: never = entry.kind;
+        return exhaustive;
+      }
+    }
+  }
   return { filters, harness: [...harness].sort((left, right) => left.localeCompare(right)) };
+};
+
+/**
+ * Where a composite splices the followers' filters into the leader's
+ * trailer: just past its last bare filter, so the leader's harness flags
+ * keep trailing the filters they govern (`-- x::y z::w --exact`, not
+ * `-- x::y --exact z::w`), or at its start when it has none. libtest reads
+ * a free argument as a filter wherever it sits among the flags; the
+ * position is for whoever reads the composite's argv, not for libtest.
+ */
+const filterInsertOffset = (passthrough: readonly string[]): number => {
+  let offset = 0;
+  for (const entry of readTestTrailer(passthrough) ?? []) {
+    if (entry.kind === 'filter') {
+      offset = entry.end;
+    }
+  }
+  return offset;
 };
 
 /**
@@ -242,12 +311,16 @@ const sameStringSet = (left: readonly string[], right: readonly string[]): boole
  * Whether two `cargo test` selections can share one composite (#87). The
  * `--test` / `--lib` target set and the harness flags must match exactly:
  * the composite runs the leader's targets and trailer for every package.
- * Between participants naming different packages — the fold that shares a
- * compile — name filters may differ: the composite runs the union of
- * packages with the union of filters, so every participant's tests are
+ * That equality is also what keeps exact and substring matching apart
+ * (#97): a run with `--exact` never joins a composite without it, nor the
+ * reverse, since the shared flag would change how the other side's filters
+ * match. Between participants naming different packages — the fold that
+ * shares a compile — name filters may differ: the composite runs the union
+ * of packages with the union of filters, so every participant's tests are
  * selected (plus, at most, other participants' filters matching names in
- * its packages). An unfiltered run never joins a filtered one, though: it
- * asked for every test in its packages, and any filter would narrow it.
+ * its packages; under `--exact`, only a same-named test in another
+ * package). An unfiltered run never joins a filtered one, though: it asked
+ * for every test in its packages, and any filter would narrow it.
  * Participants naming the same packages share no compile, so they keep the
  * identical-selection rule (#53): same filters, in any spelling or order.
  */
@@ -281,7 +354,8 @@ const testSelectionsFold = (
  * the candidate's subcommand); the package sets may differ. A compile batch
  * also needs identical targets and `--` trailer; a nextest composite an
  * identical filterset; a `cargo test` composite identical `--test` / `--lib`
- * targets and harness flags, while the name filters of participants naming
+ * targets and harness flags (`--exact` included: exact and substring
+ * runs never mix, #97), while the name filters of participants naming
  * different packages union (#87). The composite is
  * therefore the leader's argv plus the followers' `-p` flags (and, for
  * `cargo test`, their extra filters) and runs every participant's
@@ -396,11 +470,13 @@ export const batchFailureOwned = (
  * every participant: the followers' `-p` flags join the leader's,
  * `--no-fail-fast` keeps one package's failing tests from skipping
  * another's, and name filters the followers add (none for nextest, whose
- * filterset already matches) go after `--`, following the leader's own
- * trailer so it runs once and unchanged — libtest OR-s every free argument
- * as a filter wherever it sits among the flags. `batchCompatibleFor` admits
- * only followers whose targets, harness flags, and compile surface already
- * match the leader's.
+ * filterset already matches) go after `--`, spliced in right behind the
+ * leader's own filters so its harness flags — `--exact`, `--nocapture`,
+ * `--test-threads=N`, … — still come once, last, and unchanged
+ * (`-- x::y --exact` + `z::w` → `-- x::y z::w --exact`). libtest OR-s every
+ * free argument as a filter wherever it sits among the flags, so the order
+ * only serves the reader. `batchCompatibleFor` admits only followers whose
+ * targets, harness flags, and compile surface already match the leader's.
  */
 export const composeTestFoldArgv = (
   leaderArgv: readonly string[],
@@ -422,7 +498,15 @@ export const composeTestFoldArgv = (
   if (extraFilters.length === 0) {
     return withNoFailFast;
   }
-  return withNoFailFast.includes('--')
-    ? [...withNoFailFast, ...extraFilters]
-    : [...withNoFailFast, '--', ...extraFilters];
+  const passthroughAt = withNoFailFast.indexOf('--');
+  if (passthroughAt === -1) {
+    return [...withNoFailFast, '--', ...extraFilters];
+  }
+  const filtersEnd =
+    passthroughAt + 1 + filterInsertOffset(withNoFailFast.slice(passthroughAt + 1));
+  return [
+    ...withNoFailFast.slice(0, filtersEnd),
+    ...extraFilters,
+    ...withNoFailFast.slice(filtersEnd),
+  ];
 };

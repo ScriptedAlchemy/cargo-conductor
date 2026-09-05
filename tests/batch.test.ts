@@ -265,13 +265,18 @@ describe('batchKindFor', () => {
     expect(batchKindFor(intent(['cargo', 'test', '-p', 'alpha', '--lib', '--bin', 'cli']))).toBe(
       null,
     );
-    // Harness flags that change which tests run, or how names match,
-    // neither lead nor join (#87).
-    expect(
-      batchKindFor(intent(['cargo', 'test', '-p', 'alpha', '--', '--exact', 'a_filter'])),
-    ).toBe(null);
+    // Harness flags that change which tests run, or what the run produces,
+    // neither lead nor join (#87) — even next to a foldable `--exact` (#97).
     expect(
       batchKindFor(intent(['cargo', 'test', '-p', 'alpha', '--', 'a_filter', '--skip', 'slow'])),
+    ).toBe(null);
+    expect(
+      batchKindFor(
+        intent(['cargo', 'test', '-p', 'alpha', '--', 'a::b', '--exact', '--skip', 'slow']),
+      ),
+    ).toBe(null);
+    expect(
+      batchKindFor(intent(['cargo', 'test', '-p', 'alpha', '--', 'a::b', '--exact', '--ignored'])),
     ).toBe(null);
     expect(batchKindFor(intent(['cargo', 'test', '-p', 'alpha', '--', '--ignored']))).toBe(null);
     expect(
@@ -297,6 +302,15 @@ describe('batchKindFor', () => {
       batchKindFor(intent(['cargo', 'test', '-p', 'alpha', '--', '--test-threads', '4', '--nocapture'])),
     ).toBe('test');
     expect(batchKindFor(intent(['cargo', 'test', '-p', 'alpha', '--', '-q']))).toBe('test');
+    // `--exact` folds too: libtest applies it to each OR-ed filter (#97).
+    expect(
+      batchKindFor(intent(['cargo', 'test', '-p', 'alpha', '--', 'a::b', '--exact'])),
+    ).toBe('test');
+    expect(
+      batchKindFor(
+        intent(['cargo', 'test', '-p', 'alpha', '--test', 'suite', 'a::b', '--', '--exact', '--nocapture']),
+      ),
+    ).toBe('test');
     // Only `nextest run` folds, without positional filters, and never
     // without explicit packages (build scope would not be a superset).
     expect(batchKindFor(intent(['cargo', 'nextest', 'list', '-p', 'alpha']))).toBe(null);
@@ -496,14 +510,74 @@ describe('batchCompatibleFor', () => {
     ).toBe(false);
   });
 
-  it('never folds an --exact participant, as leader or follower', () => {
+  it('folds --exact runs on different packages when every participant asked for it (#97)', () => {
+    // The pair from #97: libtest OR-s the filters and applies `--exact` to
+    // each, so the composite runs precisely the union of both selections.
     expect(
       batchCompatibleFor(
         'test',
-        intent(['cargo', 'test', '-p', 'alpha', '--', 'f1', '--exact']),
-        intent(['cargo', 'test', '-p', 'beta', '--', 'f1', '--exact']),
+        intent(['cargo', 'test', '-p', 'alpha', '--test', 'suite', 'x::y', '--', '--exact']),
+        intent(['cargo', 'test', '-p', 'beta', '--test', 'suite', 'z::w', '--', '--exact']),
+      ),
+    ).toBe(true);
+    expect(
+      batchCompatibleFor(
+        'test',
+        intent(['cargo', 'test', '-p', 'alpha', '--', 'x::y', '--exact']),
+        intent(['cargo', 'test', '-p', 'beta', '--', 'z::w', '--exact']),
+      ),
+    ).toBe(true);
+    // The single-test shape agents emit: `--exact --nocapture`, in any order.
+    expect(
+      batchCompatibleFor(
+        'test',
+        intent(['cargo', 'test', '-p', 'alpha', '--lib', '--', 'x::y', '--exact', '--nocapture']),
+        intent(['cargo', 'test', '-p', 'beta', '--lib', '--', '--nocapture', 'z::w', '--exact']),
+      ),
+    ).toBe(true);
+    expect(
+      batchCompatibleFor(
+        'test',
+        intent(['cargo', 'test', '-p', 'alpha', '--', 'x::y', '--exact', '--test-threads=4']),
+        intent(['cargo', 'test', '-p', 'beta', '--', 'z::w', '--test-threads', '4', '--exact']),
+      ),
+    ).toBe(true);
+    // Same package set: the identical-selection rule (#53) still applies.
+    expect(
+      batchCompatibleFor(
+        'test',
+        intent(['cargo', 'test', '-p', 'alpha', '--', 'x::y', '--exact']),
+        intent(['cargo', 'test', '-p', 'alpha', '--', 'z::w', '--exact']),
       ),
     ).toBe(false);
+    expect(
+      batchCompatibleFor(
+        'test',
+        intent(['cargo', 'test', '-p', 'alpha', 'x::y', '--', '--exact']),
+        intent(['cargo', 'test', '-p', 'alpha', '--', '--exact', 'x::y']),
+      ),
+    ).toBe(true);
+    // Filtered never folds with unfiltered, `--exact` or not.
+    expect(
+      batchCompatibleFor(
+        'test',
+        intent(['cargo', 'test', '-p', 'alpha', '--', '--exact']),
+        intent(['cargo', 'test', '-p', 'beta', '--', 'z::w', '--exact']),
+      ),
+    ).toBe(false);
+    // Target selection still has to match.
+    expect(
+      batchCompatibleFor(
+        'test',
+        intent(['cargo', 'test', '-p', 'alpha', '--test', 'suite', '--', 'x::y', '--exact']),
+        intent(['cargo', 'test', '-p', 'beta', '--lib', '--', 'z::w', '--exact']),
+      ),
+    ).toBe(false);
+  });
+
+  it('never mixes exact and substring matching, as leader or follower (#97)', () => {
+    // A shared `--exact` would make the substring side match whole names
+    // only; dropping it would make the exact side match substrings.
     expect(
       batchCompatibleFor(
         'test',
@@ -516,6 +590,29 @@ describe('batchCompatibleFor', () => {
         'test',
         intent(['cargo', 'test', '-p', 'alpha', '--', 'f1', '--exact']),
         intent(['cargo', 'test', '-p', 'beta', '--', 'f1']),
+      ),
+    ).toBe(false);
+    // The rest of the harness set must match too.
+    expect(
+      batchCompatibleFor(
+        'test',
+        intent(['cargo', 'test', '-p', 'alpha', '--', 'x::y', '--exact', '--nocapture']),
+        intent(['cargo', 'test', '-p', 'beta', '--', 'z::w', '--exact']),
+      ),
+    ).toBe(false);
+    // Other harness flags still keep a run out, `--exact` beside them or not.
+    expect(
+      batchCompatibleFor(
+        'test',
+        intent(['cargo', 'test', '-p', 'alpha', '--', 'x::y', '--exact']),
+        intent(['cargo', 'test', '-p', 'beta', '--', 'z::w', '--exact', '--skip', 'slow']),
+      ),
+    ).toBe(false);
+    expect(
+      batchCompatibleFor(
+        'test',
+        intent(['cargo', 'test', '-p', 'alpha', '--', 'x::y', '--exact']),
+        intent(['cargo', 'test', '-p', 'beta', '--', 'z::w', '--exact', '--ignored']),
       ),
     ).toBe(false);
   });
@@ -624,6 +721,25 @@ describe('batchFailureOwned', () => {
     ).toBe(true);
   });
 
+  it('holds for --exact composites: every package and every exact filter (#97)', () => {
+    const leader = intent(['cargo', 'test', '-p', 'alpha', '--', 'x::y', '--exact']);
+    const follower = intent(['cargo', 'test', '-p', 'beta', '--', 'z::w', '--exact']);
+    const wide = intent(['cargo', 'test', '-p', 'alpha', '-p', 'beta', '--', 'x::y', 'z::w', '--exact']);
+    const composite = compositeSelection(leader, [follower, wide]);
+    expect(composite).toEqual({ packages: ['alpha', 'beta'], filters: ['x::y', 'z::w'] });
+    // beta's z::w may have passed while alpha's x::y failed: reruns alone.
+    expect(batchFailureOwned(leader, composite, follower)).toBe(false);
+    // Every package but not every filter: x::y may be the failing one.
+    expect(
+      batchFailureOwned(
+        leader,
+        composite,
+        intent(['cargo', 'test', '-p', 'alpha', '-p', 'beta', '--', 'z::w', '--exact']),
+      ),
+    ).toBe(false);
+    expect(batchFailureOwned(leader, composite, wide)).toBe(true);
+  });
+
   it('applies to nextest composites and never to compile batches', () => {
     const nextestLeader = intent(['cargo', 'nextest', 'run', '-p', 'alpha']);
     const nextestFollower = intent(['cargo', 'nextest', 'run', '-p', 'beta']);
@@ -666,10 +782,42 @@ describe('classifyTestTrailer', () => {
     });
   });
 
+  it('accepts --exact as a foldable harness flag, alone or with the others (#97)', () => {
+    expect(classifyTestTrailer(['x::y', '--exact'])).toEqual({
+      filters: ['x::y'],
+      harness: ['--exact'],
+    });
+    expect(classifyTestTrailer(['--exact'])).toEqual({ filters: [], harness: ['--exact'] });
+    expect(classifyTestTrailer(['x::y', '--exact', '--nocapture'])).toEqual({
+      filters: ['x::y'],
+      harness: ['--exact', '--nocapture'],
+    });
+    expect(classifyTestTrailer(['--nocapture', 'x::y', '--exact', 'z::w'])).toEqual({
+      filters: ['x::y', 'z::w'],
+      harness: ['--exact', '--nocapture'],
+    });
+    expect(classifyTestTrailer(['x::y', '--exact', '--test-threads=4'])).toEqual({
+      filters: ['x::y'],
+      harness: ['--exact', '--test-threads=4'],
+    });
+    expect(classifyTestTrailer(['--test-threads', '4', '--exact', 'x::y', '-q'])).toEqual({
+      filters: ['x::y'],
+      harness: ['--exact', '--quiet', '--test-threads=4'],
+    });
+  });
+
   it('rejects flags that change which tests run or what the run produces', () => {
     for (const trailer of [
-      ['f1', '--exact'],
       ['--skip', 'slow'],
+      ['x::y', '--exact', '--skip', 'slow'],
+      ['x::y', '--exact', '--ignored'],
+      ['x::y', '--exact', '--include-ignored'],
+      ['x::y', '--exact', '--list'],
+      ['x::y', '--exact', '--format', 'json'],
+      ['x::y', '--exact', '--logfile', 'out.log'],
+      // libtest's --exact takes no value.
+      ['x::y', '--exact=true'],
+      ['x::y', '--exact='],
       ['--ignored'],
       ['--include-ignored'],
       ['--list'],
@@ -691,7 +839,7 @@ describe('classifyTestTrailer', () => {
 });
 
 describe('composeTestFoldArgv', () => {
-  it('unions the followers\' filters after the leader\'s trailer, leader first (#87)', () => {
+  it('unions the followers\' filters behind the leader\'s, ahead of its harness flags (#87)', () => {
     const leader = intent(['cargo', 'test', '-p', 'alpha', '--lib', '--', 'f1', '--test-threads=4']);
     expect(
       composeTestFoldArgv(
@@ -715,10 +863,101 @@ describe('composeTestFoldArgv', () => {
       '--no-fail-fast',
       '--',
       'f1',
-      '--test-threads=4',
       'f2',
       'f3',
+      '--test-threads=4',
     ]);
+    // A two-token --test-threads keeps its value; flags before the leader's
+    // filters stay where they were.
+    const spaced = ['cargo', 'test', '-p', 'alpha', '--', '--nocapture', 'f1', '--test-threads', '4'];
+    expect(
+      composeTestFoldArgv(spaced, intent(spaced), [
+        intent(['cargo', 'test', '-p', 'beta', '--', 'f2', '--nocapture', '--test-threads=4']),
+      ]),
+    ).toEqual([
+      'cargo',
+      'test',
+      '-p',
+      'alpha',
+      '-p',
+      'beta',
+      '--no-fail-fast',
+      '--',
+      '--nocapture',
+      'f1',
+      'f2',
+      '--test-threads',
+      '4',
+    ]);
+  });
+
+  it('carries --exact once, after the unioned filters (#97)', () => {
+    const leaderArgv = ['cargo', 'test', '-p', 'alpha', '--test', 'suite', '--', 'x::y', '--exact'];
+    expect(
+      composeTestFoldArgv(leaderArgv, intent(leaderArgv), [
+        intent(['cargo', 'test', '-p', 'beta', '--test', 'suite', '--', 'z::w', '--exact']),
+      ]),
+    ).toEqual([
+      'cargo',
+      'test',
+      '-p',
+      'alpha',
+      '--test',
+      'suite',
+      '-p',
+      'beta',
+      '--no-fail-fast',
+      '--',
+      'x::y',
+      'z::w',
+      '--exact',
+    ]);
+    // The pair from #97, filters positional: the leader's trailer holds only
+    // `--exact`, so the follower's filter opens it.
+    const positional = ['cargo', 'test', '-p', 'alpha', '--test', 'suite', 'x::y', '--', '--exact'];
+    expect(
+      composeTestFoldArgv(positional, intent(positional), [
+        intent(['cargo', 'test', '-p', 'beta', '--test', 'suite', 'z::w', '--', '--exact']),
+      ]),
+    ).toEqual([
+      'cargo',
+      'test',
+      '-p',
+      'alpha',
+      '--test',
+      'suite',
+      'x::y',
+      '-p',
+      'beta',
+      '--no-fail-fast',
+      '--',
+      'z::w',
+      '--exact',
+    ]);
+    // `--exact --nocapture`, three participants, one shared filter: the
+    // flags still appear once each.
+    const single = ['cargo', 'test', '-p', 'alpha', '--', 'x::y', '--exact', '--nocapture'];
+    const composite = composeTestFoldArgv(single, intent(single), [
+      intent(['cargo', 'test', '-p', 'beta', '--', 'z::w', '--exact', '--nocapture']),
+      intent(['cargo', 'test', '-p', 'gamma', '--', '--nocapture', 'x::y', '--exact']),
+    ]);
+    expect(composite).toEqual([
+      'cargo',
+      'test',
+      '-p',
+      'alpha',
+      '-p',
+      'beta',
+      '-p',
+      'gamma',
+      '--no-fail-fast',
+      '--',
+      'x::y',
+      'z::w',
+      '--exact',
+      '--nocapture',
+    ]);
+    expect(composite.filter((argument) => argument === '--exact')).toHaveLength(1);
   });
 
   it('opens a `--` trailer for follower filters when the leader has none', () => {
