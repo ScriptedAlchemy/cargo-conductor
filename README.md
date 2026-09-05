@@ -87,7 +87,7 @@ The CLI is `hauler` on PATH from `npm i -g cargo-hauler`. Never run
 | `hauler request [--session ID] [--host HOST] [--cwd DIR] [--after TICKET …] -- <cargo …>` | Submit a background request and return its ticket, with where it landed in its lane (`queued behind cc-3281 (~13m)`, `waiting for cc-3281`, or `attached to cc-3281`). `--after` works as for `exec`. |
 | `hauler daemon <run\|start\|stop\|status\|restart>` | Manage the daemon lifecycle. `restart` is the manual replacement: it sends the graceful stop, waits up to 5 s for the old pid to exit, then starts a daemon from this install and prints both (`restarted: pid 741314 (0.6.0) → pid 742001 (0.6.1)`); a daemon that has not exited by then is reported, not killed, and nothing is started (exit `1`). Tickets in flight are not handed over: the old daemon settles them itself as it shuts down — `killed`, error `daemon shutdown` — and callers resubmit (only rows a daemon that died without shutting down never marked are stamped `orphaned by daemon restart` by the next daemon's first ledger pass). After upgrading the package, the next `hauler exec`, `hauler request`, hook rewrite, or `hauler daemon start` replaces a daemon from the previous install automatically the same way; when the old daemon has not exited within the grace, that call fails with `` cargo-hauler daemon pid N (X.Y.Z) is still running 5s after the shutdown request; not restarted — retry once it has exited, or stop it with `hauler daemon stop` `` instead of starting a second daemon. |
 | `hauler install-shim [--dir DIR] [--real-cargo PATH] [--force]` | Install the optional PATH shim. |
-| `hauler dashboard [--target claude\|codex\|cursor\|portable] [--port N] [--no-open]` | Open the dashboard in a plain browser tab: serve the MCP App standalone against the plugin's own `hauler` server on `127.0.0.1` (through `agent-bundle serve-app`), call `hauler_status` once so it opens populated, and stay in the foreground until Ctrl-C. A checkout command: it needs the built `artifact/` beside the CLI and `agent-bundle` under `node_modules` (`pnpm install && pnpm build`); the npm package ships no runtime dependencies and an installed host pack has no artifact, so both report what is missing. In an MCP host, call `hauler_status` instead. |
+| `hauler dashboard [--target claude\|codex\|cursor\|portable] [--port N] [--no-open]` | Open the dashboard in a plain browser tab: serve the MCP App standalone against the plugin's own `hauler` server on `127.0.0.1` (`spawnServeApp` from `agent-bundle/serve-app-command`, which runs `agent-bundle serve-app` as a child process and prints its URL), call `hauler_status` once so it opens populated, and stay in the foreground until Ctrl-C. A checkout command: it needs the built `artifact/` beside the CLI and `agent-bundle` under `node_modules` (`pnpm install && pnpm build`); the npm package ships no runtime dependencies and an installed host pack has no artifact, so both report what is missing. In an MCP host, call `hauler_status` instead. |
 
 The `hauler` MCP server projects the same operations as `hauler_status`,
 `hauler_log`, `hauler_last`, `hauler_await`, `hauler_result`, `hauler_kill`,
@@ -872,14 +872,17 @@ pnpm run check     # the gate
 
 To see the dashboard outside an MCP host, run `node dist/bin/hauler.js
 dashboard` after a build: it serves the `ui://cargo-hauler/dashboard.html` App
-standalone against the generated `hauler` server (`serveApp` from
-`agent-bundle/api`, the Workbench's own host stack), so the data is the
-daemon's own. `pnpm run dev` and the Workbench's MCP page preview the same App
-with live rebuilds. The repository ships no preview harness of its own.
+standalone against the generated `hauler` server (`spawnServeApp` from
+`agent-bundle/serve-app-command` runs `agent-bundle serve-app`, the
+Workbench's own host stack, as a child process — the routed bin stays
+self-contained and never imports the compiler, agent-bundle `AB4837`), so the
+data is the daemon's own. `pnpm run dev` and the Workbench's MCP page preview
+the same App with live rebuilds. The repository ships no preview harness of
+its own.
 
 agent-bundle does not yet have an npm release; this repository pins the
 [pkg.pr.new](https://pkg.pr.new) preview of main commit
-[`cd0b4a62c`](https://github.com/ScriptedAlchemy/agent-bundle/commit/cd0b4a62cd92b3fbced6742b3cead32d9639c3e4)
+[`d30d9acb6`](https://github.com/ScriptedAlchemy/agent-bundle/commit/d30d9acb6bd106762bb975ac58d6bf437c176091)
 for both `agent-bundle` and `@agent-bundle/runtime`. `inspect` reports the
 `agent` component kind as unavailable on every host (agent-bundle G5
 deferral); this plugin defines no agents.

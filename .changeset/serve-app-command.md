@@ -1,0 +1,5 @@
+---
+'cargo-hauler': patch
+---
+
+`hauler dashboard` serves the App through `spawnServeApp` from `agent-bundle/serve-app-command` (agent-bundle #558/#582) instead of its own child-process plumbing. The framework helper now resolves the installed `agent-bundle` CLI, spawns `agent-bundle serve-app`, waits for its ready line, relays the child's output to stderr, and turns Ctrl-C into the server's SIGTERM; its typed failures (`framework-not-installed`, `artifact-missing`, `exited-before-ready`, …) become the command's message, and the routed bin still never imports the compiler (agent-bundle `AB4837`). The flags (`--target`, `--port`, `--no-open`), the opening `hauler_status` call, the foreground-until-Ctrl-C behaviour, and the checkout-only scope are unchanged. Rebuilt against the `agent-bundle` / `@agent-bundle/runtime` preview of main commit `d30d9acb6`, which also holds the package build's `dist/` to `AB6005` (#588), compiles on Rslib 1.0 / Rsbuild 2.2 (#575), binds the host's own opening call in `serve-app` (#565), and reports MCP App view compile errors as `AB4770`–`AB4772` (#585). (#TBD)

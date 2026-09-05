@@ -1,9 +1,9 @@
-import { spawn } from 'node:child_process';
-import { existsSync, readFileSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
+import { existsSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import type { CliRouteConfig, CliRouteProps } from 'agent-bundle';
+import { ServeAppCommandError, spawnServeApp, type ServeAppExit, type SpawnedServeApp } from 'agent-bundle/serve-app-command';
 import { z } from 'zod';
 
 /**
@@ -16,12 +16,16 @@ import { z } from 'zod';
  * the command stays in the foreground until Ctrl-C or the server exits. A
  * plain command, not a rendered one: an open browser tab has no render budget.
  *
- * The framework is spawned, never imported: a route that imported
- * `agent-bundle/api` would either inline the framework into every host pack's
- * bin or leave a bare import the artifact validator rejects (`AB6005`). The
- * packs stay self-contained, and `agent-bundle` is resolved from the project
- * at run time — the checkout has it under `node_modules`; the npm package
- * (no runtime dependencies, #82) and an installed host pack do not, and the
+ * The framework is spawned, never imported: a route that value-imported
+ * `agent-bundle/api` would inline the compiler into every host pack's bin
+ * (`AB4837`). `spawnServeApp` from `agent-bundle/serve-app-command`
+ * (agent-bundle#558) is the sanctioned shape — dependency-free, so it bundles
+ * into the bin — and owns resolving the installed framework CLI, spawning it,
+ * relaying its stdout to stderr so this command keeps stdout for its result,
+ * waiting for the ready line, and turning the request signal into the child's
+ * SIGTERM. What it cannot know is where this install keeps its artifact: the
+ * checkout has it under `node_modules` and `artifact/`; the npm package (no
+ * runtime dependencies, #82) and an installed host pack do not, and the
  * command says so.
  */
 export const config = {
@@ -46,7 +50,7 @@ export const resultSchema = z
     exitCode: z.number().int().min(0).max(255),
     message: z.string(),
     operation: z.literal('dashboard'),
-    /** The served host page, once `agent-bundle serve-app` printed it. */
+    /** The served host page, once `agent-bundle serve-app` printed its ready line. */
     url: z.string().nullable(),
   })
   .strict();
@@ -71,110 +75,50 @@ const locateProject = (): { readonly artifact: string; readonly root: string } |
   return undefined;
 };
 
-/**
- * The framework's own CLI as the project resolves it: the `agent-bundle`
- * package under the nearest `node_modules` at or above the root, read from its
- * manifest's `bin`. Looked up by path, not `require.resolve`: the package's
- * `exports` declare no `require` condition, and an `import()` of it here
- * would drag the framework into every bin that carries this route.
- */
-const frameworkCliPath = (root: string): string | undefined => {
-  for (let directory = root; ; directory = dirname(directory)) {
-    const packageDir = join(directory, 'node_modules', 'agent-bundle');
-    const manifestPath = join(packageDir, 'package.json');
-    if (existsSync(manifestPath)) {
-      const manifest: unknown = JSON.parse(readFileSync(manifestPath, 'utf8'));
-      const bin = typeof manifest === 'object' && manifest !== null && 'bin' in manifest ? manifest.bin : undefined;
-      const relative =
-        typeof bin === 'string' ? bin : typeof bin === 'object' && bin !== null ? Reflect.get(bin, 'agent-bundle') : undefined;
-      return typeof relative === 'string' ? resolve(packageDir, relative) : undefined;
-    }
-    if (directory === dirname(directory)) {
-      return undefined;
-    }
-  }
-};
-
-const failure = (message: string): DashboardResult => ({ exitCode: 1, message, operation: 'dashboard', url: null });
-
 const inHost = 'In an MCP host, call hauler_status instead — the dashboard App is attached to its result.';
 
-/** `agent-bundle serve-app` prints `MCP App <app> at <url> (…)` once the host listens. */
-const servedUrl = (line: string): string | undefined => /\bat (https?:\/\/\S+)/u.exec(line)?.[1];
+const failure = (exitCode: number, message: string): DashboardResult => ({ exitCode, message, operation: 'dashboard', url: null });
 
-/**
- * Runs the framework CLI in the foreground. The routed CLI owns stdout for the
- * result document, so the child's stdout — the URL line — is relayed to
- * stderr, the operator's channel; its stderr is inherited. The request signal
- * (Ctrl-C reaching the routed CLI) becomes the child's SIGTERM.
- */
-const serve = (
-  argv: readonly string[],
-  signal: AbortSignal,
-): Promise<{ readonly exitCode: number; readonly url: string | null }> =>
-  new Promise((resolvePromise, reject) => {
-    const child = spawn(process.execPath, argv, { stdio: ['ignore', 'pipe', 'inherit'] });
-    let url: string | null = null;
-    let buffered = '';
-    child.stdout.on('data', (chunk: Buffer) => {
-      const text = chunk.toString('utf8');
-      process.stderr.write(text);
-      buffered += text;
-      for (const line of buffered.split('\n').slice(0, -1)) {
-        url ??= servedUrl(line) ?? null;
-      }
-      buffered = buffered.slice(buffered.lastIndexOf('\n') + 1);
-    });
-    const stop = (): void => {
-      child.kill('SIGTERM');
-    };
-    signal.addEventListener('abort', stop, { once: true });
-    child.once('error', reject);
-    child.once('exit', (code, exitSignal) => {
-      signal.removeEventListener('abort', stop);
-      resolvePromise({ exitCode: code ?? (exitSignal === null ? 1 : 128), url });
-    });
-  });
+/** The child's exit as this command's: its code, or 1 for an exit with neither code nor signal, or 128 for a signal. */
+const exitCodeOf = ({ code, signal }: ServeAppExit): number => code ?? (signal === null ? 1 : 128);
 
 export default async function Dashboard({ input, signal }: CliRouteProps<typeof inputSchema>): Promise<DashboardResult> {
   const project = locateProject();
   if (project === undefined) {
     return failure(
+      1,
       `hauler dashboard runs from the plugin checkout, where the built artifact sits beside the CLI; an installed host pack has none. ${inHost}`,
     );
   }
-  const cli = frameworkCliPath(project.root);
-  if (cli === undefined) {
-    return failure(
-      `hauler dashboard needs agent-bundle resolvable from ${project.root} (\`pnpm install\` in the checkout; the npm package ships no runtime dependencies). ${inHost}`,
-    );
+  let served: SpawnedServeApp;
+  try {
+    served = await spawnServeApp({
+      app: 'hauler/dashboard',
+      root: project.root,
+      artifact: project.artifact,
+      target: input.target ?? 'portable',
+      tool: 'hauler_status',
+      autoApprove: ['call-tool'],
+      open: input.noOpen !== true,
+      ...(input.port === undefined ? {} : { port: input.port }),
+      // Ctrl-C reaching the routed CLI stops the server.
+      signal,
+    });
+  } catch (error) {
+    if (error instanceof ServeAppCommandError) {
+      // framework-not-installed, artifact-missing, exited-before-ready (with
+      // the child's exit), spawn-failed, aborted, stop-failed.
+      return failure(error.exit === undefined ? 1 : exitCodeOf(error.exit), `${error.message} ${inHost}`);
+    }
+    throw error;
   }
-  const served = await serve(
-    [
-      cli,
-      'serve-app',
-      'hauler/dashboard',
-      '--root',
-      project.root,
-      '--artifact',
-      project.artifact,
-      '--target',
-      input.target ?? 'portable',
-      '--tool',
-      'hauler_status',
-      '--allow',
-      'call-tool',
-      input.noOpen === true ? '--no-open' : '--open',
-      ...(input.port === undefined ? [] : ['--port', String(input.port)]),
-    ],
-    signal,
-  );
+  const exit = await served.closed;
   return {
-    exitCode: served.exitCode,
+    exitCode: exitCodeOf(exit),
     message:
-      served.exitCode === 0
+      exit.code === 0
         ? 'dashboard closed'
-        : `agent-bundle serve-app exited with ${String(served.exitCode)}; see its diagnostics above`,
+        : `agent-bundle serve-app exited with ${exit.signal ?? String(exit.code)}; see its diagnostics above`,
     operation: 'dashboard',
     url: served.url,
   };
