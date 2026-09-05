@@ -58,6 +58,8 @@ export const pingSessionCompleted = async (
     case 'malformed':
     case 'timeout':
       return { kind: 'unavailable', reason: outcome.kind };
+    case 'replacement-failed':
+      return { kind: 'unavailable', reason: 'malformed' };
     case 'unreachable':
       return { code: outcome.code ?? null, kind: 'unavailable', reason: 'unreachable' };
     default: {

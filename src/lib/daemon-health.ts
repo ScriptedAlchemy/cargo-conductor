@@ -2,6 +2,10 @@ import { statSync } from 'node:fs';
 
 import * as Effect from 'effect/Effect';
 
+import {
+  defaultEnsureDependencies,
+  ensureDaemonVersion,
+} from '../client/ensure-daemon.js';
 import type { DaemonConfigShape } from '../daemon/config.js';
 import { requestExpecting, type DaemonUnreachableError } from '../daemon/control.js';
 import type { StatusResultMessage } from '../daemon/protocol.js';
@@ -135,19 +139,29 @@ export const probeDaemonHealth = (
   }
   const timeoutMs = options.timeoutMs ?? healthProbeTimeoutMs;
   const startedAt = Date.now();
-  const probe: Effect.Effect<DaemonHealth> = requestExpecting(
-    {
-      message: { id: shortId(), limit: 1, type: 'status' },
-      openTimeoutMs: timeoutMs,
-      socketPath: config.socketPath,
-      timeoutMs,
-    },
-    (message): message is StatusResultMessage => message.type === 'status-result',
+  const probe: Effect.Effect<DaemonHealth> = ensureDaemonVersion(
+    config,
+    defaultEnsureDependencies,
+    timeoutMs,
   ).pipe(
-    Effect.map((message): DaemonHealth =>
-      message === undefined
-        ? { reason: 'connection-closed', state: 'unresponsive', timeoutMs }
-        : runningHealth(message, Date.now() - startedAt),
+    Effect.flatMap((daemon) =>
+      daemon === null
+        ? Effect.succeed<DaemonHealth>({ reason: 'connection-refused', state: 'stopped' })
+        : requestExpecting(
+            {
+              message: { id: shortId(), limit: 1, type: 'status' },
+              openTimeoutMs: timeoutMs,
+              socketPath: config.socketPath,
+              timeoutMs,
+            },
+            (message): message is StatusResultMessage => message.type === 'status-result',
+          ).pipe(
+            Effect.map((message): DaemonHealth =>
+              message === undefined
+                ? { reason: 'connection-closed', state: 'unresponsive', timeoutMs }
+                : runningHealth(message, Date.now() - startedAt),
+            ),
+          ),
     ),
     Effect.catchTags({
       ConnectionClosed: () =>
@@ -159,6 +173,24 @@ export const probeDaemonHealth = (
           timeoutMs,
         }),
       DaemonUnreachable: (error) => Effect.succeed<DaemonHealth>(unreachableHealth(error)),
+      DaemonNotReplaced: (error) =>
+        Effect.succeed<DaemonHealth>({
+          detail: error.message,
+          reason: 'open-failed',
+          state: 'unreachable',
+        }),
+      DaemonReplacementFailed: (error) =>
+        Effect.succeed<DaemonHealth>({
+          detail: `replacement daemon failed its version handshake (${error.cause._tag})`,
+          reason: 'open-failed',
+          state: 'unreachable',
+        }),
+      SpawnDaemonError: (error) =>
+        Effect.succeed<DaemonHealth>({
+          detail: `replacement daemon could not be started: ${error.cause instanceof Error ? error.cause.message : String(error.cause)}`,
+          reason: 'open-failed',
+          state: 'unreachable',
+        }),
     }),
   );
   return Effect.runPromise(probe, options.signal === undefined ? undefined : { signal: options.signal });

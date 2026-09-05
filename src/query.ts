@@ -4,9 +4,16 @@ import type { DatabaseSync } from 'node:sqlite';
 import * as Effect from 'effect/Effect';
 import type * as Scope from 'effect/Scope';
 
+import {
+  type DaemonReplacementFailedError,
+  defaultEnsureDependencies,
+  ensureDaemonVersion,
+  type SpawnDaemonError,
+} from './client/ensure-daemon.js';
 import { resolveDaemonConfig } from './daemon/config.js';
 import type { DaemonConfigShape } from './daemon/config.js';
 import { requestExpecting } from './daemon/control.js';
+import type { DaemonNotReplacedError } from './daemon/shutdown.js';
 import { createLedgerApi, openLedgerDatabase, openLedgerDatabaseReadOnly } from './daemon/ledger.js';
 import { isOrphanedByRestart, orphanedByRestartError, toStatusRow } from './daemon/protocol.js';
 import type {
@@ -172,11 +179,10 @@ const fromReport = (report: StatusReport, config: DaemonConfigShape): HaulerSnap
   );
 
 /**
- * A live daemon's report, validated with the strict client schema. Mixed
- * versions are unsupported — the client replaces a daemon of another build
- * before submitting work to it — so a report that does not fit is a protocol
- * defect between same-version peers (the `ZodError` dies), not a condition
- * the reader is told about.
+ * A live daemon's report, validated with the strict client schema. Every
+ * socket read first runs `ensureDaemonVersion`, so this payload can only come
+ * from the current build. A report that does not fit is therefore a protocol
+ * defect between same-version peers, not a compatibility condition.
  */
 const fromLiveReport = (raw: unknown, config: DaemonConfigShape): Effect.Effect<HaulerSnapshot> =>
   Effect.sync(() => statusReportSchema.parse(raw)).pipe(
@@ -271,25 +277,48 @@ const fromLedger = (
 };
 
 /**
- * Never fails: every way of not reaching the daemon is a snapshot that says
- * so (`stopped`, `unresponsive`), with the ledger standing in for the report.
+ * The version handshake runs before the status request. A stale daemon is
+ * replaced before any versioned payload can reach the strict schema.
  */
-export const loadHaulerSnapshot = (options: LoadSnapshotOptions = {}): Effect.Effect<HaulerSnapshot> => {
+export const loadHaulerSnapshot = (
+  options: LoadSnapshotOptions = {},
+): Effect.Effect<
+  HaulerSnapshot,
+  SpawnDaemonError | DaemonNotReplacedError | DaemonReplacementFailedError
+> => {
   const config = options.config ?? resolveDaemonConfig();
   const recentLimit = options.recentLimit ?? defaultRecentLimit;
-  return requestExpecting(
-    {
-      message: { id: shortId(), limit: recentLimit, type: 'status' },
-      socketPath: config.socketPath,
-      timeoutMs: statusTimeoutMs,
-    },
-    (message): message is StatusResultMessage => message.type === 'status-result',
-  ).pipe(
-    Effect.flatMap((result) =>
-      result === undefined ? fromLedger(config, recentLimit) : fromLiveReport(result.report, config),
+  return ensureDaemonVersion(config, defaultEnsureDependencies, statusTimeoutMs).pipe(
+    Effect.flatMap((daemon) =>
+      daemon === null
+        ? fromLedger(config, recentLimit)
+        : requestExpecting(
+            {
+              message: { id: shortId(), limit: recentLimit, type: 'status' },
+              socketPath: config.socketPath,
+              timeoutMs: statusTimeoutMs,
+            },
+            (message): message is StatusResultMessage => message.type === 'status-result',
+          ).pipe(
+            Effect.flatMap((result) =>
+              result === undefined
+                ? fromLedger(config, recentLimit)
+                : fromLiveReport(result.report, config),
+            ),
+            // Once the version gate has succeeded, ordinary read failures keep
+            // the historical ledger fallback.
+            Effect.catchTags({
+              ControlTimeout: () =>
+                unresponsiveSnapshot(config, recentLimit, `did not answer within ${statusTimeoutMs / 1000}s`),
+              ConnectionClosed: () =>
+                unresponsiveSnapshot(config, recentLimit, 'closed the connection mid-status'),
+              DaemonUnreachable: () => fromLedger(config, recentLimit),
+            }),
+          ),
     ),
-    // Unreachable means stopped; a timeout or dropped connection means a
-    // daemon that exists but did not answer — say so instead of "stopped".
+    // A ping that never establishes a version is an unresponsive daemon, not
+    // a failed replacement. Replacement startup failures are tagged before
+    // they reach this boundary and therefore remain failures.
     Effect.catchTags({
       ControlTimeout: () =>
         unresponsiveSnapshot(config, recentLimit, `did not answer within ${statusTimeoutMs / 1000}s`),

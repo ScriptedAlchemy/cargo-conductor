@@ -55,7 +55,7 @@ export const daemonExitCode = (result: DaemonControlResult): number => {
       // for `start`, it is a daemon of another version that was not replaced.
       return result.running && result.pid !== null && result.pid !== result.previousPid ? 0 : 1;
     case 'status':
-      return result.running ? 0 : 1;
+      return result.running && result.previousPid === undefined ? 0 : 1;
     case 'stop':
       return 0;
     default: {
@@ -194,6 +194,7 @@ export const startDaemon = (
     Effect.catchTags({
       ConnectionClosed: failedStart,
       ControlTimeout: failedStart,
+      DaemonReplacementFailed: failedStart,
       DaemonNotReplaced: (error) =>
         Effect.succeed(
           result(config, 'start', {
@@ -252,6 +253,36 @@ export const statusDaemon = (
         running: snapshot.daemon === 'running',
       }),
     ),
+    Effect.catchTags({
+      DaemonNotReplaced: (error) =>
+        Effect.succeed(
+          result(config, 'status', {
+            message: error.message,
+            pid: error.daemon.pid,
+            previousPid: error.daemon.pid,
+            report: null,
+            running: true,
+          }),
+        ),
+      SpawnDaemonError: (error) =>
+        Effect.succeed(
+          result(config, 'status', {
+            message: `cargo-hauler daemon could not be started; check ${config.logPath}: ${error.cause instanceof Error ? error.cause.message : String(error.cause)}`,
+            pid: null,
+            report: null,
+            running: false,
+          }),
+        ),
+      DaemonReplacementFailed: (error) =>
+        Effect.succeed(
+          result(config, 'status', {
+            message: `cargo-hauler replacement daemon failed its version handshake (${error.cause._tag}); check ${config.logPath}`,
+            pid: null,
+            report: null,
+            running: false,
+          }),
+        ),
+    }),
   );
 
 export interface RestartDaemonDependencies {

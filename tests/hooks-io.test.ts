@@ -3,6 +3,7 @@ import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
+import { version } from 'agent-bundle/meta';
 import { describe, expect, it } from 'effect-rstest';
 
 import { appendHookRecord, hookEventsFileName } from '../src/hooks/record.js';
@@ -23,7 +24,14 @@ const listenStatus = (
 ): Promise<{ readonly close: () => Promise<void> }> =>
   new Promise((resolve, reject) => {
     const server = createServer((socket) => {
-      socket.on('data', () => {
+      socket.on('data', (chunk: Buffer) => {
+        const message = JSON.parse(chunk.toString('utf8')) as { readonly id: string; readonly type: string };
+        if (message.type === 'ping') {
+          socket.end(
+            `${JSON.stringify({ id: message.id, pid: process.pid, startedAtMs: 1, type: 'pong', version })}\n`,
+          );
+          return;
+        }
         socket.end(
           `${JSON.stringify({
             id: 'hook-status',

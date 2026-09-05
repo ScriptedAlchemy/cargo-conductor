@@ -3,6 +3,7 @@ import { createServer, type Server, type Socket } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
+import { version } from 'agent-bundle/meta';
 import type { HookEvent, HookHandlerContext } from 'agent-bundle/config';
 import { describe, expect, it } from 'effect-rstest';
 import * as Effect from 'effect/Effect';
@@ -335,8 +336,15 @@ describe('pingSessionCompleted', () => {
         while (newline !== -1) {
           const line = pending.slice(0, newline);
           pending = pending.slice(newline + 1);
-          received.push(line);
-          onLine(line, socket);
+          const message = JSON.parse(line) as { readonly id?: string; readonly type?: string };
+          if (message.type === 'ping') {
+            socket.write(
+              `${JSON.stringify({ id: message.id, pid: process.pid, startedAtMs: 1, type: 'pong', version })}\n`,
+            );
+          } else {
+            received.push(line);
+            onLine(line, socket);
+          }
           newline = pending.indexOf('\n');
         }
       });
