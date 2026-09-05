@@ -42,9 +42,8 @@ export const shimHaulerEntry = (haulerArgv: readonly string[]): string =>
 export const renderCargoShim = (options: RenderShimOptions): string => {
   const hauler = options.haulerArgv.map(shellQuote).join(' ');
   const cargo = shellQuote(options.realCargo);
-  // The embedded entry is a versioned plugin directory: an upgrade that
-  // replaces it would otherwise turn every `cargo` on PATH into "No such
-  // file". Losing the broker for a while beats losing cargo.
+  // A Node installation can still move the embedded global entry. Losing the
+  // broker for a while beats turning every `cargo` on PATH into "No such file".
   const entry = shellQuote(shimHaulerEntry(options.haulerArgv));
   const guard =
     options.haulerArgv.length >= 2 ? `[ -f ${entry} ]` : `command -v ${entry} >/dev/null 2>&1`;

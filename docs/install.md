@@ -8,6 +8,10 @@ Agent Plugins `artifact/portable` — plus three executables in `dist/bin/`:
 agent-bundle framework that builds these packs is a development dependency
 only, and the packs and installer never load it.
 
+The CLI entry point is `hauler` on PATH from `npm i -g cargo-hauler`. Never
+run `scripts/hauler.mjs` or a path under `.claude/plugins/cache`,
+`.codex/plugins/cache`, `.cursor/plugins`, or `artifact/<host>` directly.
+
 Supported platforms: Linux and macOS. Windows is experimental and untested
 (the daemon endpoint resolves to a named pipe, but the cargo PATH shim is
 POSIX-only and refuses to install). Node >= 22.19 is required (`node:sqlite`).
@@ -25,8 +29,8 @@ Every pack ships the same surfaces: `mcp/` (the `hauler` MCP server), `hooks/`
 and `after-tool-shell-after-*` shell hook entries, which decide on the command
 before loading anything heavier — about 50 ms and 49 MB for a non-cargo
 call), `skills/`,
-`scripts/hauler.mjs` (the `exec` / `daemon` / `install-shim` entry the hooks
-rewrite Cargo to), `bin/cargo-hauler.mjs` (the routed CLI: `status`, `log`,
+`scripts/hauler.mjs` (the internal `exec` / `daemon run` entry used by hooks),
+`bin/cargo-hauler.mjs` (the routed CLI: `status`, `log`,
 `last`, `await`, `result`, `request`, `daemon`), `mcp-apps/dashboard.html`,
 and an `INSTALL.md` with the exact compiled names.
 
@@ -137,13 +141,13 @@ playground. It also carries an `install.mjs` for Cursor-compatible hosts.
 
 ## Optional PATH shim
 
-Hooks cannot see `cargo` spawned from scripts. Install a shim from the package
-binary; the shim embeds the absolute path of whichever `hauler` ran
-`install-shim`:
+Hooks cannot see `cargo` spawned from scripts. Install the global package and
+run the CLI from PATH; the shim embeds that global entry's realpath:
 
 ```sh
-node dist/bin/hauler.js install-shim            # defaults to ~/.local/bin
-node dist/bin/hauler.js install-shim --dir DIR  # or pick another user-writable dir
+npm i -g cargo-hauler
+hauler install-shim            # defaults to ~/.local/bin
+hauler install-shim --dir DIR  # or pick another user-writable dir
 ```
 
 `install-shim` refuses unknown flags instead of installing on, say, `--help`.

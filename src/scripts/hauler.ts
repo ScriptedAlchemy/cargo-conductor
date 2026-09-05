@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { existsSync, realpathSync } from 'node:fs';
+import { existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -11,18 +11,22 @@ import { buildTransportedEnv } from '../client/env.js';
 import { runExecClient, type RunExecOptions, type RunExecResult } from '../client/exec.js';
 import { ExecUsageError, parseExecArgv } from '../client/parse.js';
 import { daemonExitCode, parseDaemonSubcommand, runDaemonControl } from '../daemon/lifecycle.js';
-import { resolveHaulerArgv } from '../hooks/paths.js';
 import {
   defaultShimDir,
   installCargoShim,
   shimPathStatus,
   type ShimPathStatus,
 } from '../shim/install.js';
+import {
+  globalHaulerArgv,
+  haulerEntryLocation,
+  type HaulerEntryLocation,
+} from './entry-location.js';
 
 /**
  * The process-level entry: `exec` owns stdout/stderr byte-for-byte for the
- * cargo stream, `install-shim` embeds its own path, and `daemon` is what the
- * detached spawn re-enters. Everything else is a routed CLI command
+ * cargo stream, `install-shim` embeds the global PATH entry, and `daemon` is
+ * what the detached spawn re-enters. Everything else is a routed CLI command
  * (`src/cli/**`) and is forwarded to the generated `cargo-hauler` bin: beside
  * this script in the npm package, or under `bin/` in a host artifact.
  */
@@ -42,7 +46,11 @@ Commands:
 `;
 
 export interface ScriptOptions {
+  /** The running script path and environment; overridable for entry-policy tests. */
+  readonly entryPath?: string;
+  readonly env?: Readonly<Record<string, string | undefined>>;
   readonly runExec?: (options: RunExecOptions) => Effect.Effect<RunExecResult>;
+  readonly runDaemon?: (argv: readonly string[], write: (value: string) => void) => Promise<number>;
   readonly signal?: AbortSignal;
   /** The process's terminal as the executable envelope probed it; `exec` shapes its output by it. */
   readonly terminal?: AgentTerminal;
@@ -61,24 +69,6 @@ const defaultWriteStdout = (data: Uint8Array): void => {
 
 const defaultWriteStderr = (data: string | Uint8Array): void => {
   process.stderr.write(data);
-};
-
-/**
- * The shim must never depend on a PATH `hauler` that nothing installs
- * (issue #2): embed the absolute node + script that is running right now.
- */
-const selfHaulerArgv = (): readonly string[] => {
-  const script = process.argv[1];
-  if (script === undefined || script.length === 0) {
-    return resolveHaulerArgv();
-  }
-  let absolute = resolve(script);
-  try {
-    absolute = realpathSync(absolute);
-  } catch {
-    // Keep the resolved path when realpath cannot refine it.
-  }
-  return [process.execPath, absolute];
 };
 
 /**
@@ -146,7 +136,12 @@ const runExecCommand = async (argv: readonly string[], options: ScriptOptions): 
 
 const installShimUsage = 'Usage: hauler install-shim [--dir DIR] [--real-cargo PATH] [--force]\n';
 
-const runInstallShim = (rest: readonly string[], write: (value: string) => void): number => {
+const runInstallShim = (
+  rest: readonly string[],
+  write: (value: string) => void,
+  location: HaulerEntryLocation,
+  env: Readonly<Record<string, string | undefined>>,
+): number => {
   const destIndex = rest.indexOf('--dir');
   const destDir = destIndex === -1 ? defaultShimDir() : rest[destIndex + 1];
   const realCargoIndex = rest.indexOf('--real-cargo');
@@ -164,7 +159,7 @@ const runInstallShim = (rest: readonly string[], write: (value: string) => void)
   }
   try {
     const installed = installCargoShim({
-      haulerArgv: selfHaulerArgv(),
+      haulerArgv: globalHaulerArgv(location, env),
       destDir,
       force: rest.includes('--force'),
       realCargo,
@@ -172,7 +167,7 @@ const runInstallShim = (rest: readonly string[], write: (value: string) => void)
     write(`Installed cargo shim at ${installed.path}\n`);
     write(`${describeShimPathStatus(shimPathStatus(installed.path), destDir)}\n`);
     write(
-      `The shim embeds this hauler entry: ${installed.haulerScript}. After an upgrade that moves or replaces that directory, the shim runs ${installed.realCargo} directly until you re-run \`hauler install-shim --force\`.\n`,
+      `The shim embeds the global hauler entry: ${installed.haulerScript}. If a Node upgrade moves or replaces that file, the shim runs ${installed.realCargo} directly until you re-run \`hauler install-shim --force\`.\n`,
     );
     return 0;
   } catch (error) {
@@ -188,6 +183,38 @@ const runDaemonCommand = async (
   const result = await runDaemonControl(parseDaemonSubcommand(rest));
   write(`${JSON.stringify(result)}\n`);
   return daemonExitCode(result);
+};
+
+export const pluginInstallShimRefusal =
+  'hauler install-shim cannot run from a host plugin copy. Install the global CLI with `npm i -g cargo-hauler`, then run `hauler install-shim` from PATH.\n';
+
+export const pluginDirectCliRefusal =
+  'This plugin-local scripts/hauler.mjs is for host hooks only. Install the global CLI with `npm i -g cargo-hauler` and use `hauler` on PATH; never run scripts/hauler.mjs directly.\n';
+
+const pluginRootNames = [
+  'AGENT_BUNDLE_PLUGIN_ROOT',
+  'CLAUDE_PLUGIN_ROOT',
+  'CURSOR_PLUGIN_ROOT',
+  'PLUGIN_ROOT',
+] as const;
+
+const pluginInvocationAllowed = (
+  argv: readonly string[],
+  env: Readonly<Record<string, string | undefined>>,
+): boolean => {
+  if (pluginRootNames.some((name) => (env[name]?.length ?? 0) > 0)) {
+    return true;
+  }
+  const [command, ...rest] = argv;
+  if (command === 'daemon' && rest.length === 1 && rest[0] === 'run') {
+    return true;
+  }
+  if (command !== 'exec') {
+    return false;
+  }
+  const hostIndex = rest.indexOf('--host');
+  const host = hostIndex === -1 ? undefined : rest[hostIndex + 1];
+  return host !== undefined && host.length > 0 && host !== '--';
 };
 
 /**
@@ -246,7 +273,17 @@ export const runScript = async (
   options: ScriptOptions = {},
 ): Promise<number> => {
   const write = options.write ?? defaultWrite;
+  const env = options.env ?? process.env;
+  const location = haulerEntryLocation(options.entryPath);
   const [command, ...rest] = argv;
+  if (location.kind === 'host-plugin' && command === 'install-shim') {
+    write(pluginInstallShimRefusal);
+    return 1;
+  }
+  if (location.kind === 'host-plugin' && !pluginInvocationAllowed(argv, env)) {
+    write(pluginDirectCliRefusal);
+    return 2;
+  }
   switch (command) {
     case undefined:
       write(usage);
@@ -258,9 +295,9 @@ export const runScript = async (
     case 'exec':
       return runExecCommand(rest, options);
     case 'install-shim':
-      return runInstallShim(rest, write);
+      return runInstallShim(rest, write, location, env);
     case 'daemon':
-      return runDaemonCommand(rest, write);
+      return (options.runDaemon ?? runDaemonCommand)(rest, write);
     default:
       return forwardToRoutedCli(argv, options);
   }
