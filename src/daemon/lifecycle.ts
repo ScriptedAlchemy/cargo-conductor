@@ -195,6 +195,16 @@ export const startDaemon = (
       ConnectionClosed: failedStart,
       ControlTimeout: failedStart,
       DaemonReplacementFailed: failedStart,
+      DaemonNewer: (error) =>
+        Effect.succeed(
+          result(config, 'start', {
+            message: error.message,
+            pid: error.daemon.pid,
+            previousPid: error.daemon.pid,
+            report: null,
+            running: true,
+          }),
+        ),
       DaemonNotReplaced: (error) =>
         Effect.succeed(
           result(config, 'start', {
@@ -220,6 +230,8 @@ const stopMessage = (ack: ShutdownAck): string => {
       return 'cargo-hauler daemon did not acknowledge the shutdown request';
     case 'unreachable':
       return 'cargo-hauler daemon is not running';
+    case 'refused':
+      return 'cargo-hauler daemon refused the shutdown: it is newer than this client; stop it with `hauler daemon stop` from the current install';
     default: {
       const exhaustive: never = ack;
       return exhaustive;
@@ -254,6 +266,16 @@ export const statusDaemon = (
       }),
     ),
     Effect.catchTags({
+      DaemonNewer: (error) =>
+        Effect.succeed(
+          result(config, 'status', {
+            message: error.message,
+            pid: error.daemon.pid,
+            previousPid: error.daemon.pid,
+            report: null,
+            running: true,
+          }),
+        ),
       DaemonNotReplaced: (error) =>
         Effect.succeed(
           result(config, 'status', {

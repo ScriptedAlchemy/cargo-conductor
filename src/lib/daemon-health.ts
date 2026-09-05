@@ -198,6 +198,12 @@ export const probeDaemonHealth = (
           timeoutMs,
         }),
       DaemonUnreachable: (error) => Effect.succeed<DaemonHealth>(unreachableHealth(error)),
+      DaemonNewer: (error) =>
+        Effect.succeed<DaemonHealth>({
+          detail: error.message,
+          reason: 'open-failed',
+          state: 'unreachable',
+        }),
       DaemonNotReplaced: (error) =>
         Effect.succeed<DaemonHealth>({
           detail: error.message,

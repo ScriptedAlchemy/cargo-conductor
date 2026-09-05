@@ -21,6 +21,7 @@ export const infraFailure = (error: TicketSocketError): Error => {
       );
     case 'DaemonRejected':
       return new Error(`hauler daemon rejected the request (${error.code}): ${error.message}`);
+    case 'DaemonNewer':
     case 'DaemonNotReplaced':
       return new Error(error.message);
     case 'DaemonReplacementFailed':

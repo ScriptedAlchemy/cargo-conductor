@@ -18,6 +18,7 @@ import type {
 } from '../daemon/control.js';
 import type { PongMessage } from '../daemon/protocol.js';
 import {
+  DaemonNewerError,
   DaemonNotReplacedError,
   exitGraceMs,
   processAlive,
@@ -25,6 +26,7 @@ import {
   waitForExit,
 } from '../daemon/shutdown.js';
 import type { ExitWaitOptions, ShutdownAck } from '../daemon/shutdown.js';
+import { isNewerVersion } from '../lib/version-order.js';
 import { resolveHaulerArgv } from '../hooks/paths.js';
 import { absentSocketCodes, socketErrorCode } from '../lib/socket-errors.js';
 import { isHaulerInternalEnvironmentVariable } from '../lib/cargo-env.js';
@@ -46,6 +48,7 @@ export type WaitForDaemonError =
 export type EnsureDaemonError =
   | WaitForDaemonError
   | SpawnDaemonError
+  | DaemonNewerError
   | DaemonNotReplacedError
   | DaemonReplacementFailedError;
 
@@ -275,7 +278,24 @@ export const ensureDaemonVersion = (
     if (already === null || already.version === version) {
       return already;
     }
-    yield* dependencies.requestShutdown(config.socketPath);
+    const identity = { pid: already.pid, startedAtMs: already.startedAtMs, version: already.version };
+    // Directional: only an older daemon is replaced. A newer one belongs to
+    // a newer install; this client is the stale one.
+    if (isNewerVersion(already.version, version)) {
+      return yield* new DaemonNewerError({
+        clientVersion: version,
+        daemon: identity,
+        socketPath: config.socketPath,
+      });
+    }
+    const ack = yield* dependencies.requestShutdown(config.socketPath);
+    if (ack === 'refused') {
+      return yield* new DaemonNewerError({
+        clientVersion: version,
+        daemon: identity,
+        socketPath: config.socketPath,
+      });
+    }
     const exited = yield* waitForExit(already.pid, dependencies);
     if (!exited) {
       return yield* new DaemonNotReplacedError({
