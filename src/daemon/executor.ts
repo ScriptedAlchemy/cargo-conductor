@@ -150,11 +150,7 @@ const defaultKillGraceMs = 8_000;
 
 const killGraceMs = (env: Readonly<Record<string, string>> | undefined): number => {
   const parsed = Number.parseInt(
-    env?.CARGO_HAULER_KILL_GRACE_MS ??
-      env?.CARGO_CONDUCTOR_KILL_GRACE_MS ??
-      process.env.CARGO_HAULER_KILL_GRACE_MS ??
-      process.env.CARGO_CONDUCTOR_KILL_GRACE_MS ??
-      '',
+    env?.CARGO_HAULER_KILL_GRACE_MS ?? process.env.CARGO_HAULER_KILL_GRACE_MS ?? '',
     10,
   );
   return Number.isInteger(parsed) && parsed >= 0 ? parsed : defaultKillGraceMs;

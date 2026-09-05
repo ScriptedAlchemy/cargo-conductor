@@ -8,6 +8,7 @@ import {
 } from 'node:fs';
 import { join } from 'node:path';
 
+import { version } from 'agent-bundle/meta';
 import { describe, expect, it } from 'effect-rstest';
 import * as Effect from 'effect/Effect';
 import * as Schedule from 'effect/Schedule';
@@ -20,10 +21,12 @@ import {
   daemonSpawnEnv,
   ensureDaemonRunning,
   spawnDetachedDaemon,
+  type EnsureDaemonDependencies,
 } from '../src/client/ensure-daemon.js';
 import { pingDaemon } from '../src/daemon/control.js';
 import { runDaemon } from '../src/daemon/main.js';
-import { passthroughSpoolFileName } from '../src/daemon/protocol.js';
+import { passthroughSpoolFileName, type PongMessage } from '../src/daemon/protocol.js';
+import { notReplacedMessage } from '../src/daemon/shutdown.js';
 import { scopedEnv, scopedTempDir } from './harness.js';
 
 const configAt = (stateDir: string): DaemonConfigShape => ({
@@ -140,7 +143,6 @@ describe('daemonSpawnEnv', () => {
   it('keeps only the daemon’s own settings plus locale, paths, and network knobs', () => {
     const env = daemonSpawnEnv(
       {
-        CARGO_CONDUCTOR_KILL_GRACE_MS: '1',
         CARGO_HAULER_STATE_DIR: '/elsewhere',
         CARGO_TARGET_DIR: '/t',
         HOME: '/home/a',
@@ -160,7 +162,6 @@ describe('daemonSpawnEnv', () => {
       '/state',
     );
     expect(env).toEqual({
-      CARGO_CONDUCTOR_KILL_GRACE_MS: '1',
       CARGO_HAULER_STATE_DIR: '/state',
       HOME: '/home/a',
       LANG: 'C.UTF-8',
@@ -177,28 +178,102 @@ describe('daemonSpawnEnv', () => {
   });
 });
 
+/**
+ * One install, one version: a daemon answering with this build's version is
+ * reused; one answering with any other version is a leftover of a previous
+ * install and is replaced — shutdown request, wait for its pid, spawn.
+ */
 describe('ensureDaemonRunning', () => {
-  it.effect('refuses to spawn when a live daemon already answers the socket', () =>
-    Effect.gen(function* () {
-      const expected = {
-        type: 'pong' as const,
-        id: 'existing',
-        pid: 777,
-        startedAtMs: 1,
-        version: 'test',
-      };
-      let spawned = 0;
-      const actual = yield* ensureDaemonRunning(configAt('/tmp/cargo-hauler-existing-daemon'), {
-        pingDaemon: () => Effect.succeed(expected),
-        spawnDetachedDaemon: () =>
-          Effect.sync(() => {
-            spawned += 1;
-          }),
-        waitForDaemon: () => Effect.die(new Error('wait should not run')),
-      });
+  const config = configAt('/tmp/cargo-hauler-one-version-unit');
+  const pong = (fields: Partial<PongMessage>): PongMessage => ({
+    id: 'existing',
+    pid: 41,
+    startedAtMs: 1,
+    type: 'pong',
+    version,
+    ...fields,
+  });
+  const previous = pong({ pid: 41, version: '0.0.0-previous' });
+  const fresh = pong({ id: 'fresh', pid: 42, startedAtMs: 2 });
 
-      expect(actual).toBe(expected);
-      expect(spawned).toBe(0);
+  /** Fakes: the previous-install daemon (pid 41) answers, exits shortly after the shutdown request, and the spawn brings up pid 42. */
+  const fakes = (overrides: Partial<EnsureDaemonDependencies> = {}) => {
+    const calls: string[] = [];
+    let alive = true;
+    const dependencies: EnsureDaemonDependencies = {
+      exitGraceMs: 500,
+      pingDaemon: () => Effect.succeed(previous),
+      pollMs: 5,
+      processAlive: () => alive,
+      requestShutdown: () =>
+        Effect.sync(() => {
+          calls.push('shutdown');
+          setTimeout(() => {
+            alive = false;
+          }, 30);
+          return 'acknowledged' as const;
+        }),
+      spawnDetachedDaemon: () =>
+        Effect.sync(() => {
+          calls.push('spawn');
+        }),
+      waitForDaemon: () =>
+        Effect.sync(() => {
+          calls.push('wait');
+          return fresh;
+        }),
+      ...overrides,
+    };
+    return { calls, dependencies };
+  };
+
+  it.effect('reuses a live daemon of this build without a shutdown or a spawn', () =>
+    Effect.gen(function* () {
+      const same = pong({ pid: 777 });
+      const { calls, dependencies } = fakes({ pingDaemon: () => Effect.succeed(same) });
+      const actual = yield* ensureDaemonRunning(config, dependencies);
+
+      expect(actual).toBe(same);
+      expect(calls).toEqual([]);
+    }));
+
+  it.live('replaces a daemon of another version: shutdown, wait for its pid, spawn, and answer with the new pong', () =>
+    Effect.gen(function* () {
+      const { calls, dependencies } = fakes();
+      const actual = yield* ensureDaemonRunning(config, dependencies);
+
+      expect(calls).toEqual(['shutdown', 'spawn', 'wait']);
+      expect(actual).toBe(fresh);
+    }));
+
+  it.live('fails as DaemonNotReplaced, without spawning, when the old pid outlives the grace', () =>
+    Effect.gen(function* () {
+      const { calls, dependencies } = fakes({ exitGraceMs: 40, processAlive: () => true });
+      const error = yield* Effect.flip(ensureDaemonRunning(config, dependencies));
+
+      expect(error._tag).toBe('DaemonNotReplaced');
+      if (error._tag !== 'DaemonNotReplaced') {
+        throw new Error(`unexpected failure ${error._tag}`);
+      }
+      expect(error.daemon).toEqual({ pid: 41, startedAtMs: 1, version: '0.0.0-previous' });
+      expect(error.graceMs).toBe(40);
+      expect(error.socketPath).toBe(config.socketPath);
+      expect(error.message).toBe(notReplacedMessage(error.daemon, 40));
+      expect(error.message).toContain('pid 41 (0.0.0-previous) is still running 40ms after the shutdown request');
+      expect(error.message).toContain('not restarted');
+      expect(calls).toEqual(['shutdown']);
+    }));
+
+  it.live('spawns and waits when nothing answers the socket', () =>
+    Effect.gen(function* () {
+      const stateDir = yield* scopedTempDir('cc-ensure-absent-');
+      // The real ping against a socket path nothing listens on: the
+      // absent-socket failure is what reads as "no daemon".
+      const { calls, dependencies } = fakes({ pingDaemon });
+      const actual = yield* ensureDaemonRunning(configAt(stateDir), dependencies);
+
+      expect(calls).toEqual(['spawn', 'wait']);
+      expect(actual).toBe(fresh);
     }));
 });
 

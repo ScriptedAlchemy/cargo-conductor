@@ -2,15 +2,19 @@ import { describe, expect, it } from 'effect-rstest';
 import * as Effect from 'effect/Effect';
 
 import { runExecClient } from '../src/client/exec.js';
+import { SpawnDaemonError } from '../src/client/ensure-daemon.js';
 import {
   awaitTicket,
   awaitTicketWithProgress,
   fetchTicket,
   submitBackground,
+  submitBackgroundAck,
 } from '../src/client/tickets.js';
 import { awaitCeilingMs } from '../src/daemon/protocol.js';
+import { DaemonNotReplacedError, notReplacedMessage } from '../src/daemon/shutdown.js';
+import { infraFailure } from '../src/lib/ticket-errors.js';
 
-import { fakeCargoEnv, scopedDaemon, scopedEnv } from './harness.js';
+import { fakeCargoEnv, fetchReport, scopedDaemon, scopedEnv } from './harness.js';
 
 const silentIo = {
   writeStderr: () => undefined,
@@ -114,6 +118,41 @@ describe('awaitTicket', () => {
 });
 
 describe('submitBackground', () => {
+  it.live('fails, without submitting, when a daemon of another version outlived the shutdown grace', () =>
+    Effect.gen(function* () {
+      const fixture = yield* scopedDaemon(5);
+      const daemon = { pid: 4242, startedAtMs: 1_000, version: '0.0.0-previous' };
+      const notReplaced = new DaemonNotReplacedError({
+        daemon,
+        graceMs: 5_000,
+        socketPath: fixture.config.socketPath,
+      });
+      const error = yield* Effect.flip(
+        submitBackgroundAck(
+          { argv: ['cargo', 'build', '-p', 'never-submitted'], cwd: fixture.ws1 },
+          fixture.config,
+          () => Effect.fail(notReplaced),
+        ),
+      );
+      expect(error._tag).toBe('DaemonNotReplaced');
+      expect(infraFailure(error).message).toBe(notReplacedMessage(daemon, 5_000));
+      const report = yield* fetchReport(fixture);
+      expect(report.active).toEqual([]);
+      expect(report.recent).toEqual([]);
+    }));
+
+  it.live('still submits when starting a daemon failed for any other reason and one is listening', () =>
+    Effect.gen(function* () {
+      const fixture = yield* scopedDaemon(5);
+      yield* scopedEnv({ CARGO_HAULER_CARGO_BIN: `${fixture.binDir}/cargo` });
+      const ack = yield* submitBackgroundAck(
+        { argv: ['cargo', 'build', '-p', 'after-spawn-failure'], cwd: fixture.ws1 },
+        fixture.config,
+        () => Effect.fail(new SpawnDaemonError({ cause: new Error('spawn refused') })),
+      );
+      expect(ack?.ticket).toMatch(/^cc-\d+$/u);
+    }));
+
   it.live('does not hold the stop hook, like exec --bg with the same session', () =>
     Effect.gen(function* () {
       const fixture = yield* scopedDaemon(5);

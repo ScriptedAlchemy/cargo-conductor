@@ -45,17 +45,15 @@ import {
   relativeTime,
   remainingEstimateMs,
   resolveTicketDetail,
-  runMetricsView,
   sectionOrder,
   shortenPath,
   stalledHint,
   subcommandDisplayLabel,
   latencySavedStat,
-  subcommandMetricsView,
+  subcommandTimings,
   summaryFirstLine,
   terminalStatuses,
   ticketDetailFrom,
-  type RunHistogramShape,
   type DashboardHandBack,
   type DashboardMetricsWindow,
   type DashboardPhaseSplit,
@@ -132,17 +130,10 @@ interface StructuredContent {
   readonly kache?: unknown;
 }
 
+/** The two `metrics` fields the widget reads; the ledger windows carry every timing it shows. */
 interface StatusMetricsShape {
-  readonly cargo_run_ms?: RunHistogramShape;
-  readonly cargo_run_ms_by_kind?: Readonly<Record<string, RunHistogramShape>>;
   readonly attach_mode?: Readonly<Record<string, unknown>>;
-  readonly job_outcome?: Readonly<Record<string, unknown>>;
   readonly windows?: unknown;
-  readonly wait_ms_summary?: {
-    readonly count?: unknown;
-    readonly max?: unknown;
-    readonly quantiles?: unknown;
-  };
 }
 
 interface StatusMetricsWindowBySubcommandShape {
@@ -367,10 +358,14 @@ const asFields = (value: unknown): Readonly<Record<string, unknown>> | null =>
     ? (value as Readonly<Record<string, unknown>>)
     : null;
 
-/** `undefined` when the daemon predates the split, `null` when no leader handed back. */
+// Readers for the untyped `metrics.windows` payload. The protocol promises
+// every field below on every window; a value missing one is not a window
+// and is skipped, so the section never renders zeros it did not receive.
+
+/** `null` when no leader handed back; `undefined` when the value is not the promised shape. */
 const asDashboardPhaseSplit = (value: unknown): DashboardPhaseSplit | null | undefined => {
-  if (value === undefined) {
-    return undefined;
+  if (value === null) {
+    return null;
   }
   const row = asFields(value);
   if (
@@ -379,7 +374,7 @@ const asDashboardPhaseSplit = (value: unknown): DashboardPhaseSplit | null | und
     typeof row.compileTotalMs !== 'number' ||
     typeof row.executeTotalMs !== 'number'
   ) {
-    return null;
+    return undefined;
   }
   return {
     count: row.count,
@@ -390,7 +385,7 @@ const asDashboardPhaseSplit = (value: unknown): DashboardPhaseSplit | null | und
   };
 };
 
-const asDashboardWaitSplit = (value: unknown): DashboardWaitSplit | undefined => {
+const asDashboardWaitSplit = (value: unknown): DashboardWaitSplit | null => {
   const row = asFields(value);
   if (
     row === null ||
@@ -399,7 +394,7 @@ const asDashboardWaitSplit = (value: unknown): DashboardWaitSplit | undefined =>
     typeof row.permitBoundMs !== 'number' ||
     typeof row.otherMs !== 'number'
   ) {
-    return undefined;
+    return null;
   }
   return {
     count: row.count,
@@ -410,10 +405,10 @@ const asDashboardWaitSplit = (value: unknown): DashboardWaitSplit | undefined =>
   };
 };
 
-const asDashboardHandBack = (value: unknown): DashboardHandBack | undefined => {
+const asDashboardHandBack = (value: unknown): DashboardHandBack | null => {
   const row = asFields(value);
   return row === null || typeof row.leaders !== 'number' || typeof row.laneReleasedMs !== 'number'
-    ? undefined
+    ? null
     : { laneReleasedMs: row.laneReleasedMs, leaders: row.leaders };
 };
 
@@ -432,13 +427,16 @@ const asDashboardWindowBySubcommand = (
     return null;
   }
   const phases = asDashboardPhaseSplit(row.phases);
+  if (phases === undefined) {
+    return null;
+  }
   return {
     subcommand: row.subcommand,
     ...(typeof row.profile === 'string' ? { profile: row.profile } : {}),
     count: row.count,
     p50Ms: row.p50Ms ?? null,
     maxMs: row.maxMs ?? null,
-    ...(phases === undefined ? {} : { phases }),
+    phases,
   };
 };
 
@@ -457,12 +455,17 @@ const asDashboardWindow = (value: unknown): DashboardMetricsWindow | null => {
     (row.runMeanMs !== null && typeof row.runMeanMs !== 'number') ||
     (row.waitP50Ms !== null && typeof row.waitP50Ms !== 'number') ||
     (row.waitP95Ms !== null && typeof row.waitP95Ms !== 'number') ||
-    !Array.isArray(row.bySubcommand)
+    !Array.isArray(row.bySubcommand) ||
+    typeof row.runTotalMs !== 'number' ||
+    typeof row.waitTotalMs !== 'number'
   ) {
     return null;
   }
   const waitSplit = asDashboardWaitSplit(row.waitSplit);
   const handBack = asDashboardHandBack(row.handBack);
+  if (waitSplit === null || handBack === null) {
+    return null;
+  }
   return {
     id,
     count: row.count,
@@ -477,10 +480,10 @@ const asDashboardWindow = (value: unknown): DashboardMetricsWindow | null => {
     bySubcommand: row.bySubcommand
       .map((entry) => asDashboardWindowBySubcommand(entry))
       .filter((entry): entry is DashboardMetricsWindowBySubcommand => entry !== null),
-    ...(typeof row.runTotalMs === 'number' ? { runTotalMs: row.runTotalMs } : {}),
-    ...(typeof row.waitTotalMs === 'number' ? { waitTotalMs: row.waitTotalMs } : {}),
-    ...(waitSplit === undefined ? {} : { waitSplit }),
-    ...(handBack === undefined ? {} : { handBack }),
+    runTotalMs: row.runTotalMs,
+    waitTotalMs: row.waitTotalMs,
+    waitSplit,
+    handBack,
   };
 };
 
@@ -1054,46 +1057,41 @@ const MetricsSection = ({
   const [selectedWindowId, setSelectedWindowId] = useState<MetricsWindowId>(
     defaultMetricsWindowId,
   );
+  // A live daemon always reports the three ledger windows, so no window
+  // means no daemon metrics at all: the daemon is stopped or did not answer
+  // and the rows on screen come from the ledger. Timings then derive from
+  // those visible finished rows, honestly labelled as such, or stay blank.
   const windows = dashboardWindows(metrics?.windows);
   const pickedWindow = pickMetricsWindow(windows, selectedWindowId);
   const window = pickedWindow.window;
-  const runs = runMetricsView(metrics?.cargo_run_ms);
-  // Queue latency derives from the visible finished rows: honest about its
-  // window, and available even before the daemon accumulates histograms.
-  const waits = finished
-    .map((row) => row.waitMs)
-    .filter((value): value is number => typeof value === 'number');
-  const waitMetrics = waitMetricsView(metrics?.wait_ms_summary, waits);
-  const runCount = window?.count ?? runs.count;
-  const runMeanMs = window?.runMeanMs ?? runs.meanMs;
-  const runP50Ms = runCount < percentileMinSamples ? null : (window?.runP50Ms ?? runs.p50Ms);
-  const runP95Ms = runCount < percentileMinSamples ? null : (window?.runP95Ms ?? runs.p95Ms);
-  const waitCount = window?.count ?? waitMetrics.count;
+  const visibleWaits = waitMetricsView(
+    finished
+      .map((row) => row.waitMs)
+      .filter((value): value is number => typeof value === 'number'),
+  );
+  const runCount = window?.count ?? 0;
+  const runMeanMs = window?.runMeanMs ?? null;
+  const runP50Ms = window === null || runCount < percentileMinSamples ? null : window.runP50Ms;
+  const runP95Ms = window === null || runCount < percentileMinSamples ? null : window.runP95Ms;
+  const waitCount = window?.count ?? visibleWaits.count;
   const waitP50Ms =
-    waitCount < percentileMinSamples ? null : (window?.waitP50Ms ?? waitMetrics.p50Ms);
-  const waitP95Ms =
-    waitCount < percentileMinSamples ? null : (window?.waitP95Ms ?? waitMetrics.p95Ms);
-  const legacyOutcomeEntries = frequencyEntries(metrics?.job_outcome);
-  const legacyOutcomeTotal = frequencyTotal(metrics?.job_outcome);
-  const outcomesTotal = window?.count ?? legacyOutcomeTotal;
+    waitCount < percentileMinSamples ? null : window === null ? visibleWaits.p50Ms : window.waitP50Ms;
+  // No p95 from the visible rows: over a screen of rows it would be the
+  // slowest row dressed up as a distribution; the tile says so instead.
+  const waitP95Ms = window === null || waitCount < percentileMinSamples ? null : window.waitP95Ms;
+  const outcomesTotal = window?.count ?? 0;
   const outcomesText =
     window === null
-      ? (legacyOutcomeEntries.length === 0 ? '—' : frequencyText(legacyOutcomeEntries))
+      ? '—'
       : `done ${formatCompactNumber(window.done)} · failed ${formatCompactNumber(window.failed)} · killed ${formatCompactNumber(window.killed)}`;
   const attachEntries = frequencyEntries(metrics?.attach_mode);
   const attachTotal = frequencyTotal(metrics?.attach_mode);
   const percentileScale = runP95Ms ?? runP50Ms ?? 0;
-  // Check and test are different populations: the since-start histogram
-  // cannot be split retroactively, so the split comes from the visible
-  // finished rows, each line carrying its own honest n.
-  const legacyBySubcommand = subcommandMetricsView(metrics?.cargo_run_ms_by_kind, finished);
-  const bySubcommandRows = window?.bySubcommand ?? legacyBySubcommand.rows;
+  // Check and test are different populations, each line carrying its own
+  // honest n: the window's own split, or the visible finished rows without one.
+  const bySubcommandRows = window?.bySubcommand ?? subcommandTimings(finished);
   const bySubcommandCaption =
-    window !== null
-      ? `${metricsWindowLabel(window.id)} window`
-      : legacyBySubcommand.source === 'daemon-lifetime'
-        ? 'daemon-lifetime'
-        : `last ${finished.length} finished`;
+    window === null ? `last ${finished.length} finished` : `${metricsWindowLabel(window.id)} window`;
   const visibleSavings = attachSavings(rows);
   const totals = asRecord(savings?.totals) as SavingsTotalsShape | null;
   const allTimeComputeMs =
@@ -1139,7 +1137,7 @@ const MetricsSection = ({
   const latencyTitle =
     hasLedgerSavings && allTimeNegativeLatencyCount !== null
       ? `counterfactual estimateMs minus actual time-to-result; negative means the rider waited longer than its own solo estimate (${formatCompactNumber(allTimeNegativeLatencyCount)} rider${allTimeNegativeLatencyCount === 1 ? '' : 's'} are negative)`
-      : 'available from newer daemons; negative means the rider waited longer than its own solo estimate';
+      : 'unavailable: the status carried no ledger savings; negative means the rider waited longer than its own solo estimate';
   const ridersByMode = hasLedgerSavings && savings !== null ? ridersByModeText(savings) : null;
   const percentileText = (count: number, value: number | null): string =>
     count === 0 ? '—' : (count < percentileMinSamples || value === null)
@@ -1153,7 +1151,7 @@ const MetricsSection = ({
       <h2>
         Metrics{' '}
         {windows.length === 0 ? (
-          <span className="count">(since daemon start)</span>
+          <span className="count">(no daemon metrics)</span>
         ) : (
           <span className="window-toggle" role="toolbar" aria-label="metrics window">
             {metricsWindowIds.map((id, index) => (
@@ -1176,7 +1174,7 @@ const MetricsSection = ({
           label="runs timed (n)"
           title={
             window === null
-              ? 'leader cargo runs with a recorded duration since daemon start; all subcommands blended — see the per-command split below'
+              ? 'no daemon metrics: the daemon is stopped or did not answer; the per-command split below comes from the visible finished rows'
               : `leader cargo runs in the selected ${metricsWindowLabel(window.id)} window; all subcommands blended — see the per-command split below`
           }
           value={formatCompactNumber(runCount)}
@@ -1200,19 +1198,27 @@ const MetricsSection = ({
         <Stat label="run mean" value={runMeanMs === null ? '—' : formatMs(runMeanMs)} />
         <Stat
           label="wait p50"
-          title={`hidden until ${percentileMinSamples} samples (have ${waitCount})`}
+          title={
+            window === null
+              ? `queue wait of the last ${finished.length} finished rows; hidden until ${percentileMinSamples} samples (have ${waitCount})`
+              : `hidden until ${percentileMinSamples} samples (have ${waitCount})`
+          }
           value={percentileText(waitCount, waitP50Ms)}
         />
         <Stat
           label="wait p95"
-          title={`hidden until ${percentileMinSamples} samples (have ${waitCount})`}
-          value={percentileText(waitCount, waitP95Ms)}
+          title={
+            window === null
+              ? 'not computed from the visible rows alone; needs the ledger windows of a running daemon'
+              : `hidden until ${percentileMinSamples} samples (have ${waitCount})`
+          }
+          value={window === null ? '—' : percentileText(waitCount, waitP95Ms)}
         />
         <Stat
           label={`outcomes (n=${formatCompactNumber(outcomesTotal)})`}
           title={
             window === null
-              ? 'finished requests by outcome since daemon start'
+              ? 'no daemon metrics: the daemon is stopped or did not answer'
               : `leader runs by terminal outcome in the selected ${metricsWindowLabel(window.id)} window`
           }
           value={outcomesText}
@@ -1269,8 +1275,8 @@ const MetricsSection = ({
           <p className="empty">No command timings in this window.</p>
         ) : (
           bySubcommandRows.map((timing) => {
-            // Legacy (histogram / visible-window) rows carry no phase split.
-            const phases = phaseSplitView('phases' in timing ? timing.phases : undefined);
+            // Timings derived from the visible rows carry no phase split.
+            const phases = phaseSplitView('phases' in timing ? timing.phases : null);
             return (
               <div className="compact-row" key={`${timing.subcommand}\0${timing.profile ?? ''}`}>
                 <span className="cmd">{subcommandDisplayLabel(timing)}</span>
@@ -1303,8 +1309,8 @@ const MetricsSection = ({
 
 /**
  * Queue wait against run time for the selected window, with the wait split
- * by cause as a stacked bar. Unavailable states name their reason: no ledger
- * windows at all, or a daemon that predates the split.
+ * by cause as a stacked bar. Unavailable without a window: the status carried
+ * no metrics because the daemon is stopped or did not answer.
  */
 const WaitVsRun = ({
   handBack,
@@ -1317,18 +1323,23 @@ const WaitVsRun = ({
 }): ReactNode => {
   switch (view.kind) {
     case 'unavailable':
-      return (
-        <div className="wait-vs-run">
-          <h3>
-            Queue wait vs run <span>(where leaders waited)</span>
-          </h3>
-          <p className="empty">
-            {view.reason === 'no-window'
-              ? 'Unavailable: this daemon reports no ledger windows.'
-              : 'Unavailable: this daemon predates the wait split (upgrade to 0.5.1 or newer).'}
-          </p>
-        </div>
-      );
+      switch (view.reason) {
+        case 'no-window':
+          return (
+            <div className="wait-vs-run">
+              <h3>
+                Queue wait vs run <span>(where leaders waited)</span>
+              </h3>
+              <p className="empty">
+                Unavailable: no daemon metrics — the daemon is stopped or did not answer.
+              </p>
+            </div>
+          );
+        default: {
+          const exhaustive: never = view.reason;
+          return exhaustive;
+        }
+      }
     case 'available': {
       const waited = view.parts.some((part) => part.ms > 0);
       return (
@@ -1397,50 +1408,45 @@ const WaitVsRun = ({
 
 /**
  * Store size against kache's limit, the last GC, `key_ms`, and warnings when
- * the store is over its limit or the last GC skipped evictions. A daemon that
- * predates the report says so instead of showing zeros.
+ * the store is over its limit or the last GC skipped evictions. Null when the
+ * status payload carried no report of the promised shape: the block then
+ * says so instead of showing zeros.
  */
-const KachePressure = ({ pressure }: { readonly pressure: KachePressureModel }): ReactNode => {
-  switch (pressure.kind) {
-    case 'unavailable':
-      return (
-        <p className="empty">
-          Store pressure unavailable: this daemon predates the report (upgrade to 0.5.1 or newer).
-        </p>
-      );
-    case 'available':
-      return (
-        <>
-          <div className="stats">
-            <Stat
-              barPercent={pressure.store.percent ?? undefined}
-              label="store vs limit"
-              title={
-                pressure.store.limitSource === null
-                  ? 'blob bytes recorded in the kache index; the limit could not be read'
-                  : `blob bytes recorded in the kache index against local_max_size from ${pressure.store.limitSource}`
-              }
-              value={pressure.store.text}
-            />
-            <Stat label="last GC" title="from gc_stats.json beside the index; skips are gc: skipping eviction lines in kache's logs during that run" value={pressure.gc} />
-            <Stat
-              label="keying"
-              title="cache-key computation per rustc invocation (key_ms in events.jsonl), over the tail the daemon keeps"
-              value={pressure.keyTiming ?? '—'}
-            />
-          </div>
-          {pressure.warnings.map((warning) => (
-            <p className="warn-line" key={warning.kind}>
-              {warning.text}
-            </p>
-          ))}
-        </>
-      );
-    default: {
-      const exhaustive: never = pressure;
-      return exhaustive;
-    }
+const KachePressure = ({ pressure }: { readonly pressure: KachePressureModel | null }): ReactNode => {
+  if (pressure === null) {
+    return (
+      <p className="empty">
+        Store pressure unavailable: the status carried no readable store-pressure report.
+      </p>
+    );
   }
+  return (
+    <>
+      <div className="stats">
+        <Stat
+          barPercent={pressure.store.percent ?? undefined}
+          label="store vs limit"
+          title={
+            pressure.store.limitSource === null
+              ? 'blob bytes recorded in the kache index; the limit could not be read'
+              : `blob bytes recorded in the kache index against local_max_size from ${pressure.store.limitSource}`
+          }
+          value={pressure.store.text}
+        />
+        <Stat label="last GC" title="from gc_stats.json beside the index; skips are gc: skipping eviction lines in kache's logs during that run" value={pressure.gc} />
+        <Stat
+          label="keying"
+          title="cache-key computation per rustc invocation (key_ms in events.jsonl), over the tail the daemon keeps"
+          value={pressure.keyTiming ?? '—'}
+        />
+      </div>
+      {pressure.warnings.map((warning) => (
+        <p className="warn-line" key={warning.kind}>
+          {warning.text}
+        </p>
+      ))}
+    </>
+  );
 };
 
 const KacheSection = ({ nowMs, value }: { readonly nowMs: number; readonly value: unknown }): ReactNode => {

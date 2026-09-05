@@ -7,7 +7,7 @@ import { describe, expect, it } from 'effect-rstest';
 import * as Effect from 'effect/Effect';
 
 import type { RunExecOptions, RunExecResult } from '../src/client/exec.js';
-import { runScript, warnRemovedLegacyStateDir } from '../src/scripts/hauler.js';
+import { runScript } from '../src/scripts/hauler.js';
 
 const run = async (
   argv: readonly string[],
@@ -53,19 +53,6 @@ const withEnv = async (
 };
 
 describe('hauler script', () => {
-  it('warns about the removed legacy state-dir variable, except on the exec hot path', () => {
-    const lines: string[] = [];
-    const collect = (line: string | Uint8Array) =>
-      lines.push(typeof line === 'string' ? line : Buffer.from(line).toString('utf8'));
-    const env = { CARGO_CONDUCTOR_STATE_DIR: '/tmp/dead-path' };
-    warnRemovedLegacyStateDir(['status'], env, collect);
-    expect(lines).toEqual([
-      'warning: CARGO_CONDUCTOR_STATE_DIR is no longer supported; use CARGO_HAULER_STATE_DIR instead.\n',
-    ]);
-    warnRemovedLegacyStateDir(['exec', '--host', 'shim', '--', 'cargo', 'check'], env, collect);
-    expect(lines).toHaveLength(1);
-  });
-
   it('prints usage and exits 2 without arguments', async () => {
     const result = await run([]);
     expect(result.code).toBe(2);
@@ -112,14 +99,9 @@ describe('hauler script', () => {
     expect(() => JSON.parse(result.text)).toThrow();
   });
 
-  it('retains legacy host/session metadata because it cannot change state identity', async () => {
+  it('reads the exec host and session from CARGO_HAULER_HOST and CARGO_HAULER_SESSION', async () => {
     await withEnv(
-      {
-        CARGO_CONDUCTOR_HOST: 'legacy-host',
-        CARGO_CONDUCTOR_SESSION: 'legacy-session',
-        CARGO_HAULER_HOST: undefined,
-        CARGO_HAULER_SESSION: undefined,
-      },
+      { CARGO_HAULER_HOST: 'env-host', CARGO_HAULER_SESSION: 'env-session' },
       async () => {
         let seen: RunExecOptions | undefined;
         await run(['exec', '--', 'cargo', 'check'], {
@@ -128,19 +110,18 @@ describe('hauler script', () => {
             return Effect.succeed({ exitCode: 0, mode: 'brokered', ticket: 'cc-9' });
           },
         });
-        expect(seen?.host).toBe('legacy-host');
-        expect(seen?.session).toBe('legacy-session');
+        expect(seen?.host).toBe('env-host');
+        expect(seen?.session).toBe('env-session');
 
-        process.env.CARGO_HAULER_HOST = 'current-host';
-        process.env.CARGO_HAULER_SESSION = 'current-session';
-        await run(['exec', '--', 'cargo', 'check'], {
+        // Explicit flags win over the environment.
+        await run(['exec', '--session', 'flag-session', '--host', 'flag-host', '--', 'cargo', 'check'], {
           runExec: (options) => {
             seen = options;
             return Effect.succeed({ exitCode: 0, mode: 'brokered', ticket: 'cc-10' });
           },
         });
-        expect(seen?.host).toBe('current-host');
-        expect(seen?.session).toBe('current-session');
+        expect(seen?.host).toBe('flag-host');
+        expect(seen?.session).toBe('flag-session');
       },
     );
   });

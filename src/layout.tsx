@@ -15,7 +15,7 @@ import { requestDaemon } from './lib/request-config.js';
  *
  * - a header line saying what the daemon probe proved at request start and
  *   which state directory it is (`<DaemonBadge>` over the `haulerDaemon`
- *   provider), plus a version-skew warning when the daemon is another build;
+ *   provider);
  * - the route's own document, unchanged (its `Agent.Result value` merges up
  *   into this container, so `structuredContent` and the CLI `--json` value
  *   are exactly what the route declared);
@@ -39,11 +39,7 @@ export default function HaulerLayout({ children, route }: AgentLayoutProps) {
       daemon: daemon === undefined
         ? { state: 'unmounted' }
         : daemon.health.state === 'running'
-          ? {
-              pid: daemon.health.pid,
-              state: daemon.health.state,
-              ...(daemon.health.version === undefined ? {} : { version: daemon.health.version }),
-            }
+          ? { pid: daemon.health.pid, state: daemon.health.state, version: daemon.health.version }
           : { state: daemon.health.state },
       lineage: lineage === null
         ? null

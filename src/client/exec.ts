@@ -714,6 +714,39 @@ const brokeredOrUnreachable = (
     }),
   );
 
+/**
+ * Auto-start and the one-version rule share one call, made before the first
+ * connection: `ensureDaemonRunning` pings, replaces a daemon left running by
+ * a previous install, and starts one when none answers. Exec fails open, so
+ * none of its failures stop the build. A ping that merely timed out is a
+ * saturated daemon — `brokeredOrUnreachable` already knocks on it for a
+ * minute, so that case proceeds silently. A daemon of another version that
+ * outlived the shutdown grace is not a peer this build may use: cargo runs
+ * directly with that message as the reason. Anything else (a failed spawn, a
+ * daemon that never came up) is reported once and the connection attempt
+ * decides what happens next.
+ */
+const ensureForExec = (
+  options: ExecOptions,
+  config: DaemonConfigShape,
+): Effect.Effect<PassthroughMode | null> => {
+  const ensure = options.ensureDaemon ?? (() => ensureDaemonRunning(config).pipe(Effect.asVoid));
+  return ensure().pipe(
+    Effect.as<PassthroughMode | null>(null),
+    Effect.catchTags({
+      ControlTimeout: () => Effect.succeed(null),
+      DaemonNotReplaced: (error) => Effect.succeed({ reason: error.message, spool: true }),
+    }),
+    Effect.catchCause((cause) =>
+      Effect.sync(() => {
+        const reason = Cause.pretty(cause).split('\n')[0] ?? 'unknown error';
+        options.io.writeStderr(`[cargo-hauler] daemon startup failed: ${reason}\n`);
+        return null;
+      }),
+    ),
+  );
+};
+
 export const runExecClient = (
   rawOptions: RunExecOptions,
 ): Effect.Effect<RunExecResult> => {
@@ -741,29 +774,18 @@ export const runExecClient = (
   if (localReason !== null) {
     return passthrough(options, config, { reason: localReason, spool: false });
   }
-  return brokeredOrUnreachable(options, config).pipe(
-    Effect.catchTag('DaemonUnreachable', (unreachable) =>
-      Effect.gen(function* () {
-        const saturated = unreachablePassthroughMode(unreachable);
-        if (saturated !== null || options.autoSpawn === false) {
-          return yield* passthrough(options, config, saturated ?? unreachableMode);
-        }
-        const ensure = options.ensureDaemon ?? (() => ensureDaemonRunning(config).pipe(Effect.asVoid));
-        yield* ensure().pipe(
-          Effect.tapCause((cause) =>
-            Effect.sync(() => {
-              const reason = Cause.pretty(cause).split('\n')[0] ?? 'unknown error';
-              options.io.writeStderr(`[cargo-hauler] daemon startup failed: ${reason}\n`);
-            }),
-          ),
-          Effect.ignore,
-        );
-        return yield* brokeredOrUnreachable(options, config).pipe(
-          Effect.catchTag('DaemonUnreachable', (again) =>
-            passthrough(options, config, unreachablePassthroughMode(again) ?? unreachableMode),
-          ),
-        );
-      }),
-    ),
-  );
+  return Effect.gen(function* () {
+    if (options.autoSpawn !== false) {
+      const direct = yield* ensureForExec(options, config);
+      if (direct !== null) {
+        return yield* passthrough(options, config, direct);
+      }
+    }
+    return yield* brokeredOrUnreachable(options, config).pipe(
+      Effect.catchTag('DaemonUnreachable', (unreachable) =>
+        passthrough(options, config, unreachablePassthroughMode(unreachable) ?? unreachableMode),
+      ),
+    );
+  });
 };
+

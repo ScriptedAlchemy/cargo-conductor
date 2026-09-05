@@ -11,16 +11,6 @@ describe('realCargoBin', () => {
     expect(realCargoBin({ CARGO_HAULER_CARGO_BIN: '/opt/rust/cargo' })).toBe('/opt/rust/cargo');
   });
 
-  it('retains the legacy process override because it cannot change state identity', () => {
-    expect(realCargoBin({ CARGO_CONDUCTOR_CARGO_BIN: '/legacy/cargo' })).toBe('/legacy/cargo');
-    expect(
-      realCargoBin({
-        CARGO_CONDUCTOR_CARGO_BIN: '/legacy/cargo',
-        CARGO_HAULER_CARGO_BIN: '/current/cargo',
-      }),
-    ).toBe('/current/cargo');
-  });
-
   it('falls back to the daemon’s own CARGO_HAULER_CARGO_BIN when the job env has none', () => {
     // Clients strip CARGO_HAULER_* from the transported env, so in production
     // the per-job env never carries the override; the daemon process does.

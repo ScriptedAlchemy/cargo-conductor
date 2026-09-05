@@ -8,7 +8,6 @@ import type { StatusResultMessage } from '../daemon/protocol.js';
 import { isRecord } from './guards.js';
 import { shortId } from './id.js';
 import { socketErrorCode } from './socket-errors.js';
-import { learnDaemonVersion } from './version-skew.js';
 
 /**
  * What one bounded status probe proved about the daemon. Every shape is
@@ -32,8 +31,8 @@ export type DaemonHealth =
       readonly queued: number;
       readonly busyLanes: number;
       readonly maxConcurrent: number;
-      /** The daemon's release version when it stated one (report, or a ping for older daemons) (#75). */
-      readonly version?: string;
+      /** The daemon's release version. */
+      readonly version: string;
     }
   | { readonly state: 'stopped'; readonly reason: 'socket-missing' | 'connection-refused' }
   | {
@@ -67,11 +66,7 @@ const socketDefinitelyMissing = (config: DaemonConfigShape, platform: NodeJS.Pla
   }
 };
 
-const runningHealth = (
-  message: StatusResultMessage,
-  latencyMs: number,
-  version: string | undefined,
-): DaemonHealth => {
+const runningHealth = (message: StatusResultMessage, latencyMs: number): DaemonHealth => {
   const report = message.report;
   const running = report.active.filter((record) => record.status === 'running');
   return {
@@ -79,7 +74,7 @@ const runningHealth = (
       (lane) =>
         lane.queued > 0 ||
         lane.runningTicket !== null ||
-        (lane.executingTickets?.length ?? 0) > 0,
+        lane.executingTickets.length > 0,
     ).length,
     latencyMs,
     maxConcurrent: report.maxConcurrent,
@@ -89,7 +84,7 @@ const runningHealth = (
     running: running.filter((record) => record.attachedTo === null).length,
     startedAtMs: report.startedAtMs,
     state: 'running',
-    ...(version === undefined ? {} : { version }),
+    version: report.version,
   };
 };
 
@@ -149,14 +144,10 @@ export const probeDaemonHealth = (
     },
     (message): message is StatusResultMessage => message.type === 'status-result',
   ).pipe(
-    Effect.flatMap((message): Effect.Effect<DaemonHealth> =>
+    Effect.map((message): DaemonHealth =>
       message === undefined
-        ? Effect.succeed({ reason: 'connection-closed', state: 'unresponsive', timeoutMs })
-        : // Older daemons state their version only on `pong`: one more
-          // bounded round trip, and only for them (#75).
-          learnDaemonVersion(message.report, config.socketPath, timeoutMs).pipe(
-            Effect.map((version) => runningHealth(message, Date.now() - startedAt, version)),
-          ),
+        ? { reason: 'connection-closed', state: 'unresponsive', timeoutMs }
+        : runningHealth(message, Date.now() - startedAt),
     ),
     Effect.catchTags({
       ConnectionClosed: () =>

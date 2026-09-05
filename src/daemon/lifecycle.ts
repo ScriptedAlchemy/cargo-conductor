@@ -3,18 +3,23 @@ import * as Effect from 'effect/Effect';
 import * as Exit from 'effect/Exit';
 import * as Fiber from 'effect/Fiber';
 
-import { ensureDaemonRunning } from '../client/ensure-daemon.js';
-import { formatMs } from '../lib/format.js';
-import { isRecord } from '../lib/guards.js';
-import { shortId } from '../lib/id.js';
-import { daemonIdentity, formatVersionSkew, type DaemonIdentity } from '../lib/version-skew.js';
+import { defaultEnsureDependencies, ensureDaemonRunning } from '../client/ensure-daemon.js';
+import type { EnsureDaemonDependencies } from '../client/ensure-daemon.js';
 import { loadHaulerSnapshot } from '../query.js';
 
 import { resolveDaemonConfig } from './config.js';
 import type { DaemonConfigShape } from './config.js';
-import { requestOverSocket } from './control.js';
 import { runDaemon } from './main.js';
 import type { StatusReport } from './protocol.js';
+import {
+  daemonIdentity,
+  exitGraceMs,
+  notReplacedMessage,
+  processAlive,
+  requestShutdown,
+  waitForExit,
+} from './shutdown.js';
+import type { DaemonIdentity, ShutdownAck } from './shutdown.js';
 
 export const daemonSubcommands = ['run', 'start', 'stop', 'status', 'restart'] as const;
 export type DaemonSubcommand = (typeof daemonSubcommands)[number];
@@ -23,7 +28,11 @@ export interface DaemonControlResult {
   readonly message: string;
   readonly operation: 'daemon';
   readonly pid: number | null;
-  /** `restart` only: the pid that was serving before, null when none was. */
+  /**
+   * `restart`: the pid that was serving before, null when none was. `start`:
+   * set only when a daemon of another version outlived the grace and was
+   * left serving (then equal to `pid`).
+   */
   readonly previousPid?: number | null;
   readonly report: StatusReport | null;
   readonly running: boolean;
@@ -40,14 +49,15 @@ export const daemonExitCode = (result: DaemonControlResult): number => {
     case 'run':
       return result.message === 'completed' || result.message === 'already-running' ? 0 : 1;
     case 'start':
+    case 'restart':
+      // Success is a running daemon that is not the one we found: a daemon
+      // that outlived the grace is still serving, but was not restarted —
+      // for `start`, it is a daemon of another version that was not replaced.
+      return result.running && result.pid !== null && result.pid !== result.previousPid ? 0 : 1;
     case 'status':
       return result.running ? 0 : 1;
     case 'stop':
       return 0;
-    case 'restart':
-      // Success is a running daemon that is not the one we found: a daemon
-      // that outlived the grace is still serving, but was not restarted.
-      return result.running && result.pid !== null && result.pid !== result.previousPid ? 0 : 1;
     default: {
       const exhaustive: never = result.subcommand;
       return exhaustive;
@@ -55,7 +65,12 @@ export const daemonExitCode = (result: DaemonControlResult): number => {
   }
 };
 
-const signalShutdownGraceMs = 5_000;
+/**
+ * How long the daemon's own signal handler waits for teardown before forcing
+ * the exit: the same window a client waits for an old daemon's pid after the
+ * shutdown request, so neither side gives up before the other.
+ */
+const signalShutdownGraceMs = exitGraceMs;
 
 type ShutdownSignal = 'SIGINT' | 'SIGTERM';
 
@@ -148,8 +163,15 @@ const result = (
   subcommand,
 });
 
+/**
+ * `hauler daemon start`: `ensureDaemonRunning`, so a daemon of another
+ * version answering the socket is replaced on the way. One that outlives the
+ * grace is reported as running and not replaced — `previousPid` equal to
+ * `pid`, the verdict `daemonExitCode` turns into a failure.
+ */
 export const startDaemon = (
   config: DaemonConfigShape = resolveDaemonConfig(),
+  dependencies: EnsureDaemonDependencies = defaultEnsureDependencies,
 ): Effect.Effect<DaemonControlResult> => {
   const failedStart = (): Effect.Effect<DaemonControlResult> =>
     Effect.succeed(
@@ -160,7 +182,7 @@ export const startDaemon = (
         running: false,
       }),
     );
-  return ensureDaemonRunning(config).pipe(
+  return ensureDaemonRunning(config, dependencies).pipe(
     Effect.map((pong) =>
       result(config, 'start', {
         message: `cargo-hauler daemon started (pid ${pong.pid})`,
@@ -172,58 +194,50 @@ export const startDaemon = (
     Effect.catchTags({
       ConnectionClosed: failedStart,
       ControlTimeout: failedStart,
+      DaemonNotReplaced: (error) =>
+        Effect.succeed(
+          result(config, 'start', {
+            message: notReplacedMessage(error.daemon, error.graceMs),
+            pid: error.daemon.pid,
+            previousPid: error.daemon.pid,
+            report: null,
+            running: true,
+          }),
+        ),
       DaemonUnreachable: failedStart,
       SpawnDaemonError: failedStart,
     }),
   );
 };
 
+const stopMessage = (ack: ShutdownAck): string => {
+  switch (ack) {
+    case 'acknowledged':
+    case 'connection-closed':
+      return 'cargo-hauler daemon stopped';
+    case 'timeout':
+      return 'cargo-hauler daemon did not acknowledge the shutdown request';
+    case 'unreachable':
+      return 'cargo-hauler daemon is not running';
+    default: {
+      const exhaustive: never = ack;
+      return exhaustive;
+    }
+  }
+};
+
 export const stopDaemon = (
   config: DaemonConfigShape = resolveDaemonConfig(),
 ): Effect.Effect<DaemonControlResult> =>
-  requestOverSocket({
-    isTerminal: (message) => message.type === 'shutting-down',
-    message: { id: shortId(), type: 'shutdown' },
-    socketPath: config.socketPath,
-    timeoutMs: 5_000,
-  }).pipe(
-    Effect.map(() =>
+  requestShutdown(config.socketPath).pipe(
+    Effect.map((ack) =>
       result(config, 'stop', {
-        message: 'cargo-hauler daemon stopped',
+        message: stopMessage(ack),
         pid: null,
         report: null,
         running: false,
       }),
     ),
-    Effect.catchTags({
-      ConnectionClosed: () =>
-        Effect.succeed(
-          result(config, 'stop', {
-            message: 'cargo-hauler daemon stopped',
-            pid: null,
-            report: null,
-            running: false,
-          }),
-        ),
-      ControlTimeout: () =>
-        Effect.succeed(
-          result(config, 'stop', {
-            message: 'cargo-hauler daemon did not acknowledge the shutdown request',
-            pid: null,
-            report: null,
-            running: false,
-          }),
-        ),
-      DaemonUnreachable: () =>
-        Effect.succeed(
-          result(config, 'stop', {
-            message: 'cargo-hauler daemon is not running',
-            pid: null,
-            report: null,
-            running: false,
-          }),
-        ),
-    }),
   );
 
 export const statusDaemon = (
@@ -237,18 +251,6 @@ export const statusDaemon = (
         report: snapshot.report,
         running: snapshot.daemon === 'running',
       }),
-    ),
-    // A daemon that answered with a report this build cannot read is running;
-    // say which version it is and how to restart it (#75).
-    Effect.catchTag('DaemonVersionSkew', (skew) =>
-      Effect.succeed(
-        result(config, 'status', {
-          message: formatVersionSkew(skew),
-          pid: skew.daemon?.pid ?? null,
-          report: null,
-          running: true,
-        }),
-      ),
     ),
   );
 
@@ -264,18 +266,8 @@ export interface RestartDaemonDependencies {
   readonly pollMs: number;
 }
 
-/** `kill -0`: EPERM is another user's live process, ESRCH is gone. */
-const processAlive = (pid: number): boolean => {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    return isRecord(error) && error.code === 'EPERM';
-  }
-};
-
 const defaultRestartDependencies: RestartDaemonDependencies = {
-  exitGraceMs: signalShutdownGraceMs,
+  exitGraceMs,
   identify: daemonIdentity,
   pollMs: 100,
   processAlive,
@@ -283,26 +275,14 @@ const defaultRestartDependencies: RestartDaemonDependencies = {
   stop: stopDaemon,
 };
 
-/** True once the pid is gone, false when it is still there at the end of the grace. */
-const waitForExit = (pid: number, dependencies: RestartDaemonDependencies): Effect.Effect<boolean> =>
-  Effect.gen(function* () {
-    const deadline = Date.now() + dependencies.exitGraceMs;
-    while (dependencies.processAlive(pid)) {
-      if (Date.now() >= deadline) {
-        return false;
-      }
-      yield* Effect.sleep(dependencies.pollMs);
-    }
-    return true;
-  });
-
 const versionText = (identity: DaemonIdentity | null): string =>
   identity === null ? 'version unknown' : identity.version;
 
 /**
- * `hauler daemon restart`: the graceful stop, a wait for the old pid to
- * exit, then the usual start — so a daemon left running from an older
- * install is replaced by this build (#75). In-flight tickets are not handed
+ * `hauler daemon restart`, the manual replacement: the graceful stop, a wait
+ * for the old pid to exit, then the usual start. A daemon of another version
+ * is replaced automatically by `ensureDaemonRunning` on the next call; this
+ * command replaces a daemon of any version. In-flight tickets are not handed
  * over: the new daemon marks them `killed` with `orphaned by daemon restart`
  * on its first ledger pass. The old daemon is never signalled past the
  * shutdown request; one that does not exit within the grace is reported,
@@ -334,7 +314,7 @@ export const restartDaemon = (
     const exited = yield* waitForExit(before.pid, dependencies);
     if (!exited) {
       return restart({
-        message: `cargo-hauler daemon pid ${before.pid} (${before.version}) is still running ${formatMs(dependencies.exitGraceMs)} after the shutdown request; not restarted — retry once it has exited, or stop it with \`hauler daemon stop\``,
+        message: notReplacedMessage(before, dependencies.exitGraceMs),
         pid: before.pid,
         previousPid: before.pid,
         report: null,

@@ -30,7 +30,6 @@ import type {
   TransitionRecord,
 } from './protocol.js';
 import { passthroughSpoolFileName } from './protocol.js';
-import { calculateServedSavings } from './savings.js';
 import { sweepTicketLogs } from './ticket-log.js';
 import {
   classifyWaits,
@@ -96,7 +95,8 @@ export interface AttachRequestInput {
 
 export interface MetricsWindowBySubcommand {
   readonly subcommand: string;
-  readonly profile?: string;
+  /** The row's cargo profile, or the subcommand's default when the row records none. */
+  readonly profile: string;
   readonly count: number;
   readonly p50Ms: number | null;
   readonly maxMs: number | null;
@@ -476,80 +476,6 @@ const inTransaction = <A>(db: DatabaseSync, body: () => A): A => {
 };
 
 /**
- * `PRAGMA user_version` of a ledger whose one-time data migrations have run.
- * Version 1: attachment savings backfilled for riders settled before the
- * savings columns existed. Version 2: saved latency recomputed against the
- * leader's start, so lane wait behind a not-yet-started leader is no longer
- * charged to attaching.
- */
-export const ledgerUserVersion = 2;
-
-const readUserVersion = (db: DatabaseSync): number =>
-  toNumber(db.prepare('PRAGMA user_version').get()?.user_version ?? 0);
-
-/**
- * Leader lookup goes through the rowid index (`l.id = CAST(substr(...))`)
- * rather than `'cc-' || l.id = f.attached_to`, which forced a full scan of
- * `l` for every rider.
- */
-export const backfillAttachmentSavingsSelect = `SELECT f.id,
-       f.attach_mode,
-       f.estimate_ms,
-       f.created_at_ms,
-       f.finished_at_ms,
-       l.run_ms AS leader_run_ms,
-       l.started_at_ms AS leader_started_at_ms
-FROM requests f
-LEFT JOIN requests l ON l.id = CAST(substr(f.attached_to, 4) AS INTEGER)
-WHERE f.attached_to IS NOT NULL
-  AND f.status IN ('done', 'failed')
-  AND f.finished_at_ms IS NOT NULL
-  AND f.estimate_ms IS NOT NULL
-  AND f.attach_mode IN ('identity', 'coverage', 'batch')`;
-
-/**
- * Older ledgers predate settlement-time savings columns, or computed saved
- * latency from the rider's creation rather than the leader's start. Their
- * served rider rows still contain the counterfactual inputs, so recompute
- * once instead of showing stale numbers forever after an upgrade: compute
- * savings are kept where present (they were exact at settlement), latency is
- * always recomputed. Gated on `user_version` so the scan runs a single time
- * per database, not on every open.
- */
-const backfillAttachmentSavings = (db: DatabaseSync): void => {
-  if (readUserVersion(db) >= ledgerUserVersion) {
-    return;
-  }
-  inTransaction(db, () => {
-    const rows = db.prepare(backfillAttachmentSavingsSelect).all() as readonly Row[];
-    const update = db.prepare(
-      `UPDATE requests
-       SET saved_compute_ms = COALESCE(saved_compute_ms, ?),
-           saved_compute_source = COALESCE(saved_compute_source, ?),
-           saved_latency_ms = ?
-       WHERE id = ?`,
-    );
-    for (const row of rows) {
-      const savings = calculateServedSavings(
-        toText(row.attach_mode) as AttachMode,
-        toNumber(row.estimate_ms),
-        toNumber(row.created_at_ms),
-        toNumber(row.finished_at_ms),
-        toNullableNumber(row.leader_run_ms),
-        toNullableNumber(row.leader_started_at_ms),
-      );
-      update.run(
-        savings.savedComputeMs,
-        savings.savedComputeSource,
-        savings.savedLatencyMs,
-        toNumber(row.id),
-      );
-    }
-    db.exec(`PRAGMA user_version = ${ledgerUserVersion}`);
-  });
-};
-
-/**
  * Read-only connection for inspecting the ledger without the daemon. Never
  * creates directories, switches journal modes, or runs migrations. WAL
  * recovery after an unclean daemon stop (and pending column migrations)
@@ -579,7 +505,6 @@ export const openLedgerDatabase = (databasePath: string): DatabaseSync => {
       db.exec(ddl);
     }
   }
-  backfillAttachmentSavings(db);
   db.exec(
     'CREATE UNIQUE INDEX IF NOT EXISTS requests_source_attempt_id_idx ON requests (source_attempt_id) WHERE source_attempt_id IS NOT NULL',
   );
@@ -1062,11 +987,12 @@ export const createLedgerApi = (db: DatabaseSync, options: CreateLedgerApiOption
     waitMs.sort((left, right) => left - right);
     const bySubcommandRows = [...bySubcommand.entries()]
       .map(([populationKey, population]): MetricsWindowBySubcommand => {
-        const [subcommand = 'unknown', profile] = populationKey.split('\0');
+        const [subcommand = 'unknown', profile = defaultCargoProfile(subcommand)] =
+          populationKey.split('\0');
         const sorted = [...population.runs].sort((left, right) => left - right);
         return {
           subcommand,
-          ...(profile === undefined ? {} : { profile }),
+          profile,
           count: sorted.length,
           p50Ms: percentileFromSorted(sorted, 0.5),
           maxMs: sorted.length === 0 ? null : sorted[sorted.length - 1] ?? null,

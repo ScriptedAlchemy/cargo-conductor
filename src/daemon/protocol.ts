@@ -199,12 +199,12 @@ export interface RequestRecord {
    * leader. Null means "no served follower savings recorded" (leaders,
    * requeued riders, detached/killed before service).
    */
-  readonly savedComputeMs?: number | null;
+  readonly savedComputeMs: number | null;
   /**
    * Provenance of `savedComputeMs`: `exact` means the leader's measured run
    * time anchored the value; `estimate` means a follower estimate supplied it.
    */
-  readonly savedComputeSource?: SavedComputeSource | null;
+  readonly savedComputeSource: SavedComputeSource | null;
   /**
    * Counterfactual latency savings for the follower:
    * `estimateMs - (settledAtMs - max(createdAtMs, leaderStartedAtMs))`: time
@@ -212,7 +212,7 @@ export interface RequestRecord {
    * would have paid alone as well. Negative values are expected and honest:
    * they mean the rider rode longer than its own solo run would have taken.
    */
-  readonly savedLatencyMs?: number | null;
+  readonly savedLatencyMs: number | null;
   /** The invocation actually spawned (demux flag, batch-folded -p packages); null until run. */
   readonly execArgv: readonly string[] | null;
   readonly background: boolean;
@@ -376,10 +376,9 @@ export interface LaneStatus {
   readonly runningTicket: string | null;
   /**
    * Leaders past their build that still execute (tests, benches, a program)
-   * in this lane while the next compile may already run; absent from older
-   * daemons.
+   * in this lane while the next compile may already run; empty when none do.
    */
-  readonly executingTickets?: readonly string[];
+  readonly executingTickets: readonly string[];
 }
 
 export interface HistogramMetricSnapshot {
@@ -393,17 +392,17 @@ export interface HistogramMetricSnapshot {
 
 export interface StatusMetrics {
   readonly cargo_run_ms: HistogramMetricSnapshot;
-  readonly cargo_run_ms_by_kind?: Readonly<Record<string, HistogramMetricSnapshot>>;
+  readonly cargo_run_ms_by_kind: Readonly<Record<string, HistogramMetricSnapshot>>;
   readonly job_outcome: Readonly<Record<string, number>>;
   readonly attach_mode: Readonly<Record<string, number>>;
   /**
    * Requests that found in-flight leaders in their lane but attached to none,
    * counted once each under the gate of their nearest miss
-   * (`AttachRejectionGate`); absent on 0.5.0 and older daemons.
+   * (`AttachRejectionGate`).
    */
-  readonly attach_rejections?: Readonly<Record<string, number>>;
-  readonly windows?: readonly StatusMetricsWindow[];
-  readonly wait_ms_summary?: {
+  readonly attach_rejections: Readonly<Record<string, number>>;
+  readonly windows: readonly StatusMetricsWindow[];
+  readonly wait_ms_summary: {
     readonly count: number;
     readonly min: number | null;
     readonly max: number | null;
@@ -416,7 +415,7 @@ export type StatusMetricsWindowId = 'hour' | 'day' | 'all';
 
 /**
  * Compile versus execution time of the leaders whose `buildFinishedAtMs`
- * stamp splits the two (test, nextest, bench, and run leaders since 0.5.0).
+ * stamp splits the two (test, nextest, bench, and run leaders).
  */
 export interface StatusMetricsPhaseSplit {
   /** Leaders with a build-finished stamp; pure compiles never have one. */
@@ -429,12 +428,13 @@ export interface StatusMetricsPhaseSplit {
 
 export interface StatusMetricsWindowBySubcommand {
   readonly subcommand: string;
-  readonly profile?: string;
+  /** The intent's profile, or cargo's default for the subcommand when the argv named none. */
+  readonly profile: string;
   readonly count: number;
   readonly p50Ms: number | null;
   readonly maxMs: number | null;
-  /** Absent from daemons before 0.5.1; null when no leader of this population carries the stamp. */
-  readonly phases?: StatusMetricsPhaseSplit | null;
+  /** Null when no leader of this population carries the build-finished stamp (pure compiles never do). */
+  readonly phases: StatusMetricsPhaseSplit | null;
 }
 
 /**
@@ -479,12 +479,12 @@ export interface StatusMetricsWindow {
   readonly waitP50Ms: number | null;
   readonly waitP95Ms: number | null;
   readonly bySubcommand: readonly StatusMetricsWindowBySubcommand[];
-  /** Sum of leader run time in the window; absent from daemons before 0.5.1. */
-  readonly runTotalMs?: number;
-  /** Sum of leader queue wait in the window; absent from daemons before 0.5.1. */
-  readonly waitTotalMs?: number;
-  readonly waitSplit?: StatusMetricsWaitSplit;
-  readonly handBack?: StatusMetricsHandBack;
+  /** Sum of leader run time in the window. */
+  readonly runTotalMs: number;
+  /** Sum of leader queue wait in the window. */
+  readonly waitTotalMs: number;
+  readonly waitSplit: StatusMetricsWaitSplit;
+  readonly handBack: StatusMetricsHandBack;
 }
 
 export interface KacheHeartbeatRoot {
@@ -580,8 +580,7 @@ export interface KacheStatusReport {
   readonly eventsFreshMs: number | null;
   readonly recentHeartbeatRoots: readonly KacheHeartbeatRoot[];
   readonly topCrates: readonly KacheTopCrate[];
-  /** Absent from daemons before 0.5.1. */
-  readonly pressure?: KacheStorePressureReport;
+  readonly pressure: KacheStorePressureReport;
 }
 
 export interface AttachmentSavingsModeReport {
@@ -616,16 +615,20 @@ export interface StatusReport {
   readonly lanes: readonly LaneStatus[];
   readonly active: readonly RequestRecord[];
   readonly recent: readonly RequestRecord[];
-  readonly metrics?: StatusMetrics;
-  readonly savings?: AttachmentSavingsReport;
-  readonly kache?: KacheStatusReport | null;
-  readonly system?: SystemLoadReport;
+  readonly metrics: StatusMetrics;
+  readonly savings: AttachmentSavingsReport;
   /**
-   * The daemon's release version, so a client can tell a daemon left running
-   * across an upgrade from its own build (#75). Absent from daemons before
-   * 0.4.5, which report it only on `pong`.
+   * Null when kache is not configured (no index path) or before the first
+   * index read has completed.
    */
-  readonly version?: string;
+  readonly kache: KacheStatusReport | null;
+  readonly system: SystemLoadReport;
+  /**
+   * The daemon's release version. Every client is the same install as the
+   * daemon it talks to: `ensureDaemonRunning` replaces a daemon whose version
+   * differs, so a report always names the caller's own version.
+   */
+  readonly version: string;
 }
 
 /** Busy share of one device backing the state dir or an in-flight target dir. */
@@ -659,7 +662,7 @@ export interface SystemLoadReport {
   /** macOS VM pressure level: 1 normal, 2 warn, 4 critical. */
   readonly memPressureLevel?: 1 | 2 | 4;
   /** Memory admission state computed from the configured thresholds. */
-  readonly memClamp?: 'none' | 'soft' | 'hard';
+  readonly memClamp: 'none' | 'soft' | 'hard';
   /** Heavy-leader cap state; absent when the cap is disabled. */
   readonly heavy?: HeavyAdmissionReport;
 }
@@ -688,7 +691,13 @@ export interface AckMessage {
    * the running head plus the schedulable queued jobs ahead of it.
    */
   readonly position: number;
-  /** The tickets counted by `position`, in the order the lane expects to run them. */
+  /**
+   * The tickets counted by `position`, in the order the lane expects to run
+   * them. Sent (with `waitEtaMs`) only while the request is still in its
+   * lane's queue when the ack is built; absent when it attached to a leader
+   * or had already been admitted (an idle lane can start it before the ack
+   * is flushed), when `position` alone reports the placement.
+   */
   readonly ahead?: readonly string[];
   /** Prerequisites (`--after`) still unsettled; the request stays queued until they are. */
   readonly waitingFor?: readonly string[];
@@ -866,7 +875,7 @@ export const parseServerMessageLine = (line: string): ServerMessage =>
 /**
  * The `error` a starting daemon stamps on every request still active in the
  * ledger: the daemon that owned them stopped, and runs are not handed over
- * across a restart (#75). Clients read it to explain the `killed` status.
+ * across a restart. Clients read it to explain the `killed` status.
  */
 export const orphanedByRestartError = 'orphaned by daemon restart';
 

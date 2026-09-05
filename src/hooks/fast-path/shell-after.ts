@@ -28,7 +28,7 @@ export interface AfterToolFastPath {
  * finished background ticket is announced on the very next tool call, as
  * before. The rest of the hook (the telemetry record for cargo/hauler
  * commands, the formatted context) is evaluated only when the daemon reports
- * finished tickets or the command itself names cargo, hauler, or conductor;
+ * finished tickets or the command itself names cargo or hauler;
  * a plain `ls -la` with nothing finished is `continue` right here. A daemon
  * that is down or slow answers `unavailable`, which is `continue` too:
  * quiet, and within the same 500 ms budget the hook has always used.

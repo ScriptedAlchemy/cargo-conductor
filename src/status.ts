@@ -44,9 +44,8 @@ export const defaultStateDir = (
 
 /**
  * The one state-dir resolution: a non-empty CARGO_HAULER_STATE_DIR wins,
- * otherwise use the per-user default. Legacy aliases are never accepted for
- * persistent state identity. Daemon config and hook clients both call this,
- * so they cannot drift apart.
+ * otherwise use the per-user default. Daemon config and hook clients both
+ * call this, so they cannot drift apart.
  */
 export const resolveStateDir = (
   env: Readonly<Record<string, string | undefined>> = process.env,

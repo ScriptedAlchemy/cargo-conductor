@@ -2,7 +2,6 @@ import type { RequestRecord } from '../daemon/protocol.js';
 import { commandDisplay } from './format.js';
 
 import type { StatusInput, DaemonStatus } from './protocol-schemas.js';
-import { cliVersion, versionSkewLine } from './version-skew.js';
 
 export const hasStatusFilters = (input: StatusInput): boolean =>
   input.cwd !== undefined ||
@@ -45,21 +44,13 @@ const daemonHeader = (daemon: DaemonStatus): string => {
   }
 };
 
-export interface StatusSummaryVersions {
-  /** The running daemon's version, when known; a difference from the CLI is named in the header (#75). */
-  readonly daemonVersion?: string | undefined;
-  readonly cliVersion?: string;
-}
-
 export const statusSummary = (
   daemon: DaemonStatus,
   active: readonly RequestRecord[],
   recent: readonly RequestRecord[],
-  versions: StatusSummaryVersions = {},
 ): string => {
   const commandLimit = 160;
-  const skew = versionSkewLine(versions.daemonVersion, versions.cliVersion ?? cliVersion);
-  const header = `${daemonHeader(daemon)}; ${active.length} active, ${recent.length} recent${skew === null ? '' : `; ${skew}`}`;
+  const header = `${daemonHeader(daemon)}; ${active.length} active, ${recent.length} recent`;
   if (active.length === 0) {
     return header;
   }

@@ -4,6 +4,7 @@ import { connect } from 'node:net';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 
+import { version } from 'agent-bundle/meta';
 import { describe, expect, it } from 'effect-rstest';
 import * as Effect from 'effect/Effect';
 import * as Exit from 'effect/Exit';
@@ -11,6 +12,7 @@ import * as Fiber from 'effect/Fiber';
 import * as Schedule from 'effect/Schedule';
 import * as Scope from 'effect/Scope';
 
+import type { EnsureDaemonDependencies } from '../src/client/ensure-daemon.js';
 import { resolveDaemonConfig } from '../src/daemon/config.js';
 import type { DaemonConfigShape } from '../src/daemon/config.js';
 import { pingDaemon } from '../src/daemon/control.js';
@@ -20,12 +22,13 @@ import {
   parseDaemonSubcommand,
   restartDaemon,
   runForegroundDaemon,
+  startDaemon,
   stopDaemon,
   type DaemonControlResult,
   type RestartDaemonDependencies,
 } from '../src/daemon/lifecycle.js';
 import { bindDaemonSocket, runDaemon, socketListenPath } from '../src/daemon/main.js';
-import { daemonIdentity, type DaemonIdentity } from '../src/lib/version-skew.js';
+import { daemonIdentity, type DaemonIdentity } from '../src/daemon/shutdown.js';
 import {
   monitorSocketOwnership,
   readSocketIdentity,
@@ -145,7 +148,65 @@ describe('signal shutdown lifecycle', () => {
     }), 30_000);
 });
 
-describe('daemon restart (#75)', () => {
+describe('daemon start under the one-version rule', () => {
+  const config = resolveDaemonConfig({ CARGO_HAULER_STATE_DIR: '/tmp/cargo-hauler-start-unit' });
+
+  it.live('reports a daemon of another version that outlived the grace as running, not replaced', () =>
+    Effect.gen(function* () {
+      const calls: string[] = [];
+      const dependencies: EnsureDaemonDependencies = {
+        exitGraceMs: 40,
+        pingDaemon: () =>
+          Effect.succeed({ id: 'old', pid: 41, startedAtMs: 1, type: 'pong', version: '0.4.1' }),
+        pollMs: 5,
+        processAlive: () => true,
+        requestShutdown: () =>
+          Effect.sync(() => {
+            calls.push('shutdown');
+            return 'acknowledged' as const;
+          }),
+        spawnDetachedDaemon: () => Effect.die(new Error('spawn should not run')),
+        waitForDaemon: () => Effect.die(new Error('wait should not run')),
+      };
+      const result = yield* startDaemon(config, dependencies);
+
+      expect(calls).toEqual(['shutdown']);
+      expect(result).toMatchObject({
+        operation: 'daemon',
+        pid: 41,
+        previousPid: 41,
+        report: null,
+        running: true,
+        subcommand: 'start',
+      });
+      expect(result.message).toBe(
+        'cargo-hauler daemon pid 41 (0.4.1) is still running 40ms after the shutdown request; not restarted — retry once it has exited, or stop it with `hauler daemon stop`',
+      );
+      // A daemon is running, but not this build's: the same verdict as a
+      // restart that could not replace it.
+      expect(daemonExitCode(result)).toBe(1);
+    }));
+
+  it.effect('reports a daemon of this build as started, with no previousPid, and exits 0', () =>
+    Effect.gen(function* () {
+      const result = yield* startDaemon(config, {
+        exitGraceMs: 40,
+        pingDaemon: () => Effect.succeed({ id: 'same', pid: 42, startedAtMs: 2, type: 'pong', version }),
+        pollMs: 5,
+        processAlive: () => true,
+        requestShutdown: () => Effect.die(new Error('shutdown should not run')),
+        spawnDetachedDaemon: () => Effect.die(new Error('spawn should not run')),
+        waitForDaemon: () => Effect.die(new Error('wait should not run')),
+      });
+
+      expect(result).toMatchObject({ pid: 42, running: true, subcommand: 'start' });
+      expect(result.previousPid).toBeUndefined();
+      expect(result.message).toBe('cargo-hauler daemon started (pid 42)');
+      expect(daemonExitCode(result)).toBe(0);
+    }));
+});
+
+describe('daemon restart', () => {
   const config = resolveDaemonConfig({ CARGO_HAULER_STATE_DIR: '/tmp/cargo-hauler-restart-unit' });
   const controlResult = (
     subcommand: 'start' | 'stop',
