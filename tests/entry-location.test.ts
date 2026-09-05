@@ -1,6 +1,6 @@
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { delimiter, join, resolve } from 'node:path';
 
 import { describe, expect, it } from 'effect-rstest';
 
@@ -72,6 +72,49 @@ describe('hauler entry location', () => {
         process.execPath,
         realpathSync(globalEntry),
       ]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('skips PATH entries that are not a node script or resolve into a plugin copy', () => {
+    const root = mkdtempSync(join(tmpdir(), 'cc-entry-path-skip-'));
+    try {
+      // 1: a version-manager shim pointing at a native binary
+      const nativeDir = join(root, 'shims');
+      mkdirSync(nativeDir);
+      writeFileSync(join(root, 'mise'), '');
+      symlinkSync(join(root, 'mise'), join(nativeDir, 'hauler'));
+      // 2: a wrapper that resolves into a host plugin copy
+      const pluginDir = join(root, 'plugin-bin');
+      const pluginScript = join(root, '.cursor', 'plugins', 'local', 'cargo-hauler', 'scripts', 'hauler.mjs');
+      mkdirSync(pluginDir);
+      mkdirSync(join(root, '.cursor', 'plugins', 'local', 'cargo-hauler', 'scripts'), { recursive: true });
+      writeFileSync(pluginScript, '');
+      symlinkSync(pluginScript, join(pluginDir, 'hauler'));
+      // 3: a directory named hauler, and a dangling link
+      const dirDir = join(root, 'dir-bin');
+      mkdirSync(join(dirDir, 'hauler'), { recursive: true });
+      const danglingDir = join(root, 'dangling-bin');
+      mkdirSync(danglingDir);
+      symlinkSync(join(root, 'missing.js'), join(danglingDir, 'hauler'));
+      // 4: the real one, last on PATH
+      const globalEntry = join(root, 'lib', 'node_modules', 'cargo-hauler', 'dist', 'bin', 'hauler.js');
+      const binDir = join(root, 'bin');
+      mkdirSync(join(root, 'lib', 'node_modules', 'cargo-hauler', 'dist', 'bin'), { recursive: true });
+      mkdirSync(binDir);
+      writeFileSync(globalEntry, '');
+      symlinkSync(globalEntry, join(binDir, 'hauler'));
+
+      const path = [nativeDir, pluginDir, dirDir, danglingDir, binDir].join(delimiter);
+      expect(globalHaulerArgv({ kind: 'other', path: null }, { PATH: path })).toEqual([
+        process.execPath,
+        realpathSync(globalEntry),
+      ]);
+      const withoutGlobal = [nativeDir, pluginDir, dirDir, danglingDir].join(delimiter);
+      expect(() => globalHaulerArgv({ kind: 'other', path: null }, { PATH: withoutGlobal })).toThrow(
+        'npm i -g cargo-hauler',
+      );
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

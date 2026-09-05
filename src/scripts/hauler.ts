@@ -212,9 +212,13 @@ const pluginInvocationAllowed = (
   if (command !== 'exec') {
     return false;
   }
-  const hostIndex = rest.indexOf('--host');
-  const host = hostIndex === -1 ? undefined : rest[hostIndex + 1];
-  return host !== undefined && host.length > 0 && host !== '--';
+  // Only flags ahead of `--` belong to hauler; `exec -- cargo --host x` is a
+  // cargo argv, not a hook rewrite (same boundary as `parseExecArgv`).
+  const separator = rest.indexOf('--');
+  const flags = separator === -1 ? rest : rest.slice(0, separator);
+  const hostIndex = flags.indexOf('--host');
+  const host = hostIndex === -1 ? undefined : flags[hostIndex + 1];
+  return host !== undefined && host.length > 0;
 };
 
 /**

@@ -1,4 +1,4 @@
-import { existsSync, realpathSync } from 'node:fs';
+import { existsSync, realpathSync, statSync } from 'node:fs';
 import { delimiter, dirname, join, resolve } from 'node:path';
 
 export type HaulerEntryLocation =
@@ -56,9 +56,9 @@ export const globalHaulerArgv = (
     if (entry.length === 0) {
       continue;
     }
-    const candidate = join(entry, 'hauler');
-    if (existsSync(candidate)) {
-      return [process.execPath, realpathSync(candidate)];
+    const resolved = pathHaulerScript(join(entry, 'hauler'));
+    if (resolved !== null) {
+      return [process.execPath, resolved];
     }
   }
   if (location.kind === 'npm-bin') {
@@ -67,4 +67,25 @@ export const globalHaulerArgv = (
   throw new Error(
     'could not resolve `hauler` on PATH; install it with `npm i -g cargo-hauler`',
   );
+};
+
+const nodeScript = /\.[cm]?js$/u;
+
+/**
+ * The canonical script behind one PATH candidate, or `null` when it is not a
+ * regular JavaScript file the shim can hand to `node` (a directory, a dangling
+ * link, a version-manager shim that resolves to a native binary), or resolves
+ * into a host plugin copy — which is exactly what the shim must not embed.
+ */
+const pathHaulerScript = (candidate: string): string | null => {
+  let resolved: string;
+  try {
+    resolved = realpathSync(candidate);
+    if (!statSync(resolved).isFile() || !nodeScript.test(resolved)) {
+      return null;
+    }
+  } catch {
+    return null;
+  }
+  return haulerEntryLocation(resolved).kind === 'host-plugin' ? null : resolved;
 };

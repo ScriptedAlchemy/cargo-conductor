@@ -314,6 +314,53 @@ describe('hauler script', () => {
     expect(hook.text).toContain('Usage: hauler');
   });
 
+  it('refuses plugin exec without a --host ahead of `--`, and install-shim even under a plugin root', async () => {
+    let execCalled = false;
+    const runExec: ScriptOptions['runExec'] = () => {
+      execCalled = true;
+      return Effect.succeed({ exitCode: 0, mode: 'brokered' });
+    };
+    const bare = await run(['exec', '--', 'cargo', 'check'], { entryPath: pluginScript, runExec });
+    expect(bare).toEqual({ code: 2, text: pluginDirectCliRefusal });
+    const hostAfterSeparator = await run(['exec', '--', 'cargo', '--host', 'cursor'], {
+      entryPath: pluginScript,
+      runExec,
+    });
+    expect(hostAfterSeparator).toEqual({ code: 2, text: pluginDirectCliRefusal });
+    expect(execCalled).toBe(false);
+
+    const root = mkdtempSync(join(tmpdir(), 'cc-script-shim-root-'));
+    try {
+      for (const name of ['CURSOR_PLUGIN_ROOT', 'PLUGIN_ROOT']) {
+        const result = await run(['install-shim', '--dir', root], {
+          entryPath: pluginScript,
+          env: { [name]: '/plugin' },
+        });
+        expect(result).toEqual({ code: 1, text: pluginInstallShimRefusal });
+      }
+      expect(existsSync(join(root, 'cargo'))).toBe(false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('runs every command from the npm bin entry without a refusal', async () => {
+    const npmEntry = '/home/test/.local/share/mise/installs/node/22/lib/node_modules/cargo-hauler/dist/bin/hauler.js';
+    const help = await run(['--help'], { entryPath: npmEntry });
+    expect(help.code).toBe(0);
+    expect(help.text).toContain('Usage: hauler');
+    let execCalled = false;
+    const exec = await run(['exec', '--', 'cargo', 'check'], {
+      entryPath: npmEntry,
+      runExec: () => {
+        execCalled = true;
+        return Effect.succeed({ exitCode: 0, mode: 'brokered' });
+      },
+    });
+    expect(exec).toEqual({ code: 0, text: '' });
+    expect(execCalled).toBe(true);
+  });
+
   it('installs a shim that falls back to cargo when its hauler entry is gone, and says so', async () => {
     const root = mkdtempSync(join(tmpdir(), 'cc-script-shim-'));
     try {
