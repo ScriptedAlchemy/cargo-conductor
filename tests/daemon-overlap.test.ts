@@ -311,4 +311,60 @@ describe('execution-phase overlap', () => {
       ).toBe(true);
       expect(recordFor(report, leaderTicket)?.status).toBe('killed');
     }));
+
+  it.live('an env-prefixed test leader hands the lane back and identity-attaches a twin', () =>
+    Effect.gen(function* () {
+      const fixture = yield* scopedDaemon(5);
+      const argv = ['env', 'FAKE_MARK=1', 'cargo', 'test', '-p', 'alpha'];
+      const leaderFiber = yield* Effect.forkChild(
+        execRequest(fixture, { cwd: fixture.ws1, argv, finishedAfter: '0.1', sleep: '1.5', timeoutMs: 12_000 }),
+      );
+      const started = yield* pollReport(fixture, (report) => runningLeader(report) !== undefined);
+      const leaderTicket = runningLeader(started)?.ticket ?? '';
+      yield* pollReport(fixture, (report) => laneExecuting(report, leaderTicket));
+      const riderMessages = yield* execRequest(fixture, {
+        cwd: fixture.ws1,
+        argv,
+        finishedAfter: '0.1',
+        sleep: '1.5',
+        timeoutMs: 12_000,
+      });
+      expect(findAck(riderMessages).attachedTo).toBe(leaderTicket);
+      expect(findExit(riderMessages).status).toBe('done');
+      const leaderExit = findExit(yield* Fiber.join(leaderFiber));
+      const report = yield* pollReport(fixture, settled(leaderExit.ticket));
+      const leader = recordFor(report, leaderTicket);
+      expect(typeof leader?.buildFinishedAtMs).toBe('number');
+      expect(leader?.intentJson === null ? null : JSON.parse(leader?.intentJson ?? '{}').subcommand).toBe('test');
+    }));
+
+  it.live('a bash -c wrapped test hands the lane back but never shares its run', () =>
+    Effect.gen(function* () {
+      const fixture = yield* scopedDaemon(5);
+      const argv = ['bash', '-c', 'cargo test -p alpha'];
+      const leaderFiber = yield* Effect.forkChild(
+        execRequest(fixture, { cwd: fixture.ws1, argv, finishedAfter: '0.1', sleep: '1.5', timeoutMs: 12_000 }),
+      );
+      const started = yield* pollReport(fixture, (report) => runningLeader(report) !== undefined);
+      const leaderTicket = runningLeader(started)?.ticket ?? '';
+      yield* pollReport(fixture, (report) => laneExecuting(report, leaderTicket));
+      const twinFiber = yield* Effect.forkChild(
+        execRequest(fixture, { cwd: fixture.ws1, argv, finishedAfter: '0.1', sleep: '0.3', timeoutMs: 12_000 }),
+      );
+      // The twin is its own leader: it compiles in the lane while the first
+      // one still executes, instead of riding it.
+      const overlapped = yield* pollReport(
+        fixture,
+        (report) =>
+          laneExecuting(report, leaderTicket) &&
+          report.lanes.some((lane) => lane.runningTicket !== null && lane.runningTicket !== leaderTicket),
+      );
+      expect(overlapped.active.filter((record) => record.status === 'running')).toHaveLength(2);
+      const twinMessages = yield* Fiber.join(twinFiber);
+      expect(findAck(twinMessages).attachedTo).toBeUndefined();
+      expect(findExit(twinMessages).status).toBe('done');
+      const leaderExit = findExit(yield* Fiber.join(leaderFiber));
+      const report = yield* pollReport(fixture, settled(leaderExit.ticket));
+      expect(typeof recordFor(report, leaderTicket)?.buildFinishedAtMs).toBe('number');
+    }));
 });

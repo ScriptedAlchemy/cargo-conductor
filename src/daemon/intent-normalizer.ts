@@ -28,6 +28,21 @@ export interface ParsedCargoArgv {
   readonly testFilters: readonly string[];
   readonly toolchain: string | null;
   readonly workspace: boolean;
+  /**
+   * `NAME=value` assignments from a leading `env` (or a shell statement's
+   * own `NAME=value cargo …` prefix), applied over the request environment
+   * and part of the intent key.
+   */
+  readonly envAssignments: Readonly<Record<string, string>>;
+  /** Names a leading `env -u` removes from the request environment. */
+  readonly envUnset: readonly string[];
+  /**
+   * The script of a `bash -c` / `sh -c` wrapper whose single cargo statement
+   * this intent was read from; null for a direct cargo argv. A wrapped
+   * request is scheduled, estimated, and phase-tracked as its cargo tail but
+   * never shared: the rest of the script may do anything.
+   */
+  readonly shellScript: string | null;
 }
 
 export interface NormalizeCargoIntentOptions {
@@ -55,6 +70,267 @@ const splitFeatures = (value: string): string[] =>
   value.split(/[,\s]+/u).filter((feature) => feature.length > 0);
 
 export const cargoExecutablePattern = /(?:^|[/\\])cargo(?:\.exe)?$/u;
+const envProgramPattern = /(?:^|[/\\])env$/u;
+const shellProgramPattern = /(?:^|[/\\])(?:bash|sh|zsh|dash)$/u;
+const shellAssignmentPattern = /^([A-Za-z_][A-Za-z0-9_]*)=([\s\S]*)$/u;
+/** A POSIX shell flag cluster that carries `-c` (`-c`, `-lc`, `-ec`). */
+const shellCommandFlagPattern = /^-[a-zA-Z]*c[a-zA-Z]*$/u;
+
+interface ProgramPrefix {
+  readonly argv: string[];
+  readonly envAssignments: Record<string, string>;
+  readonly envUnset: string[];
+  readonly opaque: string[];
+  readonly peeled: boolean;
+}
+
+/**
+ * Folds a leading `env NAME=value … -u NAME …` into environment edits so the
+ * cargo behind it is modeled (subcommand, packages, surface) instead of being
+ * recorded as the subcommand `env` (#126). `env -i` is kept as an opaque
+ * argument: it clears the environment, so the compile surface is unknowable
+ * and the request must not be shared. Any other `env` option (`-C`, `-S`,
+ * `-0`) is refused; cargo is the only program the broker models.
+ */
+const peelEnvPrefix = (input: readonly string[]): ProgramPrefix => {
+  const argv = [...input];
+  const envAssignments: Record<string, string> = {};
+  const envUnset: string[] = [];
+  const opaque: string[] = [];
+  const program = argv[0];
+  if (program === undefined || !envProgramPattern.test(program)) {
+    return { argv, envAssignments, envUnset, opaque, peeled: false };
+  }
+  argv.shift();
+  while (argv.length > 0) {
+    const argument = argv[0];
+    if (argument === undefined) {
+      break;
+    }
+    const assignment = shellAssignmentPattern.exec(argument);
+    if (assignment !== null) {
+      envAssignments[assignment[1] ?? ''] = assignment[2] ?? '';
+      argv.shift();
+      continue;
+    }
+    if (argument === '-u' || argument === '--unset') {
+      argv.shift();
+      const name = argv.shift();
+      if (name === undefined || name.length === 0) {
+        throw new Error(`${argument} requires a name`);
+      }
+      envUnset.push(name);
+      continue;
+    }
+    if (argument.startsWith('--unset=')) {
+      envUnset.push(argument.slice('--unset='.length));
+      argv.shift();
+      continue;
+    }
+    if (argument === '-i' || argument === '--ignore-environment' || argument === '-') {
+      opaque.push(argument);
+      argv.shift();
+      continue;
+    }
+    if (argument === '--') {
+      argv.shift();
+      break;
+    }
+    if (argument.startsWith('-')) {
+      throw new Error(
+        `unsupported env option ${argument}: only NAME=value, -u NAME, and -i are brokered`,
+      );
+    }
+    break;
+  }
+  return { argv, envAssignments, envUnset, opaque, peeled: true };
+};
+
+/**
+ * Splits a `-c` script into statements at `;`, newlines, `&&`, `||`, `|`,
+ * and `&`, respecting single and double quotes. Good enough to find the one
+ * cargo statement an agent wrapped in `bash -lc 'source …; cargo bench …'`;
+ * anything more elaborate simply yields no tail.
+ */
+export const splitShellStatements = (script: string): string[] => {
+  const statements: string[] = [];
+  let current = '';
+  let quote: '"' | "'" | null = null;
+  for (let index = 0; index < script.length; index += 1) {
+    const char = script[index] ?? '';
+    if (quote !== null) {
+      current += char;
+      if (char === '\\' && quote === '"') {
+        current += script[index + 1] ?? '';
+        index += 1;
+      } else if (char === quote) {
+        quote = null;
+      }
+      continue;
+    }
+    if (char === '"' || char === "'") {
+      quote = char;
+      current += char;
+      continue;
+    }
+    if (char === '\\') {
+      current += char + (script[index + 1] ?? '');
+      index += 1;
+      continue;
+    }
+    const pair = script.slice(index, index + 2);
+    if (pair === '&&' || pair === '||') {
+      statements.push(current);
+      current = '';
+      index += 1;
+      continue;
+    }
+    if (char === ';' || char === '\n' || char === '|' || char === '&') {
+      statements.push(current);
+      current = '';
+      continue;
+    }
+    current += char;
+  }
+  statements.push(current);
+  return statements.map((statement) => statement.trim()).filter((statement) => statement.length > 0);
+};
+
+/** Shell-word split of one statement: quotes group, backslashes escape, both are stripped. */
+export const splitShellWords = (statement: string): string[] => {
+  const words: string[] = [];
+  let current = '';
+  let inWord = false;
+  let quote: '"' | "'" | null = null;
+  for (let index = 0; index < statement.length; index += 1) {
+    const char = statement[index] ?? '';
+    if (quote !== null) {
+      if (char === quote) {
+        quote = null;
+      } else if (char === '\\' && quote === '"') {
+        current += statement[index + 1] ?? '';
+        index += 1;
+      } else {
+        current += char;
+      }
+      continue;
+    }
+    if (char === '"' || char === "'") {
+      quote = char;
+      inWord = true;
+      continue;
+    }
+    if (char === '\\') {
+      current += statement[index + 1] ?? '';
+      index += 1;
+      inWord = true;
+      continue;
+    }
+    if (/\s/u.test(char)) {
+      if (inWord) {
+        words.push(current);
+        current = '';
+        inWord = false;
+      }
+      continue;
+    }
+    current += char;
+    inWord = true;
+  }
+  if (inWord) {
+    words.push(current);
+  }
+  return words;
+};
+
+interface ShellCargoTail {
+  readonly argv: string[];
+  readonly envAssignments: Record<string, string>;
+  readonly envUnset: string[];
+  readonly opaque: string[];
+}
+
+/**
+ * The cargo invocation inside one shell statement: an optional `exec`, then
+ * `NAME=value` prefixes and/or an `env` prefix, then cargo. Null when the
+ * statement runs something else.
+ */
+const cargoTailOfStatement = (statement: string): ShellCargoTail | null => {
+  const words = splitShellWords(statement);
+  const envAssignments: Record<string, string> = {};
+  const takeAssignments = (): void => {
+    while (words.length > 0) {
+      const assignment = shellAssignmentPattern.exec(words[0] ?? '');
+      if (assignment === null) {
+        return;
+      }
+      envAssignments[assignment[1] ?? ''] = assignment[2] ?? '';
+      words.shift();
+    }
+  };
+  // `FOO=1 exec BAR=2 cargo …`: assignments may sit on either side of exec.
+  takeAssignments();
+  if (words[0] === 'exec') {
+    words.shift();
+    takeAssignments();
+  }
+  let prefix: ProgramPrefix;
+  try {
+    prefix = peelEnvPrefix(words);
+  } catch {
+    return null;
+  }
+  const program = prefix.argv[0];
+  if (program === undefined || !cargoExecutablePattern.test(program)) {
+    return null;
+  }
+  return {
+    argv: prefix.argv,
+    envAssignments: { ...envAssignments, ...prefix.envAssignments },
+    envUnset: prefix.envUnset,
+    opaque: prefix.opaque,
+  };
+};
+
+interface ShellWrapper {
+  readonly script: string;
+  /** The single cargo statement's tail, or null when the script has none or several. */
+  readonly tail: ShellCargoTail | null;
+}
+
+/**
+ * Recognizes `bash -c SCRIPT` (also `-lc`, `sh -c`, `zsh -c`, `dash -c`)
+ * and reads the one cargo statement inside it. A script with no cargo, or
+ * with several (`cargo build && cargo test`), yields no tail: the request
+ * then keeps the shell as its subcommand, as before, since a single
+ * build-finished line could not be attributed to one cargo.
+ */
+const peelShellWrapper = (argv: readonly string[]): ShellWrapper | null => {
+  const program = argv[0];
+  if (program === undefined || !shellProgramPattern.test(program)) {
+    return null;
+  }
+  for (let index = 1; index < argv.length; index += 1) {
+    const argument = argv[index] ?? '';
+    if (!argument.startsWith('-')) {
+      return null;
+    }
+    if (argument === '--') {
+      return null;
+    }
+    if (shellCommandFlagPattern.test(argument)) {
+      const script = argv[index + 1];
+      if (script === undefined) {
+        return null;
+      }
+      const tails = splitShellStatements(script)
+        .map(cargoTailOfStatement)
+        .filter((tail): tail is ShellCargoTail => tail !== null);
+      return { script, tail: tails.length === 1 ? (tails[0] ?? null) : null };
+    }
+  }
+  return null;
+};
 
 /** Subcommands whose bare positional arguments are test-name filters. */
 const testFilterSubcommands = new Set(['bench', 'nextest', 'test']);
@@ -160,9 +436,30 @@ export const digestCargoEnvironment = (
 };
 
 export const parseCargoArgv = (input: readonly string[]): ParsedCargoArgv => {
-  const argv = [...input];
+  const prefix = peelEnvPrefix(input);
+  let argv = prefix.argv;
+  const envAssignments = prefix.envAssignments;
+  const envUnset = prefix.envUnset;
+  const prefixOpaque = prefix.opaque;
+  let shellScript: string | null = null;
+  const wrapper = peelShellWrapper(argv);
+  if (wrapper !== null) {
+    shellScript = wrapper.script;
+    if (wrapper.tail !== null) {
+      // The whole wrapper argv stays opaque: it feeds the intent key (two
+      // different scripts are two different requests) and it disqualifies
+      // batching and coverage, which could not reason about the script.
+      prefixOpaque.push(...argv);
+      argv = wrapper.tail.argv;
+      Object.assign(envAssignments, wrapper.tail.envAssignments);
+      envUnset.push(...wrapper.tail.envUnset);
+      prefixOpaque.push(...wrapper.tail.opaque);
+    }
+  }
   if (argv[0] !== undefined && cargoExecutablePattern.test(argv[0])) {
     argv.shift();
+  } else if (prefix.peeled) {
+    throw new Error(`program must be cargo, got ${argv[0] ?? 'nothing'}`);
   } else if (argv[0] !== undefined && /[/\\]/u.test(argv[0])) {
     // A path-shaped first argument is a program, and the only program the
     // broker runs is cargo. A mis-resolved shim once submitted
@@ -174,7 +471,7 @@ export const parseCargoArgv = (input: readonly string[]): ParsedCargoArgv => {
   const toolchainArgument = argv[0]?.startsWith('+') === true ? argv.shift() : undefined;
   const toolchain = toolchainArgument?.slice(1) || null;
   let manifestPath: string | null = null;
-  const opaqueArguments: string[] = [];
+  const opaqueArguments: string[] = [...prefixOpaque];
   let targetDir: string | null = null;
   let subcommand: string | undefined;
 
@@ -362,6 +659,9 @@ export const parseCargoArgv = (input: readonly string[]): ParsedCargoArgv => {
     testFilters: sortedUnique(testFilters),
     toolchain,
     workspace,
+    envAssignments,
+    envUnset: sortedUnique(envUnset),
+    shellScript,
   };
 };
 
@@ -369,7 +669,13 @@ export const normalizeCargoIntent = (
   options: NormalizeCargoIntentOptions,
 ): NormalizedCargoIntent => {
   const parsed = parseCargoArgv(options.argv);
-  const env = options.env ?? {};
+  // A leading `env` edits the environment cargo actually sees; the edited
+  // environment selects the target dir, toolchain, triple, and digest.
+  const env: Record<string, string | undefined> = { ...(options.env ?? {}) };
+  for (const name of parsed.envUnset) {
+    delete env[name];
+  }
+  Object.assign(env, parsed.envAssignments);
   const cwd = canonicalPath(options.cwd);
   const workspaceRoot = canonicalPath(options.workspaceRoot);
   const selectedTargetDir =
@@ -393,7 +699,9 @@ export const normalizeCargoIntent = (
   const surface = {
     allFeatures: parsed.allFeatures,
     cwd,
+    envAssignments: parsed.envAssignments,
     envDigest,
+    envUnset: parsed.envUnset,
     excludes: parsed.excludes,
     features: parsed.features,
     filterExpressions: parsed.filterExpressions,

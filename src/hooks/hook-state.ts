@@ -1,6 +1,8 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
+import { lockSync } from 'proper-lockfile';
+
 import { isRecord } from '../lib/guards.js';
 
 import { resolveHookStateDir } from './paths.js';
@@ -19,6 +21,63 @@ interface HookState {
 }
 
 const statePath = (stateDir: string): string => join(stateDir, 'hook-state.json');
+
+/** How long one hook may wait for another session's hook to finish its update. */
+const lockWaitMs = 2_000;
+const lockRetryMs = 10;
+/** A lock older than this belongs to a hook that died mid-update and is taken over. */
+const lockStaleMs = 5_000;
+
+const sleepSync = (ms: number): void => {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+};
+
+/**
+ * Serializes read-modify-write cycles on the shared state file across the
+ * hook processes of every concurrent session (#110). Atomic rename keeps
+ * readers from seeing a torn file, but two hooks that both load state,
+ * apply their own change, and save would drop each other's: one session's
+ * cursor or deny counter silently lost. The lock is a `.lock` directory
+ * beside the file (proper-lockfile, the daemon singleton's mechanism);
+ * hooks are short-lived, so waiting is bounded and a lock that cannot be
+ * taken in time degrades to the previous unlocked update rather than
+ * failing the host's tool call.
+ */
+const withStateLock = <A>(stateDir: string, update: () => A): A => {
+  mkdirSync(stateDir, { recursive: true });
+  const target = statePath(stateDir);
+  if (!existsSync(target)) {
+    // proper-lockfile locks an existing path; an absent state file reads as
+    // empty either way.
+    try {
+      writeFileSync(target, `${JSON.stringify(emptyState())}\n`, { flag: 'wx' });
+    } catch {
+      // Another hook created it first; that is the file we lock.
+    }
+  }
+  const deadline = Date.now() + lockWaitMs;
+  let release: (() => void) | null = null;
+  for (;;) {
+    try {
+      release = lockSync(target, { realpath: false, stale: lockStaleMs });
+      break;
+    } catch {
+      if (Date.now() >= deadline) {
+        break;
+      }
+      sleepSync(lockRetryMs);
+    }
+  }
+  try {
+    return update();
+  } finally {
+    try {
+      release?.();
+    } catch {
+      // A lock the stale sweep already reclaimed has nothing left to release.
+    }
+  }
+};
 
 const emptyState = (): HookState => ({ cursors: {}, denies: {}, denyOwners: {} });
 
@@ -82,9 +141,11 @@ export const writeCursor = (
   atMs: number,
   stateDir: string = resolveHookStateDir(),
 ): void => {
-  const state = loadState(stateDir);
-  state.cursors[session] = atMs;
-  saveState(stateDir, state);
+  withStateLock(stateDir, () => {
+    const state = loadState(stateDir);
+    state.cursors[session] = atMs;
+    saveState(stateDir, state);
+  });
 };
 
 export const readDenyCount = (ticket: string, stateDir: string = resolveHookStateDir()): number =>
@@ -95,14 +156,15 @@ export const incrementDenyCount = (
   ticket: string,
   session: string,
   stateDir: string = resolveHookStateDir(),
-): number => {
-  const state = loadState(stateDir);
-  const next = (state.denies[ticket] ?? 0) + 1;
-  state.denies[ticket] = next;
-  state.denyOwners[ticket] = session;
-  saveState(stateDir, state);
-  return next;
-};
+): number =>
+  withStateLock(stateDir, () => {
+    const state = loadState(stateDir);
+    const next = (state.denies[ticket] ?? 0) + 1;
+    state.denies[ticket] = next;
+    state.denyOwners[ticket] = session;
+    saveState(stateDir, state);
+    return next;
+  });
 
 /**
  * Drop deny counters this session created for tickets that are no longer
@@ -114,18 +176,20 @@ export const pruneDenyCounts = (
   keep: readonly string[],
   stateDir: string = resolveHookStateDir(),
 ): void => {
-  const state = loadState(stateDir);
-  const kept = new Set(keep);
-  let changed = false;
-  for (const ticket of Object.keys(state.denies)) {
-    if (kept.has(ticket) || state.denyOwners[ticket] !== session) {
-      continue;
+  withStateLock(stateDir, () => {
+    const state = loadState(stateDir);
+    const kept = new Set(keep);
+    let changed = false;
+    for (const ticket of Object.keys(state.denies)) {
+      if (kept.has(ticket) || state.denyOwners[ticket] !== session) {
+        continue;
+      }
+      delete state.denies[ticket];
+      delete state.denyOwners[ticket];
+      changed = true;
     }
-    delete state.denies[ticket];
-    delete state.denyOwners[ticket];
-    changed = true;
-  }
-  if (changed) {
-    saveState(stateDir, state);
-  }
+    if (changed) {
+      saveState(stateDir, state);
+    }
+  });
 };

@@ -8,6 +8,8 @@ import {
   digestCargoEnvironment,
   normalizeCargoIntent,
   parseCargoArgv,
+  splitShellStatements,
+  splitShellWords,
 } from '../src/daemon/intent-normalizer.js';
 
 describe('parseCargoArgv', () => {
@@ -63,10 +65,13 @@ describe('parseCargoArgv', () => {
       manifestPath: 'nested/Cargo.toml',
       nextestCommand: null,
       noDefaultFeatures: false,
+      envAssignments: {},
+      envUnset: [],
       opaqueArguments: [],
       packages: ['alpha', 'beta'],
       passthrough: [],
       profile: 'ci',
+      shellScript: null,
       subcommand: 'check',
       targetDir: 'build',
       targetTriple: 'x86_64-unknown-linux-gnu',
@@ -531,5 +536,108 @@ describe('normalizeCargoIntent', () => {
     expect(
       normalizeCargoIntent({ ...options, argv: ['cargo', '+nightly', 'check'] }).toolchain,
     ).toBe('nightly');
+  });
+});
+
+describe('program prefixes', () => {
+  const normalize = (argv: readonly string[], env: Record<string, string> = {}) =>
+    normalizeCargoIntent({ argv, cwd: '/tmp/ws', env, workspaceRoot: '/tmp/ws' });
+
+  it('folds a leading env into the request environment and models the cargo behind it', () => {
+    const parsed = parseCargoArgv(['env', 'FOO=1', 'HF_HUB_OFFLINE=1', 'cargo', 'test', '-p', 'alpha', '--lib']);
+    expect(parsed.subcommand).toBe('test');
+    expect(parsed.packages).toEqual(['alpha']);
+    expect(parsed.targets).toEqual(['lib']);
+    expect(parsed.envAssignments).toEqual({ FOO: '1', HF_HUB_OFFLINE: '1' });
+    expect(parsed.opaqueArguments).toEqual([]);
+    expect(parsed.shellScript).toBeNull();
+    expect(parseCargoArgv(['/usr/bin/env', 'RUSTFLAGS=-Dwarnings', 'cargo', 'check']).subcommand).toBe('check');
+  });
+
+  it('applies env assignments and -u to the surface: target dir, digest, and identity', () => {
+    const plain = normalize(['cargo', 'build', '-p', 'alpha']);
+    const retargeted = normalize(['env', 'CARGO_TARGET_DIR=alt', 'cargo', 'build', '-p', 'alpha']);
+    expect(retargeted.targetDir).toBe('/tmp/ws/alt');
+    expect(retargeted.key).not.toBe(plain.key);
+
+    const flagged = normalize(['env', 'RUSTFLAGS=-Dwarnings', 'cargo', 'build', '-p', 'alpha']);
+    expect(flagged.envDigest).toBe(digestCargoEnvironment({ RUSTFLAGS: '-Dwarnings' }));
+    expect(flagged.envDigest).not.toBe(plain.envDigest);
+
+    const unset = normalize(['env', '-u', 'RUSTFLAGS', 'cargo', 'build', '-p', 'alpha'], {
+      RUSTFLAGS: '-Dwarnings',
+    });
+    expect(unset.envDigest).toBe(plain.envDigest);
+    expect(unset.envUnset).toEqual(['RUSTFLAGS']);
+
+    // Assignments outside the compile-relevant set still separate intents:
+    // a test may read them.
+    const a = normalize(['env', 'TEST_BIN=/a', 'cargo', 'test', '-p', 'alpha']);
+    const b = normalize(['env', 'TEST_BIN=/b', 'cargo', 'test', '-p', 'alpha']);
+    expect(a.key).not.toBe(b.key);
+    expect(a.key).toBe(normalize(['env', 'TEST_BIN=/a', 'cargo', 'test', '-p', 'alpha']).key);
+  });
+
+  it('keeps env -i opaque and refuses other env options or a non-cargo program', () => {
+    expect(parseCargoArgv(['env', '-i', 'PATH=/x', 'cargo', 'check']).opaqueArguments).toEqual(['-i']);
+    expect(() => parseCargoArgv(['env', '-C', '/x', 'cargo', 'check'])).toThrow(/unsupported env option/u);
+    expect(() => parseCargoArgv(['env', 'FOO=1', 'make'])).toThrow(/program must be cargo, got make/u);
+    expect(() => parseCargoArgv(['env', 'FOO=1'])).toThrow(/program must be cargo/u);
+  });
+
+  it('reads the single cargo statement of a bash -c script and marks it shell-wrapped', () => {
+    const script = "source scripts/hotpath-rustflags.sh\nexport HOTPATH_REPORT=timing\ncargo bench --locked -p runtime-core --profile test --bench exact_sql -- --warm";
+    const parsed = parseCargoArgv(['bash', '-lc', script]);
+    expect(parsed.subcommand).toBe('bench');
+    expect(parsed.packages).toEqual(['runtime-core']);
+    expect(parsed.targets).toEqual(['bench:exact_sql']);
+    expect(parsed.profile).toBe('test');
+    expect(parsed.passthrough).toEqual(['--warm']);
+    expect(parsed.shellScript).toBe(script);
+    expect(parsed.opaqueArguments).toEqual(['bash', '-lc', script, '--locked']);
+
+    const quoted = parseCargoArgv(['sh', '-c', 'FOO="a b" exec env BAR=1 cargo test -p alpha -- "name with space"']);
+    expect(quoted.subcommand).toBe('test');
+    expect(quoted.envAssignments).toEqual({ BAR: '1', FOO: 'a b' });
+    expect(quoted.passthrough).toEqual(['name with space']);
+  });
+
+  it('keeps the shell as the subcommand when a script has no or several cargo statements', () => {
+    const none = parseCargoArgv(['bash', '-c', 'echo hi && make']);
+    expect(none.subcommand).toBe('bash');
+    expect(none.shellScript).toBe('echo hi && make');
+    const several = parseCargoArgv(['bash', '-c', 'cargo build -p a && cargo test -p a']);
+    expect(several.subcommand).toBe('bash');
+    expect(several.shellScript).toBe('cargo build -p a && cargo test -p a');
+    // A shell run without -c is not a wrapper at all.
+    expect(parseCargoArgv(['bash', 'script.sh']).subcommand).toBe('bash');
+  });
+
+  it('separates wrapped intents by script and by cargo tail', () => {
+    const one = normalize(['bash', '-c', 'source a.sh; cargo test -p alpha']);
+    const two = normalize(['bash', '-c', 'source b.sh; cargo test -p alpha']);
+    const direct = normalize(['cargo', 'test', '-p', 'alpha']);
+    expect(one.key).not.toBe(two.key);
+    expect(one.key).not.toBe(direct.key);
+    expect(one.subcommand).toBe('test');
+    expect(one.targetDir).toBe(direct.targetDir);
+  });
+});
+
+describe('shell statement helpers', () => {
+  it('splits statements at operators outside quotes', () => {
+    expect(splitShellStatements("a 'b;c' && d || e | f\ng & h; i")).toEqual([
+      "a 'b;c'",
+      'd',
+      'e',
+      'f',
+      'g',
+      'h',
+      'i',
+    ]);
+  });
+
+  it('splits words with quotes and escapes stripped', () => {
+    expect(splitShellWords(`cargo test -- "a b" 'c d' e\\ f`)).toEqual(['cargo', 'test', '--', 'a b', 'c d', 'e f']);
   });
 });

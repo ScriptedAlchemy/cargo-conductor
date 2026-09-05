@@ -455,3 +455,66 @@ describe('loadHaulerSnapshot', () => {
     30_000,
   );
 });
+
+describe('read paths against a daemon of another version (#123)', () => {
+  it.live('names the stale daemon from the ledger instead of dying on its row shape', () =>
+    Effect.gen(function* () {
+      const config = yield* isolatedConfig;
+      mkdirSync(config.stateDir, { recursive: true });
+      // A previous install's daemon: it answers status with its own version
+      // and rows this build's schema would reject (no outputPreview, no
+      // lanes fields, …). None of that may be parsed.
+      const accepted = new Set<Socket>();
+      yield* Effect.acquireRelease(
+        Effect.callback<Server>((resume) => {
+          const server = createServer((socket) => {
+            accepted.add(socket);
+            let buffered = '';
+            socket.on('data', (chunk: Buffer) => {
+              buffered += chunk.toString('utf8');
+              const newline = buffered.indexOf('\n');
+              if (newline === -1) {
+                return;
+              }
+              const request = JSON.parse(buffered.slice(0, newline)) as { id: string; type: string };
+              buffered = buffered.slice(newline + 1);
+              if (request.type === 'status') {
+                socket.write(
+                  `${JSON.stringify({
+                    type: 'status-result',
+                    id: request.id,
+                    report: {
+                      version: '0.0.1',
+                      pid: 4242,
+                      startedAtMs: 1,
+                      maxConcurrent: 5,
+                      active: [],
+                      recent: [{ ticket: 'cc-1', status: 'done' }],
+                      lanes: [{ key: 'k' }],
+                    },
+                  })}\n`,
+                );
+              }
+            });
+          });
+          server.listen(config.socketPath, () => resume(Effect.succeed(server)));
+        }),
+        (server) =>
+          Effect.callback<void>((resume) => {
+            for (const socket of accepted) {
+              socket.destroy();
+            }
+            server.close(() => resume(Effect.void));
+          }),
+      );
+      const snapshot = yield* loadHaulerSnapshot({ config });
+      expect(snapshot.daemon).toBe('unresponsive');
+      expect(snapshot.summary).toContain('pid 4242 is version 0.0.1');
+      expect(snapshot.summary).toContain(`previous install of this ${version} client`);
+      expect(snapshot.summary).toContain('hauler daemon restart');
+      expect(snapshot.recent).toEqual([]);
+      // The same guard covers `hauler daemon status` / `hauler_status`.
+      const status = yield* Effect.promise((signal) => loadStatusResult({}, { config, signal }));
+      expect(status.daemon).toBe('unresponsive');
+    }));
+});
