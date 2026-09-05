@@ -29,9 +29,9 @@ export interface DaemonControlResult {
   readonly operation: 'daemon';
   readonly pid: number | null;
   /**
-   * `restart`: the pid that was serving before, null when none was. `start`:
-   * set only when a daemon of another version outlived the grace and was
-   * left serving (then equal to `pid`).
+   * `restart`: the pid that was serving before, null when none was. `start`
+   * and `status`: set only when a daemon of another version outlived the
+   * grace and was left serving (then equal to `pid`).
    */
   readonly previousPid?: number | null;
   readonly report: StatusReport | null;

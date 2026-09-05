@@ -15,11 +15,15 @@ export const defaultPingTimeoutMs = 500;
  * arrive: nothing listening (`unreachable`, with the errno so a caller can
  * tell `ECONNREFUSED` / `ENOENT` from the rest), no reply within the budget
  * (`timeout`), the daemon hanging up first (`closed`), or a reply that is not
- * a `session-completed-result` (`malformed`).
+ * a `session-completed-result` (`malformed`). A stale daemon that could not be
+ * replaced is `replacement-failed`.
  */
 export type SessionCompletedPing =
   | { readonly kind: 'finished'; readonly tickets: readonly FinishedTicket[] }
-  | { readonly kind: 'unavailable'; readonly reason: 'closed' | 'malformed' | 'timeout' }
+  | {
+      readonly kind: 'unavailable';
+      readonly reason: 'closed' | 'malformed' | 'replacement-failed' | 'timeout';
+    }
   | { readonly kind: 'unavailable'; readonly reason: 'unreachable'; readonly code: string | null };
 
 export interface SessionPingOptions {
@@ -59,7 +63,7 @@ export const pingSessionCompleted = async (
     case 'timeout':
       return { kind: 'unavailable', reason: outcome.kind };
     case 'replacement-failed':
-      return { kind: 'unavailable', reason: 'malformed' };
+      return { kind: 'unavailable', reason: 'replacement-failed' };
     case 'unreachable':
       return { code: outcome.code ?? null, kind: 'unavailable', reason: 'unreachable' };
     default: {

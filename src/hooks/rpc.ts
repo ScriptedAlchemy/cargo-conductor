@@ -134,7 +134,9 @@ const replaceStaleDaemon = (): Promise<{ readonly detail: string; readonly repla
       return;
     }
     const child = spawn(command, [...args, 'daemon', 'start'], {
+      killSignal: 'SIGTERM',
       stdio: ['ignore', 'pipe', 'pipe'],
+      timeout: 8_000,
     });
     let output = '';
     child.stdout.on('data', (chunk: Buffer) => {
@@ -199,7 +201,9 @@ export const recordDeniedAttempt = async (
   attempt: DeniedAttempt,
   socketPath: string = resolveHookSocketPath(),
 ): Promise<void> => {
-  await requestJson(
+  // Fire-and-forget write: it parses no versioned payload, and sending it
+  // directly preserves the 30 ms audit path when a busy daemon delays ping.
+  await requestOnce(
     {
       argv: [...attempt.argv],
       cwd: attempt.cwd,

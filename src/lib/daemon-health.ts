@@ -1,14 +1,20 @@
 import { statSync } from 'node:fs';
 
 import * as Effect from 'effect/Effect';
+import * as Schedule from 'effect/Schedule';
 
 import {
   defaultEnsureDependencies,
   ensureDaemonVersion,
 } from '../client/ensure-daemon.js';
 import type { DaemonConfigShape } from '../daemon/config.js';
-import { requestExpecting, type DaemonUnreachableError } from '../daemon/control.js';
+import {
+  pingDaemon,
+  requestExpecting,
+  type DaemonUnreachableError,
+} from '../daemon/control.js';
 import type { StatusResultMessage } from '../daemon/protocol.js';
+import { requestShutdown } from '../daemon/shutdown.js';
 import { isRecord } from './guards.js';
 import { shortId } from './id.js';
 import { socketErrorCode } from './socket-errors.js';
@@ -141,7 +147,19 @@ export const probeDaemonHealth = (
   const startedAt = Date.now();
   const probe: Effect.Effect<DaemonHealth> = ensureDaemonVersion(
     config,
-    defaultEnsureDependencies,
+    {
+      ...defaultEnsureDependencies,
+      exitGraceMs: timeoutMs,
+      requestShutdown: (socketPath) => requestShutdown(socketPath, timeoutMs),
+      waitForDaemon: (socketPath) =>
+        pingDaemon(socketPath, Math.min(timeoutMs, 250)).pipe(
+          Effect.retry(
+            Schedule.spaced('50 millis').pipe(
+              Schedule.upTo({ duration: `${timeoutMs} millis` }),
+            ),
+          ),
+        ),
+    },
     timeoutMs,
   ).pipe(
     Effect.flatMap((daemon) =>

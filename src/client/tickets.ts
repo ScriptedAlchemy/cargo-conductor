@@ -11,7 +11,6 @@ import type {
   ControlTimeoutError,
   DaemonUnreachableError,
 } from '../daemon/control.js';
-import type { DaemonNotReplacedError } from '../daemon/shutdown.js';
 import type {
   AckMessage,
   AwaitResultMessage,
@@ -331,14 +330,7 @@ export const submitBackgroundAck = (
     },
     5_000,
     (message): message is AckMessage => message.type === 'ack',
-    (target) =>
-      ensure(target).pipe(
-        Effect.catchIf(
-          (error): error is Exclude<EnsureDaemonError, DaemonNotReplacedError> =>
-            error._tag !== 'DaemonNotReplaced',
-          () => Effect.void,
-        ),
-      ),
+    ensure,
   ).pipe(
     Effect.map((message): BackgroundSubmitAck | null =>
       message === undefined

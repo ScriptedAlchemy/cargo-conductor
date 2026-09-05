@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { version } from 'agent-bundle/meta';
 import { describe, expect, it } from 'effect-rstest';
 
-import { requestJson } from '../src/hooks/rpc.js';
+import { recordDeniedAttempt, requestJson } from '../src/hooks/rpc.js';
 
 describe('hook RPC NDJSON framing', () => {
   it('waits for a complete response split across socket data events', async () => {
@@ -39,6 +39,39 @@ describe('hook RPC NDJSON framing', () => {
         requests: [],
         type: 'session-pending-result',
       });
+    } finally {
+      await new Promise<void>((resolve) => {
+        server.close(() => resolve());
+      });
+      rmSync(root, { force: true, recursive: true });
+    }
+  });
+
+  it('sends a denied-attempt audit without waiting for a version ping', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'cc-hook-attempt-'));
+    const socketPath = join(root, 'daemon.sock');
+    let received: Record<string, unknown> | undefined;
+    const server = createServer((socket) => {
+      socket.once('data', (chunk: Buffer) => {
+        received = JSON.parse(chunk.toString('utf8')) as Record<string, unknown>;
+      });
+    });
+    try {
+      await new Promise<void>((resolve, reject) => {
+        server.once('error', reject);
+        server.listen(socketPath, resolve);
+      });
+      await recordDeniedAttempt(
+        {
+          argv: ['cargo', 'clean'],
+          cwd: '/repo',
+          host: 'cursor',
+          reason: 'active builds',
+          session: 's1',
+        },
+        socketPath,
+      );
+      expect(received).toMatchObject({ type: 'attempt', argv: ['cargo', 'clean'] });
     } finally {
       await new Promise<void>((resolve) => {
         server.close(() => resolve());
