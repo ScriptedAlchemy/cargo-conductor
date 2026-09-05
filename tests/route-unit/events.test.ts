@@ -75,143 +75,18 @@ describe('session/start daemon notice', () => {
 });
 
 /**
- * Permission semantics: the hauler never introduces a prompt. A rewritten
- * cargo command is governed by the daemon and returns an explicit `allow`
- * (since agent-bundle#461 a pass-through carries no decision, so `continue`
- * plus `updatedInput` would make the host prompt for the rewrite). Every
- * other shell call returns plain `continue` — no decision, the host's own
- * flow — never `allow` (that was the #461 blanket approval) and never `ask`.
+ * Permission semantics: the hauler never introduces a prompt. The shell tool
+ * hooks (tool/before, tool/after) are config-declared handlers rather than
+ * rendered routes since #90, so their decisions — `allow` for a rewritten
+ * cargo command, `continue` plus `updatedInput` beside an ungoverned segment,
+ * plain `continue` for everything else, never `ask` — are proven in
+ * `tests/hook-fast-path.test.ts` against the handler and in
+ * `tests/hooks-simulate.test.ts` against the compiled entries. The stop route
+ * stays here: it makes no decision without a daemon hold.
  */
-describe('tool/before cargo nudge', () => {
-  it('allows a bare cargo command once it is rewritten onto the hauler exec path', async () => {
+describe('stop route', () => {
+  it('never prompts: stop makes no decision without a daemon hold', async () => {
     await withIsolatedStateDir(async () => {
-      const rendered = await renderRoute('event:tool/before', {
-        input: eventInput('tool/before', 'claude', 'PreToolUse', {
-          cwd: '/tmp/ws',
-          hook_event_name: 'PreToolUse',
-          session_id: 'sess-2',
-          tool_input: { command: 'cargo check -p foo' },
-          tool_name: 'Bash',
-        }),
-      });
-      expect(rendered.document.value).toMatchObject({
-        outcome: 'allow',
-        updatedInput: { command: expect.stringContaining('exec --session sess-2 --host claude') },
-      });
-      expect(rendered.document.value).toMatchObject({
-        updatedInput: { command: expect.stringContaining('-- cargo check -p foo') },
-      });
-      expect(rendered.document.value).not.toHaveProperty('reason');
-    });
-  });
-
-  it('allows the rewrite on Cursor too, attributed to host cursor', async () => {
-    await withIsolatedStateDir(async () => {
-      const rendered = await renderRoute('event:tool/before', {
-        input: eventInput('tool/before', 'cursor', 'preToolUse', {
-          conversation_id: 'conv-2',
-          hook_event_name: 'preToolUse',
-          tool_input: { command: 'cargo build' },
-          tool_name: 'Shell',
-        }),
-      });
-      expect(rendered.document.value).toMatchObject({
-        outcome: 'allow',
-        updatedInput: { command: expect.stringContaining('--session conv-2 --host cursor -- cargo build') },
-      });
-    });
-  });
-
-  it('rewrites but does not approve a cargo command beside an ungoverned segment', async () => {
-    await withIsolatedStateDir(async () => {
-      const rendered = await renderRoute('event:tool/before', {
-        input: eventInput('tool/before', 'claude', 'PreToolUse', {
-          hook_event_name: 'PreToolUse',
-          session_id: 'sess-9',
-          tool_input: { command: 'cargo test -p foo && rm -rf target' },
-          tool_name: 'Bash',
-        }),
-      });
-      // Brokered, but the host decides the whole rewritten command: `allow`
-      // here would approve `rm -rf target` because cargo shares the input.
-      expect(rendered.document.value).toMatchObject({
-        outcome: 'continue',
-        updatedInput: { command: expect.stringContaining('-- cargo test -p foo && rm -rf target') },
-      });
-      expect(rendered.document.value).not.toHaveProperty('reason');
-    });
-  });
-
-  it('leaves non-cargo commands alone with no decision', async () => {
-    await withIsolatedStateDir(async () => {
-      const rendered = await renderRoute('event:tool/before', {
-        input: eventInput('tool/before', 'claude', 'PreToolUse', {
-          hook_event_name: 'PreToolUse',
-          session_id: 'sess-3',
-          tool_input: { command: 'ls -la' },
-          tool_name: 'Bash',
-        }),
-      });
-      expect(rendered.document.value).toEqual({ outcome: 'continue' });
-    });
-  });
-
-  it('makes no decision when the tool input carries no command', async () => {
-    await withIsolatedStateDir(async () => {
-      const rendered = await renderRoute('event:tool/before', {
-        input: eventInput('tool/before', 'claude', 'PreToolUse', {
-          hook_event_name: 'PreToolUse',
-          session_id: 'sess-4',
-          tool_input: { file_path: '/tmp/ws/Cargo.toml' },
-          tool_name: 'Read',
-        }),
-      });
-      expect(rendered.document.value).toEqual({ outcome: 'continue' });
-    });
-  });
-
-  it('makes no decision for an already-brokered hauler exec it does not rewrite again', async () => {
-    await withIsolatedStateDir(async () => {
-      const rendered = await renderRoute('event:tool/before', {
-        input: eventInput('tool/before', 'claude', 'PreToolUse', {
-          hook_event_name: 'PreToolUse',
-          session_id: 'sess-5',
-          tool_input: { command: 'hauler exec --session sess-5 --host claude -- cargo check' },
-          tool_name: 'Bash',
-        }),
-      });
-      expect(rendered.document.value).toEqual({ outcome: 'continue' });
-    });
-  });
-
-  it('makes no decision when the command cannot be parsed', async () => {
-    await withIsolatedStateDir(async () => {
-      const rendered = await renderRoute('event:tool/before', {
-        input: eventInput('tool/before', 'claude', 'PreToolUse', {
-          hook_event_name: 'PreToolUse',
-          session_id: 'sess-7',
-          tool_input: { command: 'cargo test &&' },
-          tool_name: 'Bash',
-        }),
-      });
-      expect(rendered.document.value).toEqual({ outcome: 'continue' });
-    });
-  });
-
-  it('never prompts: tool/after and stop make no decision without a daemon hold', async () => {
-    await withIsolatedStateDir(async () => {
-      const after = await renderRoute('event:tool/after', {
-        input: eventInput('tool/after', 'claude', 'PostToolUse', {
-          cwd: '/tmp/ws',
-          hook_event_name: 'PostToolUse',
-          session_id: 'sess-8',
-          tool_input: { command: 'cargo test -p foo' },
-          tool_name: 'Bash',
-          tool_response: { exit_code: 0, stdout: 'ok' },
-        }),
-      });
-      expect(after.document.value).toEqual({ outcome: 'continue' });
-
       const stop = await renderRoute('event:stop', {
         input: eventInput('stop', 'claude', 'Stop', {
           cwd: '/tmp/ws',
@@ -222,20 +97,6 @@ describe('tool/before cargo nudge', () => {
         }),
       });
       expect(stop.document.value).toEqual({ outcome: 'continue' });
-    });
-  });
-
-  it('runs cargo clean raw with no decision when no daemon is listening', async () => {
-    await withIsolatedStateDir(async () => {
-      const rendered = await renderRoute('event:tool/before', {
-        input: eventInput('tool/before', 'claude', 'PreToolUse', {
-          hook_event_name: 'PreToolUse',
-          session_id: 'sess-6',
-          tool_input: { command: 'cargo clean' },
-          tool_name: 'Bash',
-        }),
-      });
-      expect(rendered.document.value).toEqual({ outcome: 'continue' });
     });
   });
 });

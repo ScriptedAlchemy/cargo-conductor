@@ -12,10 +12,13 @@
 - The plugin surface is an agent-bundle application: `src/layout.tsx` (the
   shell), `src/providers/hauler-daemon.ts` (daemon connection), `src/components`
   (typed components over `view-models.ts`), `src/mcp/hauler/tools` and
-  `src/mcp/hauler/apps` (MCP), `src/events` (hook routes), `src/cli` (routed
-  CLI), `src/scripts/hauler.ts` (process entry), `src/skills`. The README's
-  tour is the map; do not reintroduce a hand-written server, argv parser, or
-  string-concatenated documents — add a component and a view-model.
+  `src/mcp/hauler/apps` (MCP), `src/events` (hook routes), `src/hooks/fast-path`
+  (the declared `tool/before` and `tool/after` shell hooks: decide on the raw
+  command, then `import()` the rest — keep them free of React and Effect),
+  `src/cli` (routed CLI), `src/scripts/hauler.ts` (process entry),
+  `src/skills`. The README's tour is the map; do not reintroduce a
+  hand-written server, argv parser, or string-concatenated documents — add a
+  component and a view-model.
 - Documents must stay honest: a daemon the probe could not reach renders as
   `stopped`/`unresponsive` with its typed reason, never as an empty success.
 - Names are `hauler` / `cargo-hauler` / `CARGO_HAULER_*`. `CARGO_CONDUCTOR_*`

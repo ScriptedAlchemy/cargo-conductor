@@ -20,13 +20,17 @@ pnpm run build   # or `pnpm run check` to also run the typecheck and test gate
 ```
 
 Every pack ships the same surfaces: `mcp/` (the `hauler` MCP server), `hooks/`
-(the four event routes in the host's own hook document), `skills/`,
+(the four hooks in the host's own hook document: the `session/start` and
+`stop` event-route wrappers, and the standalone `before-tool-shell-before-*`
+and `after-tool-shell-after-*` shell hook entries, which decide on the command
+before loading anything heavier — about 50 ms and 49 MB for a non-cargo
+call), `skills/`,
 `scripts/hauler.mjs` (the `exec` / `daemon` / `install-shim` entry the hooks
 rewrite Cargo to), `bin/cargo-hauler.mjs` (the routed CLI: `status`, `log`,
 `last`, `await`, `result`, `request`, `daemon`), `mcp-apps/dashboard.html`,
 and an `INSTALL.md` with the exact compiled names.
 
-The hooks never introduce a permission prompt. The `tool/before` route answers
+The hooks never introduce a permission prompt. The `tool/before` hook answers
 `allow` only when every command in the input is a cargo invocation it has
 rewritten onto the hauler exec path (or already runs through it) — the daemon
 governs the whole command. A cargo command beside something the daemon does
@@ -35,7 +39,7 @@ rewritten but returned as `continue`, so the host's own permission flow
 decides the rewritten command exactly as it would have decided the original.
 `deny` is returned only for a destructive cargo command that would race
 in-flight builds, and plain `continue` — no decision — for every other tool
-call. No route returns `ask`.
+call. No hook returns `ask`.
 
 ## Install
 

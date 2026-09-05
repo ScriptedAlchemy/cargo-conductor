@@ -9,8 +9,10 @@ import { defineConfig } from 'agent-bundle/config';
  *   (daemon badge, lane summary, lineage footer, `_meta.hauler`).
  * - `src/mcp/hauler/tools/*.tsx` → the `hauler` MCP server's tools;
  *   `src/mcp/hauler/apps/dashboard.tsx` → its MCP App.
- * - `src/events/**` → session/start, tool/before, tool/after, and stop
- *   event routes (the hooks each host registers).
+ * - `src/events/**` → session/start and stop event routes (rendered hooks).
+ * - `hooks` below → the tool/before and tool/after entries every shell tool
+ *   call runs (`src/hooks/fast-path/`), declared rather than routed so a
+ *   non-cargo command exits before the rendering runtime is even parsed.
  * - `src/cli/**` → the generated `cargo-hauler` routed CLI (package bin and
  *   `bin/cargo-hauler.mjs` inside every host artifact).
  * - `src/scripts/hauler.ts` → `scripts/hauler.mjs` in every host artifact
@@ -26,6 +28,30 @@ import { defineConfig } from 'agent-bundle/config';
 export default defineConfig({
   bin: {
     hauler: './src/scripts/hauler.ts',
+  },
+  // The shell hooks (issue #90). An event route ships as a ~3.6 MB wrapper
+  // that evaluates the rendering runtime and spawns a Flight worker before the
+  // route can look at the command: ~0.1 s and 64 MB with a shared runtime up,
+  // ~0.55 s and 144 MB without, on every Bash call, cargo or not. A
+  // config-declared handler compiles to a 50–140 KB entry with no React and
+  // no Effect (~0.05 s, 48 MB) that the framework hands the decoded event;
+  // `src/hooks/fast-path/` answers `continue` for a command that names
+  // neither cargo, hauler, nor conductor before evaluating anything else, and
+  // runs the rewrite / telemetry modules (inlined, deferred) only for the
+  // rest. Same `shell` matcher, same 10 s budget, same hosts as the routes
+  // they replace; the framework still owns the envelope, the validation, and
+  // every projection but `allow` (see `src/hooks/fast-path/allow-output.ts`).
+  hooks: {
+    afterTool: {
+      handler: './src/hooks/fast-path/shell-after.ts',
+      timeout: 10,
+      tools: ['shell'],
+    },
+    beforeTool: {
+      handler: './src/hooks/fast-path/shell-before.ts',
+      timeout: 10,
+      tools: ['shell'],
+    },
   },
   // Claude Code and Codex install via `<cli> plugin marketplace add`; this
   // emits the marketplace manifests those commands read.

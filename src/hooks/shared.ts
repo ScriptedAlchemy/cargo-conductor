@@ -1,12 +1,13 @@
 import { diagnosticCounts } from '../components/headlines.js';
 import { isRecord } from '../lib/guards.js';
 import { countWord } from '../lib/text.js';
+import { extractShellCommand } from '../lib/tool-input.js';
 
 import type { DaemonProbe } from './probe.js';
 import type { HookRecord } from './record.js';
 import type { DeniedAttempt, FinishedTicket } from './rpc.js';
 
-export { isRecord, countWord };
+export { extractShellCommand, isRecord, countWord };
 
 export interface HookContext {
   readonly nativeEvent?: string;
@@ -41,13 +42,6 @@ export const formatFinishedTicket = (ticket: FinishedTicket): string => {
       return exhaustive;
     }
   }
-};
-
-export const extractShellCommand = (toolInput: unknown): string | undefined => {
-  if (!isRecord(toolInput) || typeof toolInput.command !== 'string') {
-    return undefined;
-  }
-  return toolInput.command;
 };
 
 export const resolveHookHost = (

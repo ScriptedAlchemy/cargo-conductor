@@ -1,10 +1,12 @@
 import { createConnection } from 'node:net';
 
-import { LineBuffer } from '../lib/ndjson.js';
 import { socketErrorCode } from '../lib/socket-errors.js';
 
+import { asFinishedTicket, type FinishedTicket } from './finished-ticket.js';
 import { resolveHookSocketPath } from './paths.js';
 import { isRecord } from './shared.js';
+
+export type { FinishedTicket };
 
 export interface PendingTicket {
   readonly createdAtMs: number;
@@ -13,15 +15,6 @@ export interface PendingTicket {
   readonly startedAtMs: number | null;
   readonly status: string;
   readonly ticket: string;
-}
-
-export interface FinishedTicket {
-  readonly error: string | null;
-  readonly errorCount: number | null;
-  readonly exitCode: number | null;
-  readonly status: 'done' | 'failed' | 'killed';
-  readonly ticket: string;
-  readonly warningCount: number | null;
 }
 
 export interface DeniedAttempt {
@@ -46,24 +39,6 @@ const asPending = (value: unknown): PendingTicket | null => {
   };
 };
 
-const asFinished = (value: unknown): FinishedTicket | null => {
-  if (!isRecord(value) || typeof value.ticket !== 'string') {
-    return null;
-  }
-  const status = value.status;
-  if (status !== 'done' && status !== 'failed' && status !== 'killed') {
-    return null;
-  }
-  return {
-    error: typeof value.error === 'string' ? value.error : null,
-    errorCount: typeof value.errorCount === 'number' ? value.errorCount : null,
-    exitCode: typeof value.exitCode === 'number' ? value.exitCode : null,
-    status,
-    ticket: value.ticket,
-    warningCount: typeof value.warningCount === 'number' ? value.warningCount : null,
-  };
-};
-
 /**
  * Why a one-shot request produced no usable reply. `timeout` means the daemon
  * accepted (or is still accepting) but did not answer in time — it is alive
@@ -78,6 +53,21 @@ export type RequestOutcome =
   | { readonly kind: 'reply'; readonly message: Record<string, unknown> }
   | { readonly kind: 'timeout' }
   | { readonly kind: 'unreachable'; readonly code: string | undefined };
+
+/**
+ * Newline-splits the reply stream one decoded chunk at a time. A one-shot
+ * request reads a single line, so this stays dependency-free on purpose: the
+ * hook entries built from this module must not load Effect (the shared
+ * `LineBuffer` does) before deciding whether a shell call concerns them.
+ */
+const lineSplitter = (): ((chunk: string) => string[]) => {
+  let pending = '';
+  return (chunk) => {
+    const pieces = `${pending}${chunk}`.split('\n');
+    pending = pieces.pop() ?? '';
+    return pieces.filter((line) => line.trim().length > 0);
+  };
+};
 
 /** One-shot NDJSON request/response over the daemon socket, reporting how it ended. */
 export const requestOutcome = (
@@ -95,16 +85,18 @@ export const requestOutcome = (
       resolve(value);
     };
     const socket = createConnection({ path: socketPath });
-    const lines = new LineBuffer();
+    const lines = lineSplitter();
     const timer = setTimeout(() => {
       socket.destroy();
       finish({ kind: 'timeout' });
     }, timeoutMs);
+    // Decoding on the socket keeps a multi-byte character split across chunks whole.
+    socket.setEncoding('utf8');
     socket.on('connect', () => {
       socket.write(`${JSON.stringify(message)}\n`);
     });
-    socket.on('data', (chunk) => {
-      for (const line of lines.push(chunk)) {
+    socket.on('data', (chunk: string) => {
+      for (const line of lines(chunk)) {
         try {
           const parsed: unknown = JSON.parse(line);
           if (isRecord(parsed)) {
@@ -193,7 +185,7 @@ export const listSessionCompleted = async (
     throw new Error('session-completed unavailable');
   }
   return message.requests.flatMap((entry) => {
-    const parsed = asFinished(entry);
+    const parsed = asFinishedTicket(entry);
     return parsed === null ? [] : [parsed];
   });
 };
@@ -215,7 +207,7 @@ export const waitForTickets = async (
       if (message === null || message.type !== 'await-result' || message.timedOut === true) {
         return null;
       }
-      return asFinished(message.request);
+      return asFinishedTicket(message.request);
     }),
   );
   return awaited.filter((entry): entry is FinishedTicket => entry !== null);
