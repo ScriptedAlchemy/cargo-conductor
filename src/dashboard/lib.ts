@@ -505,6 +505,7 @@ export interface TicketDetail {
   readonly error: string | null;
   readonly errorCount: number | null;
   readonly warningCount: number | null;
+  /** The detail record's tail (`hauler_result`); a status row never carries one (#95). */
   readonly outputTail: string | null;
   /** True when outputTail is a live in-progress snapshot from the daemon. */
   readonly outputTailLive: boolean;
@@ -551,10 +552,10 @@ export const ticketDetailFrom = (record: unknown): TicketDetail | null => {
 };
 
 /**
- * What the drawer's output pane should show. A live daemon nulls
- * `outputTail` on every status row, and even the follow-up result fetch can
- * come back tail-less; the per-diagnostic renderings the ledger kept are
- * the honest fallback before giving up with a placeholder.
+ * What the drawer's output pane should show. The detail comes from
+ * `hauler_result`; even that can come back tail-less (a request that never
+ * ran), so the per-diagnostic renderings the ledger kept are the honest
+ * fallback before giving up with a placeholder.
  */
 export const outputTextFor = (detail: TicketDetail): string | null => {
   if (detail.outputTail !== null) {
@@ -567,11 +568,11 @@ export const outputTextFor = (detail: TicketDetail): string | null => {
 };
 
 /**
- * Resolve the drawer detail for a clicked row. Status payloads from a running
- * daemon deliberately null `outputTail` on every row to keep the report
- * small, so a row without a tail needs one follow-up `hauler_result`
- * fetch. Finished rows receive the ledger tail; running rows receive the
- * daemon's live in-memory tail snapshot.
+ * Resolve the drawer detail for a clicked row. A status row is the bounded
+ * summary contract — no tail, settled or live (#95) — so the drawer always
+ * makes one `hauler_result` fetch for the detail record: the ledger tail of
+ * a finished ticket, the daemon's whole live tail of a running one. The row
+ * stands in only when the fetch finds no record (the ticket left the ledger).
  */
 export const resolveTicketDetail = async (
   row: unknown,
@@ -581,11 +582,31 @@ export const resolveTicketDetail = async (
   if (fromRow === null) {
     return null;
   }
-  if (fromRow.outputTail !== null) {
-    return fromRow;
-  }
   const fetched = ticketDetailFrom(await fetchRecord(fromRow.ticket));
   return fetched ?? fromRow;
+};
+
+/**
+ * The one line a list row shows of a running ticket's live output: the last
+ * non-blank line of the status row's `outputPreview` (#95), or null when the
+ * row has none (queued or finished).
+ */
+export const outputPreviewLine = (row: unknown): string | null => {
+  if (!isRecord(row)) {
+    return null;
+  }
+  const tail = stringOrNull(row['outputPreview']);
+  if (tail === null) {
+    return null;
+  }
+  const lines = tail.split('\n').map((line) => line.trimEnd());
+  for (let index = lines.length - 1; index >= 0; index -= 1) {
+    const line = lines[index];
+    if (line !== undefined && line.trim().length > 0) {
+      return line;
+    }
+  }
+  return null;
 };
 
 const filterCompactionThreshold = 120;

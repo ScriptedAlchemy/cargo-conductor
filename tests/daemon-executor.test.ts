@@ -109,6 +109,32 @@ describe('TailBuffer', () => {
     tail.push(Buffer.from(colored));
     expect(tail.toString()).toBe(colored);
   });
+
+  it('serves a byte-bounded suffix across chunk boundaries without touching the rest (#95)', () => {
+    const tail = new TailBuffer(64);
+    tail.push(Buffer.from('0123'));
+    tail.push(Buffer.from('4567'));
+    tail.push(Buffer.from('89ab'));
+    expect(tail.byteLength).toBe(12);
+    expect(tail.tail(3)).toBe('9ab');
+    expect(tail.tail(5)).toBe('789ab');
+    expect(tail.tail(8)).toBe('456789ab');
+    expect(tail.tail(12)).toBe('0123456789ab');
+    expect(tail.tail(1_000)).toBe('0123456789ab');
+    expect(tail.tail(0)).toBe('');
+    expect(new TailBuffer(8).tail(4)).toBe('');
+  });
+
+  it('keeps tail() consistent with toString() after the head has been trimmed', () => {
+    const tail = new TailBuffer(5);
+    tail.push(Buffer.from('aaa'));
+    tail.push(Buffer.from('bbb'));
+    tail.push(Buffer.from('ccc'));
+    expect(tail.toString()).toBe('bbccc');
+    expect(tail.tail(2)).toBe('cc');
+    expect(tail.tail(4)).toBe('bccc');
+    expect(tail.byteLength).toBe(5);
+  });
 });
 
 describe('executeCargo', () => {

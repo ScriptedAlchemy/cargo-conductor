@@ -5,7 +5,7 @@ import { expectDocument, renderRoute, renderRouteEvents, testManifest } from 'ag
 import * as Effect from 'effect/Effect';
 
 import { requestOverSocket } from '../../src/daemon/control.js';
-import type { RequestRecord } from '../../src/daemon/protocol.js';
+import type { RequestRecord, StatusRow } from '../../src/daemon/protocol.js';
 import { scopedDaemon } from '../harness.js';
 
 import { documentMetadata, fakeCargoEnv, withDaemon, withIsolatedStateDir } from './support.js';
@@ -158,7 +158,7 @@ describe('tool documents against a live daemon', () => {
             ...daemon,
             input: { session: 's-1' },
           });
-          const statusValue = status.result as { readonly active: readonly RequestRecord[]; readonly daemon: string };
+          const statusValue = status.result as { readonly active: readonly StatusRow[]; readonly daemon: string };
           expect(statusValue.daemon).toBe('running');
           expect([...statusValue.active.map((record) => record.ticket)]).toContain(ticket);
           expectDocument(status)
@@ -267,7 +267,7 @@ describe('tool documents against a live daemon', () => {
             ...daemon,
             input: { tickets: [value.ticket ?? ''] },
           });
-          const statusValue = status.result as { readonly active: readonly RequestRecord[] };
+          const statusValue = status.result as { readonly active: readonly StatusRow[] };
           const dependent = statusValue.active.find((record) => record.ticket === value.ticket);
           expect(dependent?.status).toBe('queued');
           expect(dependent?.after).toEqual([prerequisite]);

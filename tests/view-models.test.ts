@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'effect-rstest';
 
+import { toStatusRow } from '../src/daemon/protocol.js';
 import type { KacheStorePressureReport, LaneStatus, RequestRecord } from '../src/daemon/protocol.js';
 import {
   admissionModel,
@@ -235,7 +236,7 @@ describe('laneBoardModel and admissionModel', () => {
 
   it('reports permits with the heavy cap and a paused gate under hard memory pressure', () => {
     const model = admissionModel({
-      active: [record(), record({ status: 'queued', ticket: 'cc-8' })],
+      active: [toStatusRow(record()), toStatusRow(record({ status: 'queued', ticket: 'cc-8' }))],
       maxConcurrent: 5,
       system: { clampThresholdPerCore: null, cores: 8, heavy: { capActive: true, maxConcurrent: 1, running: 1 }, loadAvg1: 12.5, memClamp: 'hard' },
     });
@@ -248,10 +249,10 @@ describe('laneBoardModel and admissionModel', () => {
   it('counts permit holders only and reports riders separately', () => {
     const model = admissionModel({
       active: [
-        record(),
-        record({ attachedTo: 'cc-1', ticket: 'cc-2' }),
-        record({ attachedTo: 'cc-1', ticket: 'cc-3' }),
-        record({ status: 'queued', ticket: 'cc-8' }),
+        toStatusRow(record()),
+        toStatusRow(record({ attachedTo: 'cc-1', ticket: 'cc-2' })),
+        toStatusRow(record({ attachedTo: 'cc-1', ticket: 'cc-3' })),
+        toStatusRow(record({ status: 'queued', ticket: 'cc-8' })),
       ],
       maxConcurrent: 5,
       system: undefined,

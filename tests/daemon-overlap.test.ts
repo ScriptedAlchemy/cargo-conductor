@@ -6,8 +6,8 @@ import { requestOverSocket } from '../src/daemon/control.js';
 import type {
   AckMessage,
   KillResultMessage,
-  RequestRecord,
   StatusReport,
+  TicketSummary,
 } from '../src/daemon/protocol.js';
 
 import { decodeOutput, execRequest, findExit, pollReport, scopedDaemon, shortId } from './harness.js';
@@ -20,10 +20,10 @@ const findAck = (messages: readonly { type: string }[]): AckMessage => {
   return ack;
 };
 
-const runningLeader = (report: StatusReport): RequestRecord | undefined =>
+const runningLeader = (report: StatusReport): TicketSummary | undefined =>
   report.active.find((record) => record.status === 'running' && record.attachedTo === null);
 
-const recordFor = (report: StatusReport, ticket: string): RequestRecord | undefined =>
+const recordFor = (report: StatusReport, ticket: string): TicketSummary | undefined =>
   [...report.active, ...report.recent].find((record) => record.ticket === ticket);
 
 const laneExecuting = (report: StatusReport, ticket: string): boolean =>

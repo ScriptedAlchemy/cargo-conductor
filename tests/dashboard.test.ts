@@ -26,6 +26,7 @@ import {
   kachePressureView,
   kacheProfileGroups,
   laneIsActive,
+  outputPreviewLine,
   outputTextFor,
   pathBasename,
   percentileMinSamples,
@@ -375,8 +376,9 @@ describe('frequency metrics (zero is not a signal)', () => {
 });
 
 describe('ticket detail (click-through to cargo output)', () => {
-  // Status rows from a running daemon: the broker nulls outputTail to keep
-  // the report small, so terminal rows need one hauler_result follow-up.
+  // Status rows from a running daemon keep the report small: finished rows
+  // carry no tail (the ledger nulls outputTail on them) and running rows only
+  // a bounded preview (#95), so the drawer needs one hauler_result follow-up.
   const statusRow = {
     argv: ['cargo', 'test', '-p', 'tracedecay-store-runtime'],
     error: null,
@@ -409,13 +411,16 @@ describe('ticket detail (click-through to cargo output)', () => {
     expect(detail?.exitCode).toBe(101);
   });
 
-  it('uses the tail already on the row (stopped-daemon ledger path) without fetching', async () => {
+  it('always fetches detail even when an input row carries a tail', async () => {
+    const calls: string[] = [];
     const detail = await resolveTicketDetail(
-      { ...statusRow, outputTail: 'Finished `dev` profile in 3.2s' },
-      async () => {
-        throw new Error('should not fetch');
+      { ...statusRow, outputTail: 'stale row tail' },
+      async (ticket) => {
+        calls.push(ticket);
+        return { ...statusRow, outputTail: 'Finished `dev` profile in 3.2s' };
       },
     );
+    expect(calls).toEqual(['cc-702']);
     expect(detail?.outputTail).toBe('Finished `dev` profile in 3.2s');
   });
 
@@ -439,9 +444,60 @@ describe('ticket detail (click-through to cargo output)', () => {
     expect(detail?.outputTailLive).toBe(true);
   });
 
+  it('fetches the whole live tail for a running row carrying a bounded output preview (#95)', async () => {
+    const calls: string[] = [];
+    const previewRow = {
+      ...statusRow,
+      exitCode: null,
+      outputPreview: '   Compiling tracedecay v0.1.0\n    Checking tracedecay-store v0.1.0\n',
+      status: 'running',
+    };
+    expect(ticketDetailFrom(previewRow)?.outputTail).toBeNull();
+    const detail = await resolveTicketDetail(previewRow, async (ticket) => {
+      calls.push(ticket);
+      return {
+        ...previewRow,
+        outputTail: `${'   Compiling dep v0.1.0\n'.repeat(40)}   Compiling tracedecay v0.1.0\n    Checking tracedecay-store v0.1.0\n`,
+        outputTailLive: true,
+      };
+    });
+    expect(calls).toEqual(['cc-702']);
+    expect(detail?.outputTailLive).toBe(true);
+    expect(detail?.outputTail?.split('\n')).toHaveLength(43);
+  });
+
+  it('re-fetches a running row even when it carries a full live tail — the snapshot goes stale', async () => {
+    // Even a legacy-shaped row with a tail must refresh from hauler_result.
+    const calls: string[] = [];
+    const detail = await resolveTicketDetail(
+      { ...statusRow, exitCode: null, outputTail: 'older snapshot', outputTailLive: true, status: 'running' },
+      async (ticket) => {
+        calls.push(ticket);
+        return { ...statusRow, exitCode: null, outputTail: 'older snapshot\nnewer line', outputTailLive: true, status: 'running' };
+      },
+    );
+    expect(calls).toEqual(['cc-702']);
+    expect(detail?.outputTail).toBe('older snapshot\nnewer line');
+  });
+
   it('marks outputTailLive false when the record does not carry the flag', () => {
     const detail = ticketDetailFrom({ ...statusRow, outputTail: 'done' });
     expect(detail?.outputTailLive).toBe(false);
+  });
+
+  it('shows the last non-blank preview line on a list row, and nothing without a preview', () => {
+    expect(
+      outputPreviewLine({
+        ...statusRow,
+        outputPreview: '   Compiling a v0.1.0\n   Compiling b v0.1.0   \n\n',
+        status: 'running',
+      }),
+    ).toBe('   Compiling b v0.1.0');
+    // A legacy-shaped status row carrying a tail still has no preview.
+    expect(outputPreviewLine({ ...statusRow, outputTail: 'whole tail', outputTailLive: true, status: 'running' })).toBeNull();
+    expect(outputPreviewLine({ ...statusRow, outputPreview: null, status: 'queued' })).toBeNull();
+    expect(outputPreviewLine({ ...statusRow, outputPreview: '\n\n' })).toBeNull();
+    expect(outputPreviewLine(null)).toBeNull();
   });
 
   it('falls back to the row detail when the ledger no longer has the ticket', async () => {

@@ -1,6 +1,6 @@
 import React from 'react';
 
-import type { LaneStatus, RequestRecord } from '../daemon/protocol.js';
+import type { LaneStatus, TicketSummary } from '../daemon/protocol.js';
 import { countWord } from '../lib/text.js';
 
 import { Heading, Table } from './primitives.js';
@@ -8,7 +8,7 @@ import { EmptyState } from './states.js';
 import { laneBoardModel } from './view-models.js';
 
 export interface LaneBoardProps {
-  readonly active: readonly RequestRecord[];
+  readonly active: readonly TicketSummary[];
   readonly lanes: readonly LaneStatus[];
   readonly nowMs: number;
 }

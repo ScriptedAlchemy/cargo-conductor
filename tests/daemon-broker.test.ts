@@ -72,7 +72,7 @@ describe('hauler daemon', () => {
       );
       const record = report.recent.find((candidate) => candidate.ticket === exit.ticket);
       expect(record?.status).toBe('done');
-      expect(record?.outputTail).toBeNull();
+      expect(record).not.toHaveProperty('outputTail');
       expect(record?.intentKey).not.toBeNull();
       expect(record?.targetDir).toBe(join(fixture.ws1, 'target'));
       // An idle lane worker parked in Queue.take must not surface as -1 queued.
@@ -439,7 +439,7 @@ describe('hauler daemon', () => {
       expect(running?.startedAtMs).not.toBeNull();
       expect(queued?.status).toBe('killed');
       expect(queued?.startedAtMs).toBeNull();
-      expect(queued?.outputTail).toBeNull();
+      expect(queued).not.toHaveProperty('outputTail');
     }));
 
   it.live('rejects unparseable cargo invocations and ledgers the attempt', () =>

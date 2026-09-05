@@ -14,7 +14,7 @@ import type { ExitInfo, SubmitInput } from '../src/daemon/job-state.js';
 import type {
   AckMessage,
   RequeuedMessage,
-  RequestRecord,
+  TicketSummary,
 } from '../src/daemon/protocol.js';
 
 import { brokerFixture } from './broker-fixture.js';
@@ -37,10 +37,10 @@ const findAck = (messages: readonly { type: string }[]): AckMessage => {
   return ack;
 };
 
-const runningLeader = (report: BrokerStatusReport): RequestRecord | undefined =>
+const runningLeader = (report: BrokerStatusReport): TicketSummary | undefined =>
   report.active.find((record) => record.status === 'running' && record.attachedTo === null);
 
-const recordFor = (report: BrokerStatusReport, ticket: string): RequestRecord | undefined =>
+const recordFor = (report: BrokerStatusReport, ticket: string): TicketSummary | undefined =>
   [...report.active, ...report.recent].find((record) => record.ticket === ticket);
 
 const laneExecuting = (report: BrokerStatusReport, ticket: string): boolean =>

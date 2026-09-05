@@ -34,7 +34,10 @@ clippy, fmt, nextest) or is waiting on someone else's cargo.
 - Do not pipe status through `jq` just to find your work. Scope it directly:
   `hauler status --session <id>`, `--cwd <path>`, repeated
   `--ticket cc-N`, `--status running`, or `--command-contains <text>`.
-  `hauler_status` accepts the equivalent structured fields.
+  `hauler_status` accepts the equivalent structured fields. Status rows are
+  summaries: a running row carries `outputPreview` (its last few lines),
+  never the whole output tail. Read one ticket's tail with `hauler result
+  cc-N` / `hauler_result`.
 - Do not hand-roll `CARGO_TARGET_DIR` isolation or scratch clones to dodge
   locks. The daemon already serializes per (workspace, target dir); a private
   target dir only defeats attach/coverage sharing and multiplies compiles.
@@ -45,9 +48,10 @@ clippy, fmt, nextest) or is waiting on someone else's cargo.
   loop. A host with its own per-call deadline still bounds one call — Codex
   stops a tool call at `tool_timeout_sec` (60 s unless raised), so keep
   `maxWaitMs` under it there and call again. `hauler result cc-N` /
-  `hauler_result` is for a point-in-time read and includes the live output
-  tail while a run is still in progress. The dashboard drawer refreshes that
-  tail every three seconds.
+  `hauler_result` is for a point-in-time read and carries the whole output
+  tail — the live in-memory tail while a run is still in progress. The
+  dashboard drawer fetches that tail through `hauler_result` and refreshes
+  it every three seconds.
 - Lane order is by cost, not submission: a cheap queued test starts before an
   expensive queued build even if you submitted the build first. When a test
   (or `cargo run`) needs an artefact another ticket produces, submit the

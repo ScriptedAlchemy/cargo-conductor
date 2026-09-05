@@ -10,7 +10,7 @@ import * as Schedule from 'effect/Schedule';
 import { resolveDaemonConfig } from '../src/daemon/config.js';
 import { pingDaemon, requestOverSocket } from '../src/daemon/control.js';
 import { runDaemon } from '../src/daemon/main.js';
-import { orphanedByRestartError, type RequestRecord } from '../src/daemon/protocol.js';
+import { orphanedByRestartError, toStatusRow, type RequestRecord } from '../src/daemon/protocol.js';
 import { loadLastResult, loadStatusResult } from '../src/lib/inspect.js';
 import { filterStatusRows, statusSummary } from '../src/lib/status-filter.js';
 import { fetchTicketResult } from '../src/lib/tickets.js';
@@ -18,7 +18,7 @@ import { scopedEnv, scopedLedger, scopedTempDir } from './harness.js';
 import {
   describeRequestRecord,
   displayRequestRecord,
-  displayRequestRecords,
+  displayStatusRows,
   loadHaulerSnapshot,
 } from '../src/query.js';
 
@@ -199,9 +199,12 @@ describe('display projection', () => {
     expect(projected.exitCode).toBe(101);
   });
 
-  it('never leaves an ESC byte in a projected record list', () => {
-    const stripped = displayRequestRecords([coloredRecord]);
-    expect(stripped[0]?.outputTail).not.toContain(esc);
+  it('never leaves an ESC byte in a projected status-row list', () => {
+    const stripped = displayStatusRows([
+      toStatusRow(coloredRecord, `${esc}[32mCompiling${esc}[0m\n`),
+    ]);
+    expect(stripped[0]?.outputPreview).toBe('Compiling\n');
+    expect(stripped[0]).not.toHaveProperty('outputTail');
     expect(JSON.stringify(stripped)).not.toContain('\\u001b');
   });
 });

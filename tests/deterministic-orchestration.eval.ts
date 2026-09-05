@@ -8,9 +8,9 @@ import * as Fiber from 'effect/Fiber';
 import { createLedgerApi, openLedgerDatabase } from '../src/daemon/ledger.js';
 import type {
   AckMessage,
-  RequestRecord,
   ServerMessage,
   StatusReport,
+  TicketSummary,
   TransitionRecord,
 } from '../src/daemon/protocol.js';
 import { parseTicket } from '../src/daemon/protocol.js';
@@ -42,7 +42,7 @@ const findAck = (messages: readonly ServerMessage[]): AckMessage => {
   return ack;
 };
 
-const requireRecord = (report: StatusReport, ticket: string): RequestRecord => {
+const requireRecord = (report: StatusReport, ticket: string): TicketSummary => {
   const record = [...report.active, ...report.recent].find(
     (candidate) => candidate.ticket === ticket,
   );

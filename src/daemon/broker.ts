@@ -36,7 +36,7 @@ import type {
 import { laneKeyFor, makeLaneRuntime } from './lane-exec.js';
 import { Ledger } from './ledger.js';
 import { memoryAvailableBytes, memoryPressureLevel, memoryPsi } from './pressure.js';
-import { parseTicket } from './protocol.js';
+import { parseTicket, toStatusRow } from './protocol.js';
 import type {
   AttachMode,
   EstimateSource,
@@ -46,9 +46,11 @@ import type {
   SessionCompletedRecord,
   SessionPendingRecord,
   StatusReport,
+  StatusRow,
 } from './protocol.js';
 import { memoryClampState } from './scheduler.js';
 import { StallProbe, makeStallMonitor } from './stall.js';
+import { statusTailPreviewLimits, tailPreview } from './tail-preview.js';
 import { makeTicketDirectory } from './ticket-directory.js';
 import { Topology } from './topology.js';
 import { findConfiguredTargetDir, locateWorkspaceRoot } from './workspace.js';
@@ -385,34 +387,56 @@ export const BrokerLive: Layer.Layer<
         );
       });
 
-    /**
-     * The ledger only stores an output tail at settlement, but the in-flight
-     * job (or a follower's attachment view) accumulates one live. Overlay it
-     * so a running ticket's record shows progress instead of nothing — a
-     * long cargo run polled via `hauler result` or the dashboard drawer
-     * should never be blind until the end.
-     */
-    const withLiveTail = (record: RequestRecord): RequestRecord => {
+    /** The in-memory live output of an in-flight leader or attached follower; undefined once settled. */
+    const liveTailOf = (record: Pick<RequestRecord, 'status' | 'ticket'>): TailBuffer | undefined => {
       if (isTerminalStatus(record.status)) {
-        return record;
+        return undefined;
       }
       const entry = directory.get(record.ticket);
       if (entry === undefined) {
-        return record;
+        return undefined;
       }
-      const tail = entry.kind === 'leader' ? entry.job.tail : entry.attachment.tail;
-      const text = tail.toString();
+      return entry.kind === 'leader' ? entry.job.tail : entry.attachment.tail;
+    };
+
+    /**
+     * The ledger only stores an output tail at settlement, but the in-flight
+     * job (or a follower's attachment view) accumulates one live. Overlay it
+     * on the detail record (`result`, `await`) so a running ticket shows
+     * progress instead of nothing — a long cargo run polled via
+     * `hauler result` or the dashboard drawer should never be blind until
+     * the end.
+     */
+    const withLiveTail = (record: RequestRecord): RequestRecord => {
+      const text = liveTailOf(record)?.toString() ?? '';
       return text.length === 0 ? record : { ...record, outputTail: text, outputTailLive: true };
     };
 
+    /**
+     * The status row for a ledger record: the bounded summary contract. No
+     * tail — the ledger's status queries already null the settled one — and
+     * for a running row the live output's last lines as `outputPreview`, so
+     * the report's size follows the row count, not what each printed (#95).
+     */
+    const statusRow = (record: RequestRecord): StatusRow => {
+      const tail = liveTailOf(record);
+      return toStatusRow(record, tail === undefined ? null : tailPreview(tail, statusTailPreviewLimits));
+    };
+
+    /**
+     * Live fields (queue context, prerequisites, stall, hold) for an in-flight
+     * record. `withTail` overlays the whole live tail too — the detail reads;
+     * the status report leaves it off and previews from the buffer instead.
+     */
     const withLiveStatus = (
       record: RequestRecord | null,
       atMs = Date.now(),
+      withTail = true,
     ): Effect.Effect<RequestRecord | null> => {
       if (record === null || isTerminalStatus(record.status)) {
         return Effect.succeed(record);
       }
-      const liveRecord = withLiveTail(record);
+      const liveRecord = withTail ? withLiveTail(record) : record;
       const entry = directory.get(record.ticket);
       const blockedOn =
         entry?.kind === 'leader' && entry.job.waitingFor.size > 0
@@ -620,11 +644,12 @@ export const BrokerLive: Layer.Layer<
         const laneStatuses: readonly LaneStatus[] = yield* lanesRuntime.laneStatuses();
         const reportAtMs = Date.now();
         const activeRecords = yield* ledger.activeStatusRequests();
-        const active = yield* Effect.forEach(
-          activeRecords,
-          (record) => withLiveStatus(record, reportAtMs).pipe(Effect.map((live) => live ?? record)),
+        const active = yield* Effect.forEach(activeRecords, (record) =>
+          withLiveStatus(record, reportAtMs, false).pipe(Effect.map((live) => statusRow(live ?? record))),
         );
-        const recent = yield* ledger.recentStatusRequests(recentLimit);
+        const recent = (yield* ledger.recentStatusRequests(recentLimit)).map((record) =>
+          toStatusRow(record),
+        );
         const cargoRun = yield* Metric.value(cargoRunMetric);
         const cargoRunByKind = yield* Effect.forEach(
           cargoRunKinds,

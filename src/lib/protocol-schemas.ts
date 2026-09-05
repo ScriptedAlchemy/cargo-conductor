@@ -1,6 +1,11 @@
 import { z } from 'zod';
 
-import { attachModes, awaitCeilingMs, requestStatuses } from '../daemon/protocol.js';
+import {
+  attachModes,
+  awaitCeilingMs,
+  requestStatuses,
+  statusOutputPreviewBytes,
+} from '../daemon/protocol.js';
 import type {
   AdmissionHold,
   AttachmentSavingsReport,
@@ -20,6 +25,7 @@ import type {
   StatusMetricsWindow,
   StatusMetricsWindowBySubcommand,
   StatusReport,
+  StatusRow,
 } from '../daemon/protocol.js';
 
 const requestStatusSchema = z.enum(requestStatuses);
@@ -139,6 +145,20 @@ const histogramMetricSchema = z.object({
   min: z.number().nullable(),
   sum: z.number(),
 });
+
+/**
+ * One row of the status report: the bounded summary contract (#95). The
+ * detail record's `outputTail` / `outputTailLive` are not part of it — a
+ * status row never carries a tail, settled or live — and a running row's
+ * `outputPreview` is capped at `statusOutputPreviewBytes`. The whole tail is
+ * the detail contract: `hauler_result` / `hauler_await` answer a
+ * `requestRecordSchema` record.
+ */
+export const statusRowSchema = requestRecordSchema
+  .omit({ outputTail: true, outputTailLive: true })
+  .extend({
+    outputPreview: z.string().max(statusOutputPreviewBytes).nullable(),
+  }) satisfies z.ZodType<StatusRow>;
 
 const statusMetricsPhaseSplitSchema = z.object({
   count: z.number().int().nonnegative(),
@@ -325,7 +345,7 @@ const savingsSchema = z.object({
 
 /** The daemon's `status-result` report: every section is present on every reply. */
 export const statusReportSchema = z.object({
-  active: z.array(requestRecordSchema),
+  active: z.array(statusRowSchema),
   // Null when kache is not configured or its index has not been read yet.
   kache: kacheStatusSchema.nullable(),
   savings: savingsSchema,
@@ -334,7 +354,7 @@ export const statusReportSchema = z.object({
   maxConcurrent: z.number().int(),
   metrics: statusMetricsSchema,
   pid: z.number().int(),
-  recent: z.array(requestRecordSchema),
+  recent: z.array(statusRowSchema),
   socketPath: z.string(),
   startedAtMs: z.number(),
   version: z.string(),
@@ -365,7 +385,8 @@ export const statusInputSchema = z
  * a `stopped` or `unresponsive` daemon yields none of them.
  */
 export interface StatusResult {
-  readonly active: readonly RequestRecord[];
+  /** Bounded summary rows (`statusRowSchema`); read a ticket's tail with `result`. */
+  readonly active: readonly StatusRow[];
   readonly daemon: DaemonStatus;
   readonly kache?: KacheStatusReport | null;
   readonly savings?: AttachmentSavingsReport;
@@ -375,7 +396,7 @@ export interface StatusResult {
   readonly metrics?: StatusMetrics;
   readonly operation: 'status';
   readonly pid: number | null;
-  readonly recent: readonly RequestRecord[];
+  readonly recent: readonly StatusRow[];
   readonly socketPath: string;
   readonly startedAtMs: number | null;
   readonly stateRoot: string;
@@ -385,7 +406,8 @@ export interface StatusResult {
 export interface LogResult {
   readonly daemon: DaemonStatus;
   readonly operation: 'log';
-  readonly requests: readonly RequestRecord[];
+  /** Bounded summary rows, as for status; `result` reads a ticket's tail. */
+  readonly requests: readonly StatusRow[];
   readonly summary: string;
 }
 
@@ -413,7 +435,7 @@ export interface DaemonResult {
 
 export const statusResultSchema = z
   .object({
-    active: z.array(requestRecordSchema),
+    active: z.array(statusRowSchema),
     daemon: daemonStatusSchema,
     kache: kacheStatusSchema.nullable().optional(),
     savings: savingsSchema.optional(),
@@ -423,7 +445,7 @@ export const statusResultSchema = z
     metrics: statusMetricsSchema.optional(),
     operation: z.literal('status'),
     pid: z.number().int().nullable(),
-    recent: z.array(requestRecordSchema),
+    recent: z.array(statusRowSchema),
     socketPath: z.string(),
     startedAtMs: z.number().nullable(),
     stateRoot: z.string(),
@@ -435,7 +457,7 @@ export const logResultSchema = z
   .object({
     daemon: daemonStatusSchema,
     operation: z.literal('log'),
-    requests: z.array(requestRecordSchema),
+    requests: z.array(statusRowSchema),
     summary: z.string(),
   })
   .strict() satisfies z.ZodType<LogResult>;

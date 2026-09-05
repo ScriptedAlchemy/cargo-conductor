@@ -1,10 +1,10 @@
-import type { RequestRecord } from '../daemon/protocol.js';
+import type { TicketSummary } from '../daemon/protocol.js';
 import { commandDisplay, formatMs } from '../lib/format.js';
 import { countWord } from '../lib/text.js';
 
-export const commandText = (record: Pick<RequestRecord, 'argv'>): string => commandDisplay(record.argv);
+export const commandText = (record: Pick<TicketSummary, 'argv'>): string => commandDisplay(record.argv);
 
-export const elapsedMs = (record: RequestRecord, nowMs: number): number | null => {
+export const elapsedMs = (record: TicketSummary, nowMs: number): number | null => {
   switch (record.status) {
     case 'queued':
     case 'requested':
@@ -25,13 +25,13 @@ export const elapsedMs = (record: RequestRecord, nowMs: number): number | null =
 };
 
 export const diagnosticCounts = (
-  record: Pick<RequestRecord, 'errorCount' | 'warningCount'>,
+  record: Pick<TicketSummary, 'errorCount' | 'warningCount'>,
 ): string | null =>
   record.errorCount === null || record.warningCount === null
     ? null
     : `${countWord(record.errorCount, 'error')}, ${countWord(record.warningCount, 'warning')}`;
 
-export const ticketHeadline = (record: RequestRecord, nowMs: number): string => {
+export const ticketHeadline = (record: TicketSummary, nowMs: number): string => {
   const elapsed = elapsedMs(record, nowMs);
   const timing = elapsed === null ? '' : ` ${formatMs(elapsed)}`;
   const estimate =

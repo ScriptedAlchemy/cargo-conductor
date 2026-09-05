@@ -2,11 +2,11 @@ import { describe, expect, it } from 'effect-rstest';
 import * as Effect from 'effect/Effect';
 import * as Fiber from 'effect/Fiber';
 
-import type { RequestRecord, StatusReport } from '../src/daemon/protocol.js';
+import type { StatusReport, TicketSummary } from '../src/daemon/protocol.js';
 
 import { execRequest, findExit, pollReport, scopedDaemon } from './harness.js';
 
-const runningLeader = (report: StatusReport): RequestRecord | undefined =>
+const runningLeader = (report: StatusReport): TicketSummary | undefined =>
   report.active.find((record) => record.status === 'running' && record.attachedTo === null);
 
 const testArgv = ['cargo', 'test', '-p', 'ws1'];

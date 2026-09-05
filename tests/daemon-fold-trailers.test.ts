@@ -6,10 +6,10 @@ import * as Effect from 'effect/Effect';
 import * as Fiber from 'effect/Fiber';
 
 import type {
-  RequestRecord,
   RequeuedMessage,
   ServerMessage,
   StatusReport,
+  TicketSummary,
 } from '../src/daemon/protocol.js';
 import { cargoJsonDemuxFlag } from '../src/lib/argv.js';
 
@@ -68,7 +68,7 @@ const stagedCargo = (
 const queuedCount = (report: StatusReport): number =>
   report.active.filter((record) => record.status === 'queued').length;
 
-const recordFor = (report: StatusReport, ticket: string): RequestRecord | undefined =>
+const recordFor = (report: StatusReport, ticket: string): TicketSummary | undefined =>
   [...report.active, ...report.recent].find((record) => record.ticket === ticket);
 
 const settled =

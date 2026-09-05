@@ -249,6 +249,43 @@ export interface RequestRecord {
   readonly orphaned?: boolean;
 }
 
+/**
+ * Bytes of a running ticket's live output a status row carries (#95). The
+ * bound is part of the status contract (`statusRowSchema`), independent of
+ * `outputTailBytes` — the 16 KiB a `RequestRecord` tail may hold — so a
+ * status document's size follows the number of rows, not what each printed.
+ */
+export const statusOutputPreviewBytes = 512;
+
+/** Lines of a running ticket's live output a status row carries. */
+export const statusOutputPreviewLines = 8;
+
+/**
+ * One request as the status report lists it: the bounded summary contract.
+ * A status row never carries an output tail — not the settled 16 KiB tail
+ * the ledger stores, not the live in-memory tail of a running job. A running
+ * row carries `outputPreview`, the last `statusOutputPreviewLines` lines
+ * (at most `statusOutputPreviewBytes`) of its live output, cut at a line
+ * boundary; every other row has `null`. The whole tail is the detail
+ * contract: `result` / `await` answer a `RequestRecord` (#95).
+ */
+export interface StatusRow extends TicketSummary {
+  readonly outputPreview: string | null;
+}
+
+/**
+ * A request without its output tail: what every listing surface (status
+ * rows, log rows, lane boards) reads. A `RequestRecord` is one, so detail
+ * readers can pass their record to the same components.
+ */
+export type TicketSummary = Omit<RequestRecord, 'outputTail' | 'outputTailLive'>;
+
+/** The status row for a record: the tail fields dropped, the preview supplied by the caller. */
+export const toStatusRow = (record: RequestRecord, outputPreview: string | null = null): StatusRow => {
+  const { outputTail: _outputTail, outputTailLive: _outputTailLive, ...summary } = record;
+  return { ...summary, outputPreview };
+};
+
 export interface TransitionRecord {
   readonly requestId: number;
   readonly atMs: number;
@@ -613,8 +650,9 @@ export interface StatusReport {
   readonly socketPath: string;
   readonly maxConcurrent: number;
   readonly lanes: readonly LaneStatus[];
-  readonly active: readonly RequestRecord[];
-  readonly recent: readonly RequestRecord[];
+  /** In-flight requests as bounded summary rows; the whole tail is behind `result` / `await`. */
+  readonly active: readonly StatusRow[];
+  readonly recent: readonly StatusRow[];
   readonly metrics: StatusMetrics;
   readonly savings: AttachmentSavingsReport;
   /**

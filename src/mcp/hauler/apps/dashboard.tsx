@@ -32,6 +32,7 @@ import {
   metricsWindowIds,
   metricsWindowLabel,
   memoryStatView,
+  outputPreviewLine,
   outputTextFor,
   pathBasename,
   percentileMinSamples,
@@ -205,6 +206,8 @@ interface RequestRow {
   readonly intentJson?: unknown;
   readonly errorCount?: unknown;
   readonly warningCount?: unknown;
+  /** A running row's bounded live-output preview; null on every other row (#95). */
+  readonly outputPreview?: unknown;
 }
 
 interface LaneRow {
@@ -333,9 +336,10 @@ export const statusAtom = Atom.make(
 );
 
 /**
- * Follow-up fetch for the detail drawer: status rows arrive with their
- * output tail stripped (the daemon nulls `outputTail` to keep status small),
- * while `hauler_result` reads the full ledger record, tail included.
+ * Follow-up fetch for the detail drawer: status rows are the bounded summary
+ * contract and never carry a tail (#95); `hauler_result` returns the whole
+ * record — the ledger tail once settled, the daemon's full live tail while
+ * the run is in progress.
  */
 const fetchTicketRecord = async (ticketId: string): Promise<unknown> => {
   const response = await rpcRequest('tools/call', {
@@ -706,9 +710,23 @@ const Command = ({ row }: { readonly row: RequestRow }): ReactNode => {
   );
 };
 
+/**
+ * The last line a running ticket printed, from the status row's bounded
+ * `outputPreview` (#95); nothing for rows without one. The drawer, not this
+ * line, is where the whole live tail lives.
+ */
+const OutputPreview = ({ row }: { readonly row: RequestRow }): ReactNode => {
+  const line = outputPreviewLine(row);
+  return line === null ? null : (
+    <div className="tail-preview" title={typeof row.outputPreview === 'string' ? row.outputPreview : line}>
+      {line}
+    </div>
+  );
+};
+
 const requestCells = (row: RequestRow): readonly ReactNode[] => [
   ticket(row.ticket),
-  <><Command row={row} /><DiagBadges row={row} /></>,
+  <><Command row={row} /><DiagBadges row={row} /><OutputPreview row={row} /></>,
   workspace(row.workspaceRoot),
   who(row),
 ];
@@ -933,8 +951,9 @@ const DrawerOutput = ({ state }: { readonly state: Exclude<DrawerState, { _tag: 
     case 'Failed':
       return <p className="drawer-error">Could not load output: {state.message}</p>;
     case 'Loaded': {
-      // A live daemon nulls outputTail on status rows; the rendered
-      // diagnostics the ledger kept are the next-best evidence.
+      // The detail comes from hauler_result (whole tail); a finished row
+      // whose result carries none falls back to the rendered diagnostics the
+      // ledger kept.
       const text = outputTextFor(state.detail);
       if (text === null) {
         return (
@@ -1604,8 +1623,9 @@ const DashboardContent = ({ structured }: { readonly structured: StructuredConte
     }
     const seq = ++drawerSeq.current;
     setDrawer({ _tag: 'Loading', detail: base });
-    // While the run is live the daemon overlays an in-progress output tail
-    // onto the result record, so keep re-fetching until the ticket settles
+    // While the run is live the daemon overlays its whole in-progress output
+    // tail onto the hauler_result record (the status row only carries a
+    // last-lines preview), so keep re-fetching until the ticket settles
     // (seq guard cancels the loop when the drawer closes or switches rows).
     const liveRefreshMs = 3_000;
     const load = (): void => {
