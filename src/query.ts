@@ -8,7 +8,7 @@ import { resolveDaemonConfig } from './daemon/config.js';
 import type { DaemonConfigShape } from './daemon/config.js';
 import { requestExpecting } from './daemon/control.js';
 import { createLedgerApi, openLedgerDatabase, openLedgerDatabaseReadOnly } from './daemon/ledger.js';
-import { isOrphanedByRestart, orphanedByRestartError } from './daemon/protocol.js';
+import { isOrphanedByRestart, orphanedByRestartError, toStatusRow } from './daemon/protocol.js';
 import type {
   AttachmentSavingsReport,
   KacheStatusReport,
@@ -17,6 +17,7 @@ import type {
   StatusMetrics,
   StatusReport,
   StatusResultMessage,
+  StatusRow,
   SystemLoadReport,
 } from './daemon/protocol.js';
 import { stripAnsi } from './lib/ansi.js';
@@ -25,7 +26,7 @@ import { statusReportSchema, type DaemonStatus } from './lib/protocol-schemas.js
 import { countWord } from './lib/text.js';
 
 export interface HaulerSnapshot {
-  readonly active: readonly RequestRecord[];
+  readonly active: readonly StatusRow[];
   readonly daemon: DaemonStatus;
   readonly kache?: KacheStatusReport | null;
   readonly lanes: readonly LaneStatus[];
@@ -34,7 +35,7 @@ export interface HaulerSnapshot {
   readonly savings?: AttachmentSavingsReport;
   readonly system?: SystemLoadReport;
   readonly pid: number | null;
-  readonly recent: readonly RequestRecord[];
+  readonly recent: readonly StatusRow[];
   readonly report: StatusReport | null;
   readonly socketPath: string;
   readonly startedAtMs: number | null;
@@ -116,9 +117,15 @@ export const displayRequestRecord = (record: RequestRecord): RequestRecord => ({
   diagnostics: record.diagnostics === null ? null : record.diagnostics.map(stripAnsi),
 });
 
-export const displayRequestRecords = (
-  records: readonly RequestRecord[],
-): readonly RequestRecord[] => records.map(displayRequestRecord);
+/** The status-row counterpart: the bounded preview and diagnostics, ANSI stripped. */
+export const displayStatusRow = (row: StatusRow): StatusRow => ({
+  ...row,
+  outputPreview: row.outputPreview === null ? null : stripAnsi(row.outputPreview),
+  diagnostics: row.diagnostics === null ? null : row.diagnostics.map(stripAnsi),
+});
+
+export const displayStatusRows = (rows: readonly StatusRow[]): readonly StatusRow[] =>
+  rows.map(displayStatusRow);
 
 const stoppedSummary = (recentCount: number): string => {
   if (recentCount === 0) {
@@ -176,6 +183,27 @@ const fromLiveReport = (raw: unknown, config: DaemonConfigShape): Effect.Effect<
     Effect.map((report) => fromReport(report, config)),
   );
 
+/**
+ * One ticket's detail record straight from the ledger, for the read-only
+ * surfaces when no daemon answers: `hauler last` shows the settled tail the
+ * status listing leaves out. Null when the ledger has no such ticket (or no
+ * database yet).
+ */
+export const loadLedgerRequest = (
+  ticket: string,
+  config: DaemonConfigShape = resolveDaemonConfig(),
+): Effect.Effect<RequestRecord | null> => {
+  if (!existsSync(config.databasePath)) {
+    return Effect.succeed(null);
+  }
+  return Effect.scoped(
+    Effect.gen(function* () {
+      const db = yield* acquireSnapshotDb(config.databasePath);
+      return yield* createLedgerApi(db).getRequestByTicket(ticket);
+    }),
+  );
+};
+
 const emptyStopped = (config: DaemonConfigShape): HaulerSnapshot =>
   withReport(
     {
@@ -217,8 +245,10 @@ const fromLedger = (
     Effect.gen(function* () {
       const db = yield* acquireSnapshotDb(config.databasePath);
       const ledger = createLedgerApi(db);
-      const recent = yield* ledger.recentRequests(recentLimit);
-      const active = yield* ledger.activeRequests();
+      // The ledger path reads full records; the snapshot lists them as status
+      // rows, so a stopped daemon's listing is the same bounded contract.
+      const recent = (yield* ledger.recentRequests(recentLimit)).map((record) => toStatusRow(record));
+      const active = (yield* ledger.activeRequests()).map((record) => toStatusRow(record));
       const savings = yield* ledger.attachmentSavings();
       return withReport(
         {

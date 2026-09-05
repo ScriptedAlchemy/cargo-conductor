@@ -2,11 +2,17 @@ import { describe, expect, it } from 'effect-rstest';
 
 import { inputSchema as cliAwaitInputSchema } from '../src/cli/await.js';
 import { inputSchema as cliStatusInputSchema } from '../src/cli/status.js';
-import { awaitCeilingMs, requestStatuses } from '../src/daemon/protocol.js';
+import {
+  awaitCeilingMs,
+  requestStatuses,
+  statusRequestSchema,
+} from '../src/daemon/protocol.js';
 import {
   awaitResultSchema,
+  logResultSchema,
   requestRecordSchema,
   resultFetchResultSchema,
+  statusRowSchema,
   statusReportSchema,
   statusResultSchema,
   statusInputSchema,
@@ -180,7 +186,7 @@ const system = { clampThresholdPerCore: null, cores: 16, loadAvg1: 3.2, memClamp
 /** A status report exactly as the daemon answers `status`: the broker's report plus the server's `version`. */
 const report = {
   active: [
-    { ...baseRecord, exitCode: null, finishedAtMs: null, runMs: null, status: 'running', ticket: 'cc-2' },
+    { ...baseRecord, exitCode: null, finishedAtMs: null, outputPreview: null, runMs: null, status: 'running', ticket: 'cc-2' },
   ],
   kache,
   lanes: [
@@ -196,7 +202,7 @@ const report = {
   maxConcurrent: 5,
   metrics,
   pid: 42,
-  recent: [baseRecord],
+  recent: [{ ...baseRecord, outputPreview: null }],
   savings,
   socketPath: '/tmp/cc/daemon.sock',
   startedAtMs: 1,
@@ -371,6 +377,33 @@ describe('status/result contract completeness (issue #16)', () => {
     expect(settled.request?.outputTailLive).toBeUndefined();
   });
 
+  it('strips detail tail fields from status rows and bounds the output preview (#95)', () => {
+    const previewRow = {
+      ...diagnosedRecord,
+      exitCode: null,
+      finishedAtMs: null,
+      outputPreview: '   Compiling tracedecay v0.1.0\n',
+      outputTailLive: true,
+      runMs: null,
+      status: 'running',
+      ticket: 'cc-2',
+    };
+    const parsed = statusRowSchema.parse(previewRow);
+    expect(parsed.outputPreview).toBe('   Compiling tracedecay v0.1.0\n');
+    expect(parsed).not.toHaveProperty('outputTail');
+    expect(parsed).not.toHaveProperty('outputTailLive');
+    expect(statusRowSchema.safeParse({ ...previewRow, outputPreview: 'x'.repeat(513) }).success).toBe(false);
+
+    const logged = logResultSchema.parse({
+      daemon: 'running',
+      operation: 'log',
+      requests: [previewRow],
+      summary: 'one request',
+    });
+    expect(logged.requests[0]?.outputPreview).toBe(previewRow.outputPreview);
+    expect(logged.requests[0]).not.toHaveProperty('outputTail');
+  });
+
   it('accepts optional queue, delayed-wait, and quiet-output status fields', () => {
     const queued = requestRecordSchema.parse({
       ...baseRecord,
@@ -473,8 +506,8 @@ describe('status/result contract completeness (issue #16)', () => {
   it('accepts diagnosed records in status report active/recent lists', () => {
     const parsed = statusReportSchema.parse({
       ...report,
-      active: [{ ...diagnosedRecord, status: 'running' }],
-      recent: [diagnosedRecord],
+      active: [{ ...diagnosedRecord, outputPreview: null, status: 'running' }],
+      recent: [{ ...diagnosedRecord, outputPreview: null }],
     });
     expect(parsed.recent[0]?.diagnostics).toHaveLength(1);
     expect(parsed.active[0]?.status).toBe('running');
@@ -512,6 +545,25 @@ describe('daemon-sourced payload shape (issue #4)', () => {
       statuses: ['queued', 'running'],
       tickets: ['cc-260', 'cc-261'],
     });
+  });
+
+  it('rejects includeOutputTail at strict inputs and strips it from daemon messages (#95)', () => {
+    expect(statusInputSchema.safeParse({ includeOutputTail: true }).success).toBe(false);
+    expect(statusRequestSchema.parse({ id: 'r1', includeOutputTail: true, limit: 40, type: 'status' })).toEqual({
+      id: 'r1',
+      limit: 40,
+      type: 'status',
+    });
+  });
+
+  it('keeps the inline CLI status schema pinned to the shared status input keys', () => {
+    const normalizedCliKeys = Object.keys(cliStatusInputSchema.shape).map((key) => {
+      if (key === 'lane') return 'laneKey';
+      if (key === 'ticket') return 'tickets';
+      if (key === 'status') return 'statuses';
+      return key;
+    });
+    expect(normalizedCliKeys.sort()).toEqual(Object.keys(statusInputSchema.shape).sort());
   });
 
   it('strips record keys the schema does not declare instead of rejecting the row', () => {

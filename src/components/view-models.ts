@@ -4,8 +4,8 @@ import type {
   KacheStatusReport,
   LaneStatus,
   PrerequisiteContext,
-  RequestRecord,
   SystemLoadReport,
+  TicketSummary,
 } from '../daemon/protocol.js';
 import type { DaemonHealth } from '../lib/daemon-health.js';
 import { formatBytes, formatMs, heavyCapNote, pathBasename, relativeTime, shortenPath } from '../lib/format.js';
@@ -135,7 +135,7 @@ export const laneName = (lane: Pick<LaneStatus, 'workspaceRoot' | 'targetDir'>):
 
 export const laneBoardModel = (
   lanes: readonly LaneStatus[],
-  active: readonly RequestRecord[],
+  active: readonly TicketSummary[],
   nowMs: number,
 ): LaneBoardModel => {
   const byTicket = new Map(active.map((record) => [record.ticket, record]));
@@ -314,7 +314,7 @@ export interface TicketCardModel {
   readonly where: string;
 }
 
-const attachText = (record: RequestRecord): string | null => {
+const attachText = (record: TicketSummary): string | null => {
   if (record.attachedTo === null) {
     return null;
   }
@@ -334,12 +334,12 @@ const prerequisiteText = (prerequisite: PrerequisiteContext): string => {
 };
 
 /** What a queued ticket is waiting on: prerequisites first (it has no lane position while blocked), then the lane. */
-export const waitsForText = (record: RequestRecord): string | null =>
+export const waitsForText = (record: TicketSummary): string | null =>
   record.waitingFor === undefined || record.waitingFor.length === 0
     ? null
     : `waits for ${record.waitingFor.map(prerequisiteText).join(', ')}`;
 
-const queueText = (record: RequestRecord): string | null => {
+const queueText = (record: TicketSummary): string | null => {
   const queue = record.queue;
   if (record.status !== 'queued') {
     return null;
@@ -362,7 +362,7 @@ const queueText = (record: RequestRecord): string | null => {
  * output (#46). Riders share the process, so the kill names the leader; an
  * orphaned leader is one whose submitting connection is gone.
  */
-const stalledText = (record: RequestRecord): string | null => {
+const stalledText = (record: TicketSummary): string | null => {
   if (record.status !== 'running' || record.stall === undefined) {
     return null;
   }
@@ -370,7 +370,7 @@ const stalledText = (record: RequestRecord): string | null => {
   return `looks stalled: no CPU for ${formatMs(record.stall.idleMs)} and no output${owner} — hauler kill ${record.attachedTo ?? record.ticket}`;
 };
 
-const ranAs = (record: RequestRecord): string | null => {
+const ranAs = (record: TicketSummary): string | null => {
   if (record.execArgv === null) {
     return null;
   }
@@ -379,7 +379,7 @@ const ranAs = (record: RequestRecord): string | null => {
   return same ? null : cleaned.join(' ');
 };
 
-export const ticketCardModel = (record: RequestRecord, nowMs: number): TicketCardModel => {
+export const ticketCardModel = (record: TicketSummary, nowMs: number): TicketCardModel => {
   const who = [record.host, record.session].filter((part) => part !== null).join(' / ');
   return {
     after: record.after.length === 0 ? null : record.after.join(', '),
@@ -454,7 +454,7 @@ const isSummaryDiagnostic = (row: DiagnosticRowModel): boolean =>
   );
 
 export const buildDiagnosticsModel = (
-  record: Pick<RequestRecord, 'diagnostics' | 'errorCount' | 'warningCount'>,
+  record: Pick<TicketSummary, 'diagnostics' | 'errorCount' | 'warningCount'>,
 ): BuildDiagnosticsModel => {
   const blocks = record.diagnostics ?? [];
   const rows = blocks.flatMap((block) => {

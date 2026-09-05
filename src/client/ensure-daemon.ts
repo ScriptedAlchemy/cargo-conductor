@@ -200,9 +200,11 @@ export const defaultEnsureDependencies: EnsureDaemonDependencies = {
  * ship together, so a daemon answering with another version is one left
  * running from a previous install, and it is replaced here on the next call
  * — the graceful `shutdown` request, a wait for its pid to exit, then the
- * usual detached spawn. Its in-flight tickets are not handed over: the new
- * daemon marks them `killed` with `orphaned by daemon restart` on its first
- * ledger pass, exactly as `hauler daemon restart` does. The old daemon is
+ * usual detached spawn. Its in-flight tickets are not handed over: the old
+ * daemon settles them itself as it shuts down (`killed`, error `daemon
+ * shutdown`), exactly as under `hauler daemon restart`; only rows a daemon
+ * that died without shutting down never marked are stamped `orphaned by
+ * daemon restart` by the next daemon's first ledger pass. The old daemon is
  * never signalled past the request; one that outlives the grace fails this
  * call as `DaemonNotReplaced` and keeps serving.
  */

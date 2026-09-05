@@ -25,6 +25,9 @@ const fakeCargoScript = `#!/usr/bin/env bash
 echo "fake-out:$*"
 echo "fake-err:$*" >&2
 echo "fake-jobs:\${CARGO_BUILD_JOBS:-none}" >&2
+if [ -n "\${FAKE_OUTPUT_BYTES:-}" ]; then
+  yes "fake-bulk:0123456789abcdef0123456789abcdef0123456789abcdef" | head -c "\$FAKE_OUTPUT_BYTES"
+fi
 if [ -n "\${FAKE_OUTPUT_COUNT:-}" ]; then
   fake_output_index=0
   while [ "\$fake_output_index" -lt "\$FAKE_OUTPUT_COUNT" ]; do
@@ -187,6 +190,8 @@ export interface ExecOptions {
   readonly session?: string;
   readonly host?: string;
   readonly sleep?: string;
+  /** Bytes of `fake-bulk:…` lines the fake cargo prints to stdout at once, before any sleep. */
+  readonly outputBytes?: string;
   /** Seconds after which the fake cargo prints cargo's `Finished … target(s)` line to stderr. */
   readonly finishedAfter?: string;
   readonly exit?: string;
@@ -203,6 +208,9 @@ export const execRequest = (fixture: Fixture, options: ExecOptions) => {
   };
   if (options.sleep !== undefined) {
     env.FAKE_SLEEP = options.sleep;
+  }
+  if (options.outputBytes !== undefined) {
+    env.FAKE_OUTPUT_BYTES = options.outputBytes;
   }
   if (options.finishedAfter !== undefined) {
     env.FAKE_FINISHED_AFTER = options.finishedAfter;
@@ -233,7 +241,11 @@ export const execRequest = (fixture: Fixture, options: ExecOptions) => {
 export const fetchReport = (fixture: Fixture): Effect.Effect<StatusReport, unknown> =>
   requestOverSocket({
     socketPath: fixture.config.socketPath,
-    message: { type: 'status', id: shortId(), limit: 100 },
+    message: {
+      type: 'status',
+      id: shortId(),
+      limit: 100,
+    },
     isTerminal: (message) => message.type === 'status-result',
   }).pipe(
     Effect.map((messages) => {

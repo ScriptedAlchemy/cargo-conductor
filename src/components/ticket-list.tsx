@@ -1,6 +1,6 @@
 import React from 'react';
 
-import type { RequestRecord } from '../daemon/protocol.js';
+import type { TicketSummary } from '../daemon/protocol.js';
 import { formatMs, relativeTime, shortenPath } from '../lib/format.js';
 
 import { commandText, elapsedMs } from './headlines.js';
@@ -12,10 +12,10 @@ export interface TicketListProps {
   readonly empty?: string;
   readonly heading?: string;
   readonly nowMs: number;
-  readonly records: readonly RequestRecord[];
+  readonly records: readonly TicketSummary[];
 }
 
-const outcome = (record: RequestRecord, nowMs: number): string => {
+const outcome = (record: TicketSummary, nowMs: number): string => {
   const elapsed = elapsedMs(record, nowMs);
   const timing = elapsed === null ? '' : ` ${formatMs(elapsed)}`;
   switch (record.status) {
@@ -52,7 +52,7 @@ const outcome = (record: RequestRecord, nowMs: number): string => {
   }
 };
 
-const where = (record: RequestRecord): string =>
+const where = (record: TicketSummary): string =>
   [record.host, record.session, shortenPath(record.cwd, 30)].filter((part) => part !== null).join(' · ');
 
 /** A table of tickets — the in-flight and recent sections of status, and the whole of log. */

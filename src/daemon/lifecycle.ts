@@ -283,8 +283,10 @@ const versionText = (identity: DaemonIdentity | null): string =>
  * for the old pid to exit, then the usual start. A daemon of another version
  * is replaced automatically by `ensureDaemonRunning` on the next call; this
  * command replaces a daemon of any version. In-flight tickets are not handed
- * over: the new daemon marks them `killed` with `orphaned by daemon restart`
- * on its first ledger pass. The old daemon is never signalled past the
+ * over: the old daemon settles them itself as it shuts down (`killed`, error
+ * `daemon shutdown`); `orphaned by daemon restart` is stamped by the next
+ * daemon's first ledger pass only on rows a daemon that died without shutting
+ * down never marked. The old daemon is never signalled past the
  * shutdown request; one that does not exit within the grace is reported,
  * not killed.
  */

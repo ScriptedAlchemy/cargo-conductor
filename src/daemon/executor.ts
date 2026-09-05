@@ -97,6 +97,40 @@ export class TailBuffer {
     // partial multi-byte UTF-8 character is acceptable (lossy head).
     return Buffer.concat(this.#chunks.slice(this.#head), this.#bytes).toString('utf8');
   }
+
+  /** Bytes currently retained (at most the capacity). */
+  get byteLength(): number {
+    return this.#bytes;
+  }
+
+  /**
+   * The last `maxBytes` bytes as UTF-8 — the whole buffer when it holds no
+   * more than that. Walks only the trailing chunks, so a small suffix of a
+   * large tail costs the suffix, not the tail. Same lossy head as
+   * `toString`: a split multi-byte character decodes as U+FFFD.
+   */
+  tail(maxBytes: number): string {
+    const wanted = Math.max(0, Math.min(Math.floor(maxBytes), this.#bytes));
+    if (wanted === this.#bytes) {
+      return this.toString();
+    }
+    const parts: Buffer[] = [];
+    let remaining = wanted;
+    for (let index = this.#chunks.length - 1; index >= this.#head && remaining > 0; index -= 1) {
+      const chunk = this.#chunks[index];
+      if (chunk === undefined) {
+        break;
+      }
+      if (chunk.byteLength <= remaining) {
+        parts.unshift(chunk);
+        remaining -= chunk.byteLength;
+      } else {
+        parts.unshift(chunk.subarray(chunk.byteLength - remaining));
+        remaining = 0;
+      }
+    }
+    return Buffer.concat(parts, wanted).toString('utf8');
+  }
 }
 
 const signalPattern = /signal:\s*'?(\w+)'?/;

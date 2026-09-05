@@ -301,7 +301,7 @@ describe('json demux early release', () => {
       const followerRecord = report.recent.find(
         (record) => record.ticket === followerExit.ticket,
       );
-      expect(followerRecord?.outputTail).toBeNull();
+      expect(followerRecord).not.toHaveProperty('outputTail');
       const ledger = yield* scopedLedger(fixture.config);
       const durableFollower = yield* ledger.getRequestByTicket(followerExit.ticket);
       expect(durableFollower?.outputTail).not.toContain('replay must hide bb');

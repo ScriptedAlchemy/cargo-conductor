@@ -74,28 +74,32 @@ checkout? See [Install](#install).
 | Command | Behavior |
 | --- | --- |
 | `hauler exec [--session ID] [--host HOST] [--cwd DIR] [--bg] [--after TICKET[,TICKET…]] -- <cargo …>` | Submit Cargo through the daemon and stream output; hooks rewrite commands to this form. A relative `--cwd` is resolved against the caller's directory. `--after` (repeatable or comma-separated) keeps the request queued until every named ticket has finished; it fails with `prerequisite cc-N <status>` if one of them fails or is killed, and an unknown ticket is rejected as a bad intent. Exits with cargo's code; `130`/`143` after a SIGINT/SIGTERM (the ticket is killed first); `75` when auto-backgrounded. |
-| `hauler status [--limit N] [--cwd DIR] [--session ID] [--lane KEY] [--ticket ID …] [--status S …] [--command-contains TEXT]` | Queue, active runs, lanes, admission, kache, optionally filtered. |
-| `hauler log [--limit N]` | Recent requests from the ledger. |
-| `hauler last` | The most recent request. |
+| `hauler status [--limit N] [--cwd DIR] [--session ID] [--lane KEY] [--ticket ID …] [--status S …] [--command-contains TEXT]` | Queue, active runs, lanes, admission, kache, optionally filtered. Rows are bounded summaries: no row carries an output tail; a running row carries `outputPreview`, the last 8 lines (at most 512 bytes) of its live output, cut at a line boundary, and every other row has `outputPreview: null`. Read a ticket's whole tail with `hauler result`. |
+| `hauler log [--limit N]` | Recent requests from the ledger, as the same bounded summary rows. |
+| `hauler last` | The most recent request, as a detail record (from the daemon while it is running, otherwise from the ledger) — its output tail included. |
 | `hauler await <ticket> [--max-wait-ms N]` | Long-poll until the ticket finishes or the wait expires (default 30 s, ceiling 2 h per call — the daemon's await ceiling; call again to keep waiting). A host with its own per-call deadline still bounds one call: Codex stops a tool call at `tool_timeout_sec` (60 s unless raised). |
-| `hauler result <ticket> [--full]` | A stored ticket; running tickets include a live output tail. The document names the full on-disk output log (`Full output: <path> (size)`) and `--json` carries it as `request.outputPath`; `--full` prints that whole log instead of the tail (the last ~768 KiB when it does not fit, with the path for the rest). |
+| `hauler result <ticket> [--full]` | A stored ticket in full: the settled 16 KiB output tail, or the whole live in-memory tail while it runs (not the status preview). The document names the full on-disk output log (`Full output: <path> (size)`) and `--json` carries it as `request.outputPath`; `--full` prints that whole log instead of the tail (the last ~768 KiB when it does not fit, with the path for the rest). |
 | `hauler kill <ticket>` | Stop a ticket: drop it from the queue or SIGTERM (then SIGKILL) its cargo process group, freeing the lane. Riders return to their lane or fail with it. |
 | `hauler request [--session ID] [--host HOST] [--cwd DIR] [--after TICKET …] -- <cargo …>` | Submit a background request and return its ticket, with where it landed in its lane (`queued behind cc-3281 (~13m)`, `waiting for cc-3281`, or `attached to cc-3281`). `--after` works as for `exec`. |
-| `hauler daemon <run\|start\|stop\|status\|restart>` | Manage the daemon lifecycle. `restart` is the manual replacement: it sends the graceful stop, waits up to 5 s for the old pid to exit, then starts a daemon from this install and prints both (`restarted: pid 741314 (0.6.0) → pid 742001 (0.6.1)`); a daemon that has not exited by then is reported, not killed, and nothing is started (exit `1`). Tickets in flight at the restart are not handed over: the new daemon marks them `killed` with the error `orphaned by daemon restart`. After upgrading the package, the next `hauler exec`, `hauler request`, hook rewrite, or `hauler daemon start` replaces a daemon from the previous install automatically the same way; when the old daemon has not exited within the grace, that call fails with `` cargo-hauler daemon pid N (X.Y.Z) is still running 5s after the shutdown request; not restarted — retry once it has exited, or stop it with `hauler daemon stop` `` instead of starting a second daemon. |
+| `hauler daemon <run\|start\|stop\|status\|restart>` | Manage the daemon lifecycle. `restart` is the manual replacement: it sends the graceful stop, waits up to 5 s for the old pid to exit, then starts a daemon from this install and prints both (`restarted: pid 741314 (0.6.0) → pid 742001 (0.6.1)`); a daemon that has not exited by then is reported, not killed, and nothing is started (exit `1`). Tickets in flight are not handed over: the old daemon settles them itself as it shuts down — `killed`, error `daemon shutdown` — and callers resubmit (only rows a daemon that died without shutting down never marked are stamped `orphaned by daemon restart` by the next daemon's first ledger pass). After upgrading the package, the next `hauler exec`, `hauler request`, hook rewrite, or `hauler daemon start` replaces a daemon from the previous install automatically the same way; when the old daemon has not exited within the grace, that call fails with `` cargo-hauler daemon pid N (X.Y.Z) is still running 5s after the shutdown request; not restarted — retry once it has exited, or stop it with `hauler daemon stop` `` instead of starting a second daemon. |
 | `hauler install-shim [--dir DIR] [--real-cargo PATH] [--force]` | Install the optional PATH shim. |
 | `hauler dashboard [--target claude\|codex\|cursor\|portable] [--port N] [--no-open]` | Open the dashboard in a plain browser tab: serve the MCP App standalone against the plugin's own `hauler` server on `127.0.0.1` (through `agent-bundle serve-app`), call `hauler_status` once so it opens populated, and stay in the foreground until Ctrl-C. A checkout command: it needs the built `artifact/` beside the CLI and `agent-bundle` under `node_modules` (`pnpm install && pnpm build`); the npm package ships no runtime dependencies and an installed host pack has no artifact, so both report what is missing. In an MCP host, call `hauler_status` instead. |
 
 The `hauler` MCP server projects the same operations as `hauler_status`,
 `hauler_log`, `hauler_last`, `hauler_await`, `hauler_result`, `hauler_kill`,
-and `hauler_request`, with the same filters as the CLI.
+and `hauler_request`, with the same filters as the CLI. `hauler_status` and
+`hauler_log` rows are the same bounded summaries (`outputPreview`, never a
+tail); `hauler_result`, `hauler_await`, and `hauler_last` carry the whole
+tail.
 
 ## Dashboard
 
 The dashboard is an MCP App (`ui://cargo-hauler/dashboard.html`) attached to
 `hauler_status`. It shows contention and admission, in-flight and queued work
-with live output per ticket, metrics over one-hour, 24-hour, and all-time
-windows, per-command timings, optional kache data, lanes, and history. It
-refreshes itself while open. Outside an MCP host, `hauler dashboard` (from the
+— each running row with the last line of its output preview, each ticket's
+drawer with the whole tail fetched through `hauler_result` — metrics over
+one-hour, 24-hour, and all-time windows, per-command timings, optional kache
+data, lanes, and history. It polls `hauler_status` every 5 s while open. Outside an MCP host, `hauler dashboard` (from the
 plugin checkout) serves the same App in a plain browser tab against the
 running daemon.
 
@@ -305,7 +309,15 @@ own `-j` flag or `CARGO_BUILD_JOBS` always wins over both.
 
 Every request has a durable ticket (`cc-<n>`). Its status, exit code, output
 tail, estimate, and timestamps are stored in SQLite and can be read from later
-sessions. The ledger keeps only a bounded tail (16 KiB); the run's whole
+sessions. The ledger keeps only a bounded tail (16 KiB), and the tail is a
+detail: `hauler result` / `hauler_result`, `hauler await`, and `hauler last`
+carry it — the settled tail of a finished ticket, or the whole live in-memory
+tail while the run is in progress. The summary documents (`hauler status`,
+`hauler_status`, `hauler log`, the dashboard's 5 s poll) never carry a tail: a
+running row has `outputPreview`, the last 8 lines (at most 512 bytes) of its
+live output cut at a line boundary, and every other row `outputPreview: null`,
+so a running ticket adds at most 512 bytes of output to a status document
+instead of up to 16 KiB. The run's whole
 combined stdout+stderr goes to `<state dir>/tickets/<ticket>.log` as the daemon
 emits it — for a demultiplexed `check`/`build`/`clippy` that is the rendered
 diagnostics stream, not cargo's JSON — up to `CARGO_HAULER_TICKET_LOG_MAX_BYTES`
@@ -368,17 +380,26 @@ error `stalled: no CPU for Nm after owner disconnected; killed automatically`.
 tickets (`--bg`, `hauler_request`) have no streaming connection and are only
 ever flagged.
 
-Tickets do not survive a daemon restart. `hauler daemon restart` (or `stop`
-then `start`) ends every queued or running ticket: the cargo processes die
-with the daemon, and the new daemon's first ledger pass marks each of them
-`killed` with the error `orphaned by daemon restart`, so `hauler result cc-N`
+Tickets do not survive a daemon stop; runs are never handed over to the next
+daemon. How a ticket ends depends on how the daemon went. A graceful stop —
+`hauler daemon restart`, `hauler daemon stop`, or the automatic replacement of
+a daemon from another install by the next `hauler exec`, `hauler request`,
+hook call, or `hauler daemon start` — is the shutdown request, and the old
+daemon settles every queued, running, and attached ticket itself as it exits:
+its cargo processes are terminated (SIGTERM, then SIGKILL after
+`CARGO_HAULER_KILL_GRACE_MS`) and each row is marked `killed` with the error
+`daemon shutdown`, so `hauler result cc-N` shows the ticket `killed` with
+`daemon shutdown` as its error and ends with `cc-N was killed before
+finishing; resubmit only if the work is still needed.` A daemon that died
+without shutting down — SIGKILL, a crash, an out-of-memory kill, a power loss
+— never marked its rows, so they still read `queued` or `running` in the
+ledger until the next daemon's first ledger pass marks each of them `killed`
+with the error `orphaned by daemon restart`; `hauler result cc-N` then
 answers `cc-N killed — orphaned by daemon restart: the daemon stopped while it
 was in flight and does not hand runs over; resubmit if the work is still
-needed` rather than looking like a failure of the command itself. After
-upgrading the package, the next `hauler exec`, `hauler request`, or hook call
-replaces a daemon from the previous install automatically the same way — its
-in-flight tickets end `killed` (`orphaned by daemon restart`) and callers
-resubmit — so finish or `hauler kill` what matters before upgrading.
+needed` rather than looking like a failure of the command itself. Either way
+the work is gone, so finish or `hauler kill` what matters before upgrading or
+restarting, and resubmit what is still needed.
 
 The `tool/after` hook checks the session's background tickets — `--bg`,
 `hauler_request`, and synchronous requests the client converted to a ticket
@@ -724,7 +745,7 @@ assertion share one derivation.
 | `<LaneBoard>` | busy lanes with their leader ticket, its command, and how long it has run |
 | `<AdmissionState>` | permits in use, load, memory clamp, sharing savings; calls out a paused admission gate |
 | `<KacheStats>` | kache coverage and freshness, slowest crates by profile, or an honest "not detected" |
-| `<LogTail>` | the captured output tail, labelled live while the run is in progress |
+| `<LogTail>` | the captured output tail of a detail record, labelled live while the run is in progress; summary rows carry only `outputPreview` and render no tail |
 | `<FullOutput>` | where the ticket's whole output log lives and how large it is; under `full`, the log itself in code-block chunks |
 | `<BuildDiagnostics>` | an index of cargo `error[E…]`/`warning:` blocks (level / code / message / location) followed by every captured block verbatim |
 | `<DashboardLink>` | where the MCP App lives and how to open it elsewhere |
@@ -767,11 +788,11 @@ the same filter as its `session` field). Results carry
 
 | Route | Surface | Document |
 | --- | --- | --- |
-| `tool:hauler/hauler_status` · `cli:status` | queue, lanes, admission, kache, filters | `StatusDocument`; the tool advertises the dashboard App |
-| `tool:hauler/hauler_log` · `cli:log` | recent requests | `LogStream` → `LogDocument` |
-| `tool:hauler/hauler_last` · `cli:last` | most recent request | `LastDocument` |
+| `tool:hauler/hauler_status` · `cli:status` | queue, lanes, admission, kache, filters; bounded summary rows (`StatusRow`): `outputPreview` on running rows, never a tail | `StatusDocument`; the tool advertises the dashboard App |
+| `tool:hauler/hauler_log` · `cli:log` | recent requests, as summary rows | `LogStream` → `LogDocument` |
+| `tool:hauler/hauler_last` · `cli:last` | most recent request, as a detail record with its tail | `LastDocument` |
 | `tool:hauler/hauler_await` · `cli:await` | long-poll a ticket (≤ 2 h) | `AwaitStream` → `AwaitDocument` |
-| `tool:hauler/hauler_result` · `cli:result` | one ticket, live tail while running; `full` renders the whole on-disk output log | `ResultDocument` (`<FullOutput>`) |
+| `tool:hauler/hauler_result` · `cli:result` | one ticket as a detail record: the settled tail, or the whole live tail while running; `full` renders the whole on-disk output log | `ResultDocument` (`<FullOutput>`) |
 | `tool:hauler/hauler_kill` · `cli:kill` | stop a queued or running ticket | `KillDocument` |
 | `tool:hauler/hauler_request` · `cli:request` | submit a background request | `RequestDocument` |
 | `cli:daemon` | `run` / `start` / `stop` / `status` / `restart` | plain JSON, exit code from the result |
@@ -794,7 +815,11 @@ resource URI it describes, so the document cannot drift from the surface.
 `ui://cargo-hauler/dashboard.html`, attached to `hauler_status` on hosts that
 render MCP Apps. It shows contention and admission, in-flight and queued
 work, metrics windows, optional kache data, lanes, and history, with a live
-output drawer per ticket.
+output drawer per ticket. The App polls `hauler_status` every 5 s; its rows
+are summaries, so a running row's `outputPreview` shows as one line under the
+command and no row carries a tail. The drawer always fetches `hauler_result`
+for the whole tail and refreshes it while the ticket runs, so the poll never
+carries 16 KiB per running ticket.
 
 Each metrics window also reports queue wait against run time for leaders,
 with the wait split by cause: *lane-bound* (a same-lane leader was still

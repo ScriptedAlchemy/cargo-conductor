@@ -1,4 +1,4 @@
-import type { RequestRecord } from '../daemon/protocol.js';
+import type { TicketSummary } from '../daemon/protocol.js';
 import { commandDisplay } from './format.js';
 
 import type { StatusInput, DaemonStatus } from './protocol-schemas.js';
@@ -11,10 +11,10 @@ export const hasStatusFilters = (input: StatusInput): boolean =>
   input.statuses !== undefined ||
   input.commandContains !== undefined;
 
-export const filterStatusRows = (
-  rows: readonly RequestRecord[],
+export const filterStatusRows = <Row extends TicketSummary>(
+  rows: readonly Row[],
   input: StatusInput,
-): readonly RequestRecord[] => {
+): readonly Row[] => {
   const tickets = input.tickets === undefined ? null : new Set(input.tickets);
   const statuses = input.statuses === undefined ? null : new Set(input.statuses);
   return rows.filter(
@@ -46,8 +46,8 @@ const daemonHeader = (daemon: DaemonStatus): string => {
 
 export const statusSummary = (
   daemon: DaemonStatus,
-  active: readonly RequestRecord[],
-  recent: readonly RequestRecord[],
+  active: readonly TicketSummary[],
+  recent: readonly TicketSummary[],
 ): string => {
   const commandLimit = 160;
   const header = `${daemonHeader(daemon)}; ${active.length} active, ${recent.length} recent`;

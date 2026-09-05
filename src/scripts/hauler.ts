@@ -34,7 +34,7 @@ Commands:
       tickets finish (it fails if one of them fails or is killed)
   daemon <run|start|stop|status|restart>
       Control the hauler daemon; restart replaces the running daemon
-      (in-flight tickets end as "orphaned by daemon restart")
+      (in-flight tickets end killed: "daemon shutdown")
   install-shim [--dir DIR] [--real-cargo PATH] [--force]
       Install an optional PATH cargo shim
   status | log | last | await <ticket> | result <ticket> | request [--after TICKET] -- <cargo command> | dashboard

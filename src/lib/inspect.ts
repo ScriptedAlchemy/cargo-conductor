@@ -1,5 +1,9 @@
+import * as Effect from 'effect/Effect';
+
+import { fetchTicket } from '../client/tickets.js';
 import type { DaemonConfigShape } from '../daemon/config.js';
-import { displayRequestRecord, displayRequestRecords, loadHaulerSnapshot } from '../query.js';
+import type { RequestRecord } from '../daemon/protocol.js';
+import { displayRequestRecord, displayStatusRows, loadHaulerSnapshot, loadLedgerRequest } from '../query.js';
 
 import type {
   LastResult,
@@ -27,14 +31,33 @@ const loadSnapshot = (limit: number, options: InspectOptions) =>
     options.signal,
   );
 
+/**
+ * `hauler last`: the newest ticket named by the status listing, read as a
+ * detail record — the listing's rows carry no tail (#95), so the record comes
+ * from the daemon's `result` (the live tail overlaid while it runs) or, with
+ * no daemon answering, from the ledger. Like status, the read fails open: a
+ * daemon that stops answering between the two calls yields the ledger record.
+ */
 export const loadLastResult = async (options: InspectOptions): Promise<LastResult> => {
   const snapshot = await loadSnapshot(1, options);
-  const request = snapshot.recent[0] ?? null;
+  const latest = snapshot.recent[0] ?? null;
+  const detailOf = (ticket: string): Effect.Effect<RequestRecord | null> => {
+    const fromLedger = loadLedgerRequest(ticket, options.config);
+    return snapshot.daemon === 'running'
+      ? fetchTicket(ticket, options.config).pipe(Effect.catch(() => fromLedger))
+      : fromLedger;
+  };
+  const request = latest === null ? null : await runTicketEffect(detailOf(latest.ticket), options.signal);
   return {
     daemon: snapshot.daemon,
     operation: 'last',
     request: request === null ? null : displayRequestRecord(request),
-    summary: request === null ? 'no hauler requests recorded' : `${request.ticket} ${request.status}`,
+    summary:
+      request === null
+        ? latest === null
+          ? 'no hauler requests recorded'
+          : `${latest.ticket} is no longer recorded`
+        : `${request.ticket} ${request.status}`,
   };
 };
 
@@ -46,7 +69,7 @@ export const loadLogResult = async (
   return {
     daemon: snapshot.daemon,
     operation: 'log',
-    requests: displayRequestRecords(snapshot.recent),
+    requests: displayStatusRows(snapshot.recent),
     summary:
       snapshot.recent.length === 0
         ? 'no hauler requests recorded'
@@ -57,6 +80,8 @@ export const loadLogResult = async (
 /**
  * Filtered reads fetch a deep window (500) before filtering so a busy ledger
  * still answers "show me my session" instead of the newest N rows overall.
+ * Rows are the bounded status contract: no tail, a short `outputPreview` on
+ * running rows; `result` reads a ticket's whole tail (#95).
  */
 export const loadStatusResult = async (
   input: StatusInput,
@@ -68,9 +93,9 @@ export const loadStatusResult = async (
   const recent = filterStatusRows(snapshot.recent, input).slice(0, limit);
   return {
     ...snapshot,
-    active: displayRequestRecords(active),
+    active: displayStatusRows(active),
     operation: 'status',
-    recent: displayRequestRecords(recent),
+    recent: displayStatusRows(recent),
     summary: statusSummary(snapshot.daemon, active, recent),
   };
 };

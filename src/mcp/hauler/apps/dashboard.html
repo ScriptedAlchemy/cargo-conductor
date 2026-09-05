@@ -138,6 +138,18 @@
       .ranas { color: var(--accent); font-size: 0.76rem; margin-top: 4px; }
       .ranas .cmd-wrap { max-width: 460px; }
       .ranas .cmd { max-width: 460px; font-size: 0.76rem; }
+      /* One line of a running ticket's live output (the status preview);
+         the whole tail is in the drawer. */
+      .tail-preview {
+        color: var(--muted);
+        font-family: var(--mono);
+        font-size: 0.72rem;
+        margin-top: 4px;
+        max-width: 520px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
       .pkgcount { color: var(--muted); }
       .ticket { font-family: var(--mono); font-size: 0.8rem; white-space: nowrap; }
       .who {

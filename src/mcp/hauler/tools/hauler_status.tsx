@@ -17,7 +17,7 @@ export const config = {
   _meta: { ui: { resourceUri: APP_RESOURCE_URI } },
   annotations: { readOnlyHint: true },
   description:
-    'Show cargo-hauler queue and in-flight work. Filter by cwd, session, laneKey, tickets, statuses, or commandContains instead of piping CLI JSON through jq.',
+    'Show cargo-hauler queue and in-flight work. Filter by cwd, session, laneKey, tickets, statuses, or commandContains instead of piping CLI JSON through jq. Rows are bounded summaries: no output tail, only a short outputPreview (last 8 lines) on running rows; read one ticket with hauler_result for its whole live tail.',
   title: 'Hauler status',
 } satisfies ToolConfig;
 
