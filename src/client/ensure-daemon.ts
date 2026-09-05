@@ -1,5 +1,6 @@
 import { spawn, type ChildProcess, type SpawnOptions } from 'node:child_process';
 import { closeSync, existsSync, mkdirSync, openSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { version } from 'agent-bundle/meta';
@@ -93,29 +94,55 @@ export const waitForDaemon = (
     ),
   );
 
+export interface DaemonEntryOptions {
+  readonly env: Readonly<Record<string, string | undefined>>;
+  /** The running script (`process.argv[1]`), possibly relative to `cwd`. */
+  readonly argv1: string | undefined;
+  readonly cwd: string;
+  /** `import.meta.url` of the bundled module resolving the entry. */
+  readonly moduleUrl: string;
+  readonly exists: (path: string) => boolean;
+}
+
 /**
- * The entry that understands `daemon run`: the artifact's `hauler.mjs` when
- * a host injected the plugin root, otherwise a package or checkout entry.
+ * The entry that understands `daemon run`, always as an absolute path. The
+ * daemon is spawned with the state dir as its cwd, so a relative entry — a
+ * host that runs `node scripts/hauler.mjs` from the plugin directory, or a
+ * relative plugin root — would resolve there and fail with
+ * `Cannot find module <stateDir>/scripts/hauler.mjs`; with version gating
+ * that failure then repeats on every hook call after an upgrade. Order: the
+ * artifact's `hauler.mjs` when a host injected the plugin root and it
+ * exists, then the package or checkout entry beside this module, then the
+ * running script itself.
  */
-const defaultDaemonEntry = (): string => {
-  const [, script] = resolveHaulerArgv();
+export const resolveDaemonEntry = (options: DaemonEntryOptions): string => {
+  const [, script] = resolveHaulerArgv(options.env);
   if (script !== undefined) {
-    return script;
+    const absolute = resolve(options.cwd, script);
+    if (options.exists(absolute)) {
+      return absolute;
+    }
   }
-  // Routed commands render in a generated flight worker, so process.argv[1]
-  // names `cargo-hauler-flight.mjs`, which is not an executable daemon entry.
+  // Routed commands render in a generated flight worker, so argv[1] names
+  // `cargo-hauler-flight.mjs`, which is not an executable daemon entry.
   // Resolve the sibling plain script from this bundled module instead.
-  for (const candidate of [
-    new URL('./hauler.js', import.meta.url),
-    new URL('../scripts/hauler.mjs', import.meta.url),
-  ]) {
-    const path = fileURLToPath(candidate);
-    if (existsSync(path)) {
+  for (const candidate of ['./hauler.js', '../scripts/hauler.mjs']) {
+    const path = fileURLToPath(new URL(candidate, options.moduleUrl));
+    if (options.exists(path)) {
       return path;
     }
   }
-  return process.argv[1] ?? '';
+  return options.argv1 === undefined ? '' : resolve(options.cwd, options.argv1);
 };
+
+const defaultDaemonEntry = (): string =>
+  resolveDaemonEntry({
+    argv1: process.argv[1],
+    cwd: process.cwd(),
+    env: process.env,
+    exists: existsSync,
+    moduleUrl: import.meta.url,
+  });
 
 const spawnEnvExactNames = new Set([
   'ALL_PROXY',
