@@ -1,22 +1,16 @@
-import { mkdtempSync, readFileSync } from 'node:fs';
+import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { Agent } from '@agent-bundle/runtime';
 import { afterEach, beforeEach, describe, expect, it } from 'effect-rstest';
-import type { AgentEventRouteProps, CanonicalAgentEvent } from 'agent-bundle';
+import type { AgentBundleConfig, AgentEventRouteProps, CanonicalAgentEvent } from 'agent-bundle';
 import { createEventRouteInput } from 'agent-bundle/test';
 import { isValidElement, type ReactElement, type ReactNode } from 'react';
 
+import bundleConfig from '../agent-bundle.config.js';
 import StopRoute from '../src/events/stop.js';
-import AfterToolRoute from '../src/events/tool/after.js';
-import BeforeToolRoute from '../src/events/tool/before.js';
 import { decisionValue } from '../src/lib/event-support.js';
-
-const fixturesDir = join(import.meta.dirname, 'fixtures', 'hooks');
-
-const loadFixture = (name: string): Readonly<Record<string, unknown>> =>
-  JSON.parse(readFileSync(join(fixturesDir, `${name}.json`), 'utf8')) as Readonly<Record<string, unknown>>;
 
 /**
  * The props the generated wrapper hands a route: the host envelope validated,
@@ -93,23 +87,25 @@ describe('agent event routes', () => {
   });
 
   it('declares the expected static route configs', async () => {
-    const [before, after, stop, sessionStart] = await Promise.all([
-      import('../src/events/tool/before.js'),
-      import('../src/events/tool/after.js'),
+    const [stop, sessionStart] = await Promise.all([
       import('../src/events/stop.js'),
       import('../src/events/session/start.js'),
     ]);
     const hosts = ['claude', 'codex', 'cursor'];
-    expect(before.config).toEqual({
-      fallback: 'standalone',
-      runtime: 'shared',
-      targets: hosts,
-      timeoutMs: 10_000,
-      tools: ['shell'],
-    });
-    expect(after.config).toEqual(before.config);
     expect(stop.config).toEqual({ runtime: 'standalone', targets: hosts, timeoutMs: 900_000 });
     expect(sessionStart.config).toEqual({ runtime: 'standalone', targets: hosts, timeoutMs: 5_000 });
+  });
+
+  it('declares the shell tool hooks as config handlers, not rendered routes', () => {
+    // tool/before and tool/after are the two hooks every shell call pays for,
+    // so they compile from `src/hooks/fast-path/` into standalone entries that
+    // decide on the command before the rendering runtime loads (#90).
+    expect(typeof bundleConfig).toBe('object');
+    const config = bundleConfig as AgentBundleConfig;
+    expect(config.hooks).toEqual({
+      afterTool: { handler: './src/hooks/fast-path/shell-after.ts', timeout: 10, tools: ['shell'] },
+      beforeTool: { handler: './src/hooks/fast-path/shell-before.ts', timeout: 10, tools: ['shell'] },
+    });
   });
 
   it('decisionValue drops a reason from a continue result and keeps it on allow and deny', () => {
@@ -122,61 +118,6 @@ describe('agent event routes', () => {
       updatedInput: { command: 'x' },
     });
     expect(decisionValue({ outcome: 'deny', reason: 'blocked' })).toEqual({ outcome: 'deny', reason: 'blocked' });
-  });
-
-  it('tool/before rewrites a cargo shell command from a Claude envelope', async () => {
-    const element = await BeforeToolRoute(
-      routeProps('tool/before', 'claude', 'PreToolUse', loadFixture('claude-before-cargo')),
-    );
-    const decision = decisionOf(element);
-
-    expect(decision.outcome).toBe('allow');
-    expect(decision.reason).toBeUndefined();
-    const command = decision.updatedInput?.command;
-    expect(typeof command).toBe('string');
-    expect(command).toContain('exec --session sess-claude');
-    expect(command).toContain('--host claude');
-    expect(command).toContain('-- cargo test -p foo');
-    expect(contextOf(element)).toEqual([]);
-  });
-
-  it('tool/before leaves non-cargo commands untouched', async () => {
-    const native = {
-      ...loadFixture('claude-before-cargo'),
-      tool_input: { command: 'ls -la' },
-    };
-    const element = await BeforeToolRoute(routeProps('tool/before', 'claude', 'PreToolUse', native));
-
-    expect(decisionOf(element)).toEqual({ outcome: 'continue' });
-    expect(contextOf(element)).toEqual([]);
-  });
-
-  it('tool/before attributes Cursor envelopes as host cursor', async () => {
-    const element = await BeforeToolRoute(
-      routeProps('tool/before', 'cursor', 'preToolUse', loadFixture('cursor-before-cargo')),
-    );
-    const decision = decisionOf(element);
-
-    expect(decision.outcome).toBe('allow');
-    expect(decision.updatedInput?.command).toContain('--host cursor');
-    expect(decision.updatedInput?.command).toContain('--session sess-cursor');
-  });
-
-  it('tool/after accepts a Cursor envelope whose tool_output is a JSON string', async () => {
-    const element = await AfterToolRoute(
-      routeProps('tool/after', 'cursor', 'postToolUse', loadFixture('cursor-after-cargo')),
-    );
-
-    expect(decisionOf(element)).toEqual({ outcome: 'continue' });
-    expect(contextOf(element)).toEqual([]);
-  });
-
-  it('tool/after accepts a Claude envelope with an object tool_response', async () => {
-    const element = await AfterToolRoute(
-      routeProps('tool/after', 'claude', 'PostToolUse', loadFixture('claude-after-cargo')),
-    );
-
-    expect(decisionOf(element)).toEqual({ outcome: 'continue' });
   });
 
   it('stop continues when the envelope carries no session', async () => {

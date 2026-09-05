@@ -1,8 +1,9 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
+import { isRecord } from '../lib/guards.js';
+
 import { resolveHookStateDir } from './paths.js';
-import { isRecord } from './shared.js';
 
 /**
  * On-disk shape of `hook-state.json`, shared by every session's hooks.

@@ -130,6 +130,23 @@ followed by another statement, `elif`, and `function name { … }` — are left
 untouched and run as plain Cargo rather than risk emitting a changed
 command.
 
+Both shell hooks run on every shell tool call, so they decide cheaply before
+they do anything else. The `tool/before` entry reads `tool_input.command` and
+answers `continue` for a command with no `cargo`, `hauler`, or `conductor`
+word in it (word-boundary aware: `mycargo` and `CARGO_HOME=… ls` are not
+matches, `~/.cargo/bin/cargo`, `cargo-hauler`, and `echo cargo` are — a false
+negative would bypass the broker, so anything that looks like a mention takes
+the full path). Only a matching command evaluates the parser and the rewrite.
+The `tool/after` entry runs the token test and one bounded socket ping to the
+daemon (the `session-completed` request with the session's hook-state cursor,
+500 ms, no Effect runtime); it loads the telemetry and notification code only
+when the command was cargo-related or the daemon reported finished tickets. A
+non-cargo call with nothing finished — or no daemon at all — exits with no
+output. Measured with `/usr/bin/time -v` on a Claude `ls -la` envelope, the
+compiled entries take ~50 ms wall and ~49 MB RSS, against ~100 ms and 64 MB
+for the 0.4.8 event-route wrappers with a shared runtime available and
+~560 ms and 144 MB without one.
+
 A lane is keyed by workspace root and resolved target directory. It compiles
 one job at a time — Cargo's own build-directory lock would serialize them
 anyway. Once a `test`, `nextest`, `bench`, or `run` leader reports its build
@@ -362,7 +379,7 @@ send (`outputPath`, `after`), so a plain version difference alone does not
 break `status`, `result`, or `await`; finish or `hauler kill` what is in
 flight before restarting if the work matters.
 
-The `tool/after` route checks the session's background tickets — `--bg`,
+The `tool/after` hook checks the session's background tickets — `--bg`,
 `hauler_request`, and synchronous requests the client converted to a ticket
 — and, on the first tool call after one finishes, adds its result to the
 agent context. A foreground ticket streamed its exit to the shell the agent
@@ -611,9 +628,9 @@ unset, the daemon reads kache's configured local store from
 <summary><strong>How the app is built</strong> — agent-bundle application structure, testing, and development (click to expand)</summary>
 
 The plugin is an [agent-bundle](https://github.com/ScriptedAlchemy/agent-bundle)
-application: six MCP tools, a routed CLI, four hook routes, two skills, and a
-browser dashboard, all rendered from one component library through one shared
-layout. This section is for contributors; using cargo-hauler needs none of it.
+application: six MCP tools, a routed CLI, two hook routes plus two declared
+shell hooks, two skills, and a browser dashboard, all rendered from one
+component library through one shared layout. This section is for contributors; using cargo-hauler needs none of it.
 
 ### Application structure
 
@@ -630,7 +647,8 @@ src/
   mcp/hauler/tools/*.tsx        hauler_status, _log, _last, _await, _result, _request
   mcp/hauler/apps/dashboard.tsx the MCP App (ui://cargo-hauler/dashboard.html)
   cli/*.tsx, cli/daemon.ts      the routed `cargo-hauler` CLI, same components
-  events/{session/start,tool/before,tool/after,stop}.tsx   hook routes
+  events/{session/start,stop}.tsx   rendered hook routes
+  hooks/fast-path/              the declared tool/before and tool/after shell hooks
   skills/cargo-hauler/SKILL.md, skills/hauler-dashboard/SKILL.tsx
   scripts/hauler.ts             the `hauler` process entry hooks rewrite cargo to
   daemon/, client/, hooks/, shim/, lib/   the broker and its libraries
@@ -660,6 +678,24 @@ through one layout, the way a page framework's `layout.tsx` wraps every page:
   `version`, `daemon: { state, pid? }`, `lineage: { conversation, root, depth } | null`.
 
 Event routes are host protocol responses and are never wrapped.
+
+#### The shell hooks (`src/hooks/fast-path/`)
+
+`tool/before` and `tool/after` are not rendered routes. They are declared in
+`agent-bundle.config.ts` under `hooks` as handler modules
+(`shell-before.ts`, `shell-after.ts`), which the framework compiles into
+standalone entries — `hooks/before-tool-shell-before-<hash>.mjs`,
+`hooks/after-tool-shell-after-<hash>.mjs` — that carry no React, no Flight
+worker, and no Effect. Each entry decides on the raw command first
+(`tokens.ts`; `session-ping.ts` for the completion ping) and reaches the
+rewrite (`before-shell.ts`) or the telemetry and notification code
+(`after-shell.ts`) through a deliberate dynamic `import()`, the one place in
+the codebase that imports lazily. The handler contract has no `allow`
+outcome, so a fully brokered rewrite writes the host's own allow shape
+(`allow-output.ts`) instead of `continue` + `updatedInput`, which would make
+the host prompt for the rewrite. Everything else — `continue`, `deny` with a
+reason, `additionalContext` — goes through the generated wrapper's
+projection.
 
 #### The daemon provider (`src/providers/hauler-daemon.ts`)
 
@@ -744,9 +780,9 @@ the same filter as its `session` field). Results carry
 | `tool:hauler/hauler_request` · `cli:request` | submit a background request | `RequestDocument` |
 | `cli:daemon` | `run` / `start` / `stop` / `status` | plain JSON, exit code from the result |
 | `event:session/start` | new session | daemon state and the no-kill rule as context |
-| `event:tool/before` | shell tool about to run | rewrites `cargo …` to `hauler exec --session … --host … -- cargo …`; denies `cargo clean` during in-flight builds, brokers it while the daemon is too busy to answer |
-| `event:tool/after` | shell tool finished | injects finished background-ticket results once per session |
 | `event:stop` | agent stopping | holds the stop while a foreground ticket is pending (bounded, re-deniable) |
+| `hooks.beforeTool` (`src/hooks/fast-path/shell-before.ts`) | shell tool about to run | `continue` without loading anything for a non-cargo command; otherwise rewrites `cargo …` to `hauler exec --session … --host … -- cargo …`, denies `cargo clean` during in-flight builds, brokers it while the daemon is too busy to answer |
+| `hooks.afterTool` (`src/hooks/fast-path/shell-after.ts`) | shell tool finished | one bounded completion ping per call; injects finished background-ticket results once per session |
 
 #### Skills
 
@@ -787,7 +823,7 @@ artifact build, at the harness proof levels:
 
 | Level | Suite | What it proves |
 | --- | --- | --- |
-| route-unit | `routes`, `layout`, `streaming`, `events` | documents, shell metadata, Suspense fallbacks and settled values, lineage attribution, event decisions |
+| route-unit | `routes`, `layout`, `streaming`, `events` | documents, shell metadata, Suspense fallbacks and settled values, lineage attribution, event decisions (the shell hooks are unit-tested in `tests/hook-fast-path.test.ts` and against their compiled entries in `tests/hooks-simulate.test.ts`) |
 | cli-dispatch | `cli-dispatch`, `layout` | argv through the routed CLI shell; Markdown wrapped by the shell, `--json` bare |
 | script-dispatch | `script-dispatch` | the `hauler` entry through its `main` envelope as its own process |
 | mcp-in-memory | `mcp-surface`, `layout` | tool names, `outputSchema`, the dashboard resource link, `_meta.hauler`, and a live fixture broker over the in-memory transport |

@@ -18,12 +18,14 @@ describe('workbench surface', () => {
 
     expect(surface.catalog.servers.map((server) => server.name)).toEqual(['hauler']);
     expect(surface.catalog.providers.map((provider) => provider.name)).toEqual(['hauler-daemon']);
-    expect(surface.catalog.routeCount).toBeGreaterThanOrEqual(17);
+    expect(surface.catalog.routeCount).toBeGreaterThanOrEqual(15);
 
     const routeIds = surface.catalog.groups.flatMap((group) => group.entries.map((entry) => entry.route.id));
-    for (const id of ['tool:hauler/hauler_status', 'cli:status', 'event:session/start', 'event:tool/before']) {
+    for (const id of ['tool:hauler/hauler_status', 'cli:status', 'event:session/start', 'event:stop']) {
       expect(routeIds).toContain(id);
     }
+    // The shell hooks are config-declared handlers (#90), not catalogued routes.
+    expect(routeIds.filter((id) => id.startsWith('event:tool/'))).toEqual([]);
     const statusCommand = surface.catalog.groups
       .flatMap((group) => group.entries)
       .find((entry) => entry.route.id === 'cli:status');
