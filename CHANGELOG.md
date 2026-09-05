@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.6.3
+
+### Patch Changes
+
+- fa1415d: Ignore the vendored `repos/effect` subtree in Renovate (#108).
+- 3bc0131: Serve `hauler dashboard` through `spawnServeApp` from `agent-bundle/serve-app-command` instead of hand-rolled child-process plumbing, and re-pin the `agent-bundle` / `@agent-bundle/runtime` preview to main `d30d9acb6` (agent-bundle #582 `serve-app-command` + `AB4837`, #588 package `dist/` held to `AB6005`). Flags (`--target`, `--port`, `--no-open`), the opening `hauler_status` call, and the checkout-only scope are unchanged; the helper's typed failures (`framework-not-installed`, `artifact-missing`, `spawn-failed`, `exited-before-ready` with the child's exit code, `aborted`, `stop-failed`) become the command's message, and a Ctrl-C whose stop the server refuses now ends the command with that failure instead of hanging. (#122)
+- c5694dc: Make `hauler install-shim` embed the global PATH entry and make plugin-local `scripts/hauler.mjs` refuse direct CLI use (#121)
+- 476cd52: Make `hauler status`, `hauler_status`, and `hauler log` rows bounded summaries that never carry an output tail; read a ticket's whole tail with `hauler result` / `hauler_result`, `hauler await`, or `hauler last`. (#95)
+  
+  - The status document used to overlay every running ticket's whole in-memory tail (up to 16 KiB per running row) onto its status row, and the dashboard polls that document every 5 s. A status or log row is now a summary (`StatusRow`, `statusRowSchema`): no `outputTail`, settled or live. A running row carries `outputPreview`, the last 8 lines (at most 512 bytes) of its live output cut at a line boundary; every other row has `outputPreview: null`. The text rendering of `hauler status` never printed tails, so only `--json` / `structuredContent` readers see the difference.
+  - The whole tail is the detail contract: `hauler result <ticket>` / `hauler_result` and `hauler await` carry a finished ticket's settled 16 KiB tail or a running ticket's whole live tail, and `hauler result --full` the on-disk log. `hauler last` reads the newest ticket as a detail record — from the daemon while it is running, otherwise from the ledger — so it shows the tail again.
+  - The dashboard's in-flight rows show the last preview line under the command; the ticket drawer always fetches `hauler_result` and refreshes the tail every 3 s while the run is in progress, so a drawer opened from a summary row shows the whole output.
+
 ## 0.6.2
 
 ### Patch Changes
