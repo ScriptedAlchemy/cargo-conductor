@@ -297,11 +297,12 @@ export interface BackgroundSubmitAck {
 export const submitBackgroundAck = (
   input: BackgroundSubmitInput,
   config: DaemonConfigShape = resolveDaemonConfig(),
+  ensure: (config: DaemonConfigShape) => Effect.Effect<unknown, EnsureDaemonError> = ensureDaemonRunning,
 ): Effect.Effect<BackgroundSubmitAck | null, TicketSocketError> =>
   // Cold daemon must not mean "failed to submit": start it like exec does.
   // A daemon of another version that outlived the shutdown grace is the one
   // failure that must reach the caller — this build never submits to it.
-  ensureDaemonRunning(config).pipe(
+  ensure(config).pipe(
     Effect.catchIf(
       (error): error is Exclude<EnsureDaemonError, DaemonNotReplacedError> =>
         error._tag !== 'DaemonNotReplaced',

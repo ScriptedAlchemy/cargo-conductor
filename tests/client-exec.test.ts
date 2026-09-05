@@ -9,6 +9,7 @@ import * as Fiber from 'effect/Fiber';
 import * as Schedule from 'effect/Schedule';
 import type * as Scope from 'effect/Scope';
 
+import { SpawnDaemonError } from '../src/client/ensure-daemon.js';
 import { runExecClient, unreachablePassthroughMode } from '../src/client/exec.js';
 import {
   ControlTimeoutError,
@@ -26,9 +27,10 @@ import {
   type ServerMessage,
   type StatusResultMessage,
 } from '../src/daemon/protocol.js';
+import { DaemonNotReplacedError } from '../src/daemon/shutdown.js';
 import { LineBuffer } from '../src/lib/ndjson.js';
 
-import { fakeCargoEnv, scopedDaemon, scopedFixture } from './harness.js';
+import { fakeCargoEnv, fetchReport, scopedDaemon, scopedFixture } from './harness.js';
 
 /**
  * A terminal reading as the executable envelope hands it to `main` (agent-bundle#511):
@@ -804,24 +806,108 @@ describe('runExecClient', () => {
       expect(ack?.waitEtaMs).toBeGreaterThan(0);
     }));
 
-  it.live('invokes ensureDaemon before falling back to passthrough', () =>
+  it.live('invokes ensureDaemon once, before connecting, and falls back to passthrough', () =>
     Effect.gen(function* () {
       const fixture = yield* scopedFixture(5);
       const collected = collectIo();
-      let ensured = 0;
+      const order: string[] = [];
       const result = yield* runExecClient({
         argv: ['cargo', 'check'],
         config: fixture.config,
         cwd: fixture.ws1,
         ensureDaemon: () =>
           Effect.sync(() => {
-            ensured += 1;
+            order.push('ensure');
           }),
+        env: fakeCargoEnv(fixture),
+        io: {
+          ...collected.io,
+          writeStderr: (data) => {
+            order.push('stderr');
+            collected.io.writeStderr(data);
+          },
+        },
+      });
+      // The rule runs before the first connection attempt: nothing was written
+      // (no passthrough line, no diagnostic) until ensure had returned.
+      expect(order[0]).toBe('ensure');
+      expect(order.filter((step) => step === 'ensure')).toHaveLength(1);
+      expect(result.mode).toBe('passthrough');
+      expect(collected.stderr()).not.toContain('daemon startup failed');
+      expect(collected.stdout()).toContain('fake-out:check');
+    }));
+
+  it.live('runs cargo directly, naming the reason, when a daemon of another version outlived the grace', () =>
+    Effect.gen(function* () {
+      // A live daemon is listening, but this build may not use it.
+      const fixture = yield* scopedDaemon(5);
+      const collected = collectIo();
+      const notReplaced = new DaemonNotReplacedError({
+        daemon: { pid: 4242, startedAtMs: 1_000, version: '0.0.0-previous' },
+        graceMs: 5_000,
+        socketPath: fixture.config.socketPath,
+      });
+      const result = yield* runExecClient({
+        argv: ['cargo', 'check'],
+        config: fixture.config,
+        cwd: fixture.ws1,
+        ensureDaemon: () => Effect.fail(notReplaced),
         env: fakeCargoEnv(fixture),
         io: collected.io,
       });
-      expect(ensured).toBe(1);
       expect(result.mode).toBe('passthrough');
+      expect(collected.stderr()).toContain('pid 4242 (0.0.0-previous) is still running');
+      expect(collected.stderr()).toContain('not restarted');
+      expect(collected.stderr()).not.toContain('daemon startup failed');
+      expect(collected.stdout()).toContain('fake-out:check');
+      // The direct run is spooled as a `passthrough` row for the daemon's
+      // stats; nothing was submitted to it.
+      const report = yield* fetchReport(fixture);
+      expect(report.active).toEqual([]);
+      expect(report.recent.map((record) => record.status)).toEqual(['passthrough']);
+    }));
+
+  it.live('treats a ping timeout as a slow daemon and brokers the build silently', () =>
+    Effect.gen(function* () {
+      const fixture = yield* scopedDaemon(5);
+      const collected = collectIo();
+      const result = yield* runExecClient({
+        argv: ['cargo', 'check'],
+        config: fixture.config,
+        cwd: fixture.ws1,
+        ensureDaemon: () =>
+          Effect.fail(
+            new ControlTimeoutError({
+              phase: 'open',
+              received: [],
+              socketPath: fixture.config.socketPath,
+              timeoutMs: 500,
+            }),
+          ),
+        env: fakeCargoEnv(fixture),
+        io: collected.io,
+      });
+      expect(result.mode).toBe('brokered');
+      expect(result.exitCode).toBe(0);
+      expect(collected.stderr()).not.toContain('daemon startup failed');
+    }));
+
+  it.live('reports a failed daemon start once and then runs cargo directly', () =>
+    Effect.gen(function* () {
+      const fixture = yield* scopedFixture(5);
+      const collected = collectIo();
+      const result = yield* runExecClient({
+        argv: ['cargo', 'check'],
+        config: fixture.config,
+        cwd: fixture.ws1,
+        ensureDaemon: () =>
+          Effect.fail(new SpawnDaemonError({ cause: new Error('spawn refused') })),
+        env: fakeCargoEnv(fixture),
+        io: collected.io,
+      });
+      expect(result.mode).toBe('passthrough');
+      const diagnostics = collected.stderr().split('daemon startup failed').length - 1;
+      expect(diagnostics).toBe(1);
       expect(collected.stdout()).toContain('fake-out:check');
     }));
 
