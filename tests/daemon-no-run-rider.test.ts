@@ -9,13 +9,12 @@ import * as Logger from 'effect/Logger';
 import * as References from 'effect/References';
 
 import { Broker } from '../src/daemon/broker.js';
-import type { BrokerApi, SubmitResult } from '../src/daemon/broker.js';
+import type { BrokerApi, BrokerStatusReport, SubmitResult } from '../src/daemon/broker.js';
 import type { ExitInfo, SubmitInput } from '../src/daemon/job-state.js';
 import type {
   AckMessage,
   RequeuedMessage,
   RequestRecord,
-  StatusReport,
 } from '../src/daemon/protocol.js';
 
 import { brokerFixture } from './broker-fixture.js';
@@ -38,16 +37,16 @@ const findAck = (messages: readonly { type: string }[]): AckMessage => {
   return ack;
 };
 
-const runningLeader = (report: StatusReport): RequestRecord | undefined =>
+const runningLeader = (report: BrokerStatusReport): RequestRecord | undefined =>
   report.active.find((record) => record.status === 'running' && record.attachedTo === null);
 
-const recordFor = (report: StatusReport, ticket: string): RequestRecord | undefined =>
+const recordFor = (report: BrokerStatusReport, ticket: string): RequestRecord | undefined =>
   [...report.active, ...report.recent].find((record) => record.ticket === ticket);
 
-const laneExecuting = (report: StatusReport, ticket: string): boolean =>
+const laneExecuting = (report: BrokerStatusReport, ticket: string): boolean =>
   report.lanes.some((lane) => lane.executingTickets?.includes(ticket) === true);
 
-const settled = (ticket: string) => (report: StatusReport) =>
+const settled = (ticket: string) => (report: BrokerStatusReport) =>
   report.recent.some((record) => record.ticket === ticket && record.status !== 'running');
 
 /**
@@ -55,10 +54,10 @@ const settled = (ticket: string) => (report: StatusReport) =>
  * starts adds to the same counters: assertions compare against a snapshot
  * taken just before the request under test.
  */
-const rejections = (report: StatusReport, gate: string): number =>
+const rejections = (report: BrokerStatusReport, gate: string): number =>
   report.metrics?.attach_rejections?.[gate] ?? 0;
 
-const coverageAttaches = (report: StatusReport): number =>
+const coverageAttaches = (report: BrokerStatusReport): number =>
   report.metrics?.attach_mode?.coverage ?? 0;
 
 /** The observed pair (#88): a filtered `--lib` test run and the `--no-run` compile of the same lib. */

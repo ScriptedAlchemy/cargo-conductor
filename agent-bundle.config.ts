@@ -36,7 +36,7 @@ export default defineConfig({
   // config-declared handler compiles to a 50–140 KB entry with no React and
   // no Effect (~0.05 s, 48 MB) that the framework hands the decoded event;
   // `src/hooks/fast-path/` answers `continue` for a command that names
-  // neither cargo, hauler, nor conductor before evaluating anything else, and
+  // neither cargo nor hauler before evaluating anything else, and
   // runs the rewrite / telemetry modules (inlined, deferred) only for the
   // rest. Same `shell` matcher, same 10 s budget, same hosts as the routes
   // they replace; the framework still owns the envelope, the validation, and

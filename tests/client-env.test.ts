@@ -23,8 +23,8 @@ describe('buildTransportedEnv', () => {
   it('never leaks hauler-internal variables', () => {
     expect(
       buildTransportedEnv({
-        CARGO_CONDUCTOR_KILL_GRACE_MS: '1',
         CARGO_HAULER_CARGO_BIN: '/fake/cargo',
+        CARGO_HAULER_KILL_GRACE_MS: '1',
         CARGO_HAULER_STATE_DIR: '/tmp/state',
         RUSTDOCFLAGS: '--cfg docsrs',
       }),

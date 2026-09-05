@@ -11,6 +11,7 @@ import type {
   ControlTimeoutError,
   DaemonUnreachableError,
 } from '../daemon/control.js';
+import type { DaemonNotReplacedError } from '../daemon/shutdown.js';
 import type {
   AckMessage,
   AwaitResultMessage,
@@ -23,9 +24,8 @@ import type {
 } from '../daemon/protocol.js';
 import { shortId } from '../lib/id.js';
 import { requestRecordSchema } from '../lib/protocol-schemas.js';
-import { validateDaemonReply, type DaemonVersionSkewError } from '../lib/version-skew.js';
 
-import { ensureDaemonRunning } from './ensure-daemon.js';
+import { ensureDaemonRunning, type EnsureDaemonError } from './ensure-daemon.js';
 import { formatDuration, formatProgressLine } from './progress.js';
 
 /** The daemon answered this request with an `error` line (malformed request, internal failure). */
@@ -37,30 +37,26 @@ export class DaemonRejectedError extends Data.TaggedError('DaemonRejected')<{
 
 /**
  * Infrastructure failures stay typed in this library: a daemon that is down
- * is not the same as a ticket that does not exist, and a daemon whose reply
- * this build cannot read is an older daemon to restart (#75). Callers convert
- * to fail-open values only at deliberately fail-open boundaries (hooks).
+ * is not the same as a ticket that does not exist. Callers convert to
+ * fail-open values only at deliberately fail-open boundaries (hooks).
  */
 export type TicketSocketError =
   | ConnectionClosedError
   | ControlTimeoutError
   | DaemonUnreachableError
-  | DaemonRejectedError
-  | DaemonVersionSkewError;
+  | DaemonNotReplacedError
+  | DaemonRejectedError;
 
 const nullableRecordSchema = requestRecordSchema.nullable();
 
 /**
- * The record on a `result-result`/`await-result` reply, read with the lenient
- * client schema so an older daemon's rows (no `outputPath`, no `after`) still
- * parse; anything that still does not fit fails as version skew instead of
- * surfacing later as a raw schema dump.
+ * The record on a `result-result`/`await-result` reply. The daemon is a
+ * trusted local peer of this build (one install, one version — see
+ * `ensureDaemonRunning`), so a row that does not fit the schema is a defect,
+ * not a failure a caller could handle.
  */
-const readRecord = (
-  request: unknown,
-  config: DaemonConfigShape,
-): Effect.Effect<RequestRecord | null, DaemonVersionSkewError> =>
-  validateDaemonReply(nullableRecordSchema, request, config.socketPath);
+const readRecord = (request: unknown): Effect.Effect<RequestRecord | null> =>
+  Effect.sync(() => nullableRecordSchema.parse(request));
 
 /**
  * One request, one answer: resolves on the reply carrying this request's id,
@@ -109,7 +105,7 @@ export const fetchTicket = (
     { id: shortId(), ticket, type: 'result' },
     2_000,
     (message): message is ResultResultMessage => message.type === 'result-result',
-  ).pipe(Effect.flatMap((result) => readRecord(result?.request ?? null, config)));
+  ).pipe(Effect.flatMap((result) => readRecord(result?.request ?? null)));
 
 /**
  * Ask the daemon to stop a ticket: a queued job is dropped, a running leader
@@ -262,7 +258,7 @@ export const awaitTicket = (
     (message): message is AwaitResultMessage => message.type === 'await-result',
   ).pipe(
     Effect.flatMap((result) =>
-      readRecord(result?.request ?? null, config).pipe(
+      readRecord(result?.request ?? null).pipe(
         Effect.map((request) => ({ request, timedOut: result?.timedOut ?? true })),
       ),
     ),
@@ -282,7 +278,7 @@ export interface BackgroundSubmitAck {
   readonly ticket: string;
   /** Leaders expected to run before this one in its lane (running head included). */
   readonly position: number;
-  /** The tickets `position` counts; absent when the daemon predates the field. */
+  /** The tickets `position` counts; absent when the request attached or its lane had no queue context. */
   readonly ahead?: readonly string[];
   readonly waitEtaMs?: number;
   /** Prerequisites still unsettled at submission. */
@@ -303,8 +299,14 @@ export const submitBackgroundAck = (
   config: DaemonConfigShape = resolveDaemonConfig(),
 ): Effect.Effect<BackgroundSubmitAck | null, TicketSocketError> =>
   // Cold daemon must not mean "failed to submit": start it like exec does.
+  // A daemon of another version that outlived the shutdown grace is the one
+  // failure that must reach the caller — this build never submits to it.
   ensureDaemonRunning(config).pipe(
-    Effect.ignore,
+    Effect.catchIf(
+      (error): error is Exclude<EnsureDaemonError, DaemonNotReplacedError> =>
+        error._tag !== 'DaemonNotReplaced',
+      () => Effect.void,
+    ),
     Effect.andThen(
       // No `holdStop`: the daemon's default for a background request is
       // false, the same as `exec --bg --session`. Background tickets never

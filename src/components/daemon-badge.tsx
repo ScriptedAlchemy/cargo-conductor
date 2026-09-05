@@ -15,18 +15,11 @@ export interface DaemonBadgeProps {
 /**
  * The shell header: one line saying what the daemon probe proved at request
  * start, ending with the state directory so a reader who memorised another
- * path notices the move (#75). Rendered by the layout above every document,
- * so a reader never has to infer daemon state from the absence of rows. A
- * daemon running another build than this CLI gets a second line naming both
- * versions and the restart.
+ * path notices the move. Rendered by the layout above every document, so a
+ * reader never has to infer daemon state from the absence of rows.
  */
 export const DaemonBadge = ({ health, nowMs, stateDir }: DaemonBadgeProps) => {
   const model = daemonBadgeModel(health, nowMs, stateDir === undefined ? {} : { stateDir });
   const parts = ['cargo-hauler', model.headline, model.detail, model.stateDir === null ? null : `state dir ${model.stateDir}`];
-  return (
-    <>
-      <Agent.Text>{parts.filter((part) => part !== null).join(' · ')}</Agent.Text>
-      {model.skew === null ? null : <Agent.Text>{`cargo-hauler · ${model.skew}`}</Agent.Text>}
-    </>
-  );
+  return <Agent.Text>{parts.filter((part) => part !== null).join(' · ')}</Agent.Text>;
 };

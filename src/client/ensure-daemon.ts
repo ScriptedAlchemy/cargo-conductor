@@ -1,6 +1,7 @@
 import { spawn, type ChildProcess, type SpawnOptions } from 'node:child_process';
 import { closeSync, mkdirSync, openSync } from 'node:fs';
 
+import { version } from 'agent-bundle/meta';
 import * as Data from 'effect/Data';
 import * as Effect from 'effect/Effect';
 import * as Schedule from 'effect/Schedule';
@@ -14,6 +15,14 @@ import type {
   DaemonUnreachableError,
 } from '../daemon/control.js';
 import type { PongMessage } from '../daemon/protocol.js';
+import {
+  DaemonNotReplacedError,
+  exitGraceMs,
+  processAlive,
+  requestShutdown,
+  waitForExit,
+} from '../daemon/shutdown.js';
+import type { ExitWaitOptions, ShutdownAck } from '../daemon/shutdown.js';
 import { resolveHaulerArgv } from '../hooks/paths.js';
 import { absentSocketCodes, socketErrorCode } from '../lib/socket-errors.js';
 import { isHaulerInternalEnvironmentVariable } from '../lib/cargo-env.js';
@@ -27,13 +36,15 @@ export type WaitForDaemonError =
   | ControlTimeoutError
   | ConnectionClosedError;
 
-export type EnsureDaemonError = WaitForDaemonError | SpawnDaemonError;
+export type EnsureDaemonError = WaitForDaemonError | SpawnDaemonError | DaemonNotReplacedError;
 
-export interface EnsureDaemonDependencies {
+export interface EnsureDaemonDependencies extends ExitWaitOptions {
   readonly pingDaemon: (
     socketPath: string,
     timeoutMs: number,
   ) => Effect.Effect<PongMessage, WaitForDaemonError>;
+  /** The graceful `shutdown` request to a daemon of another version. */
+  readonly requestShutdown: (socketPath: string) => Effect.Effect<ShutdownAck>;
   readonly spawnDetachedDaemon: (
     config: DaemonConfigShape,
   ) => Effect.Effect<void, SpawnDaemonError>;
@@ -110,9 +121,8 @@ const spawnEnvPrefixes = ['LC_', 'SSL_CERT_', 'XDG_'];
  * the first client's shell exported — `RUSTFLAGS`, `CARGO_TARGET_DIR`,
  * `RUSTC_WRAPPER`, a fd-based `MAKEFLAGS` jobserver — would otherwise become
  * the base of every other session's builds until the daemon restarts (#55).
- * Only the daemon's own settings (`CARGO_HAULER_*` and the legacy tuning
- * aliases), toolchain locations, locale, temp/cache paths, and network knobs
- * for crate fetches survive.
+ * Only the daemon's own settings (`CARGO_HAULER_*`), toolchain locations,
+ * locale, temp/cache paths, and network knobs for crate fetches survive.
  */
 export const daemonSpawnEnv = (
   env: Readonly<Record<string, string | undefined>>,
@@ -173,13 +183,32 @@ export const spawnDetachedDaemon = (
       }),
   );
 
+export const defaultEnsureDependencies: EnsureDaemonDependencies = {
+  exitGraceMs,
+  pingDaemon,
+  pollMs: 100,
+  processAlive,
+  requestShutdown,
+  spawnDetachedDaemon,
+  waitForDaemon,
+};
+
+/**
+ * A daemon this build can talk to, started if none answers the socket.
+ *
+ * One install, one version: the CLI, hooks, MCP server, and daemon always
+ * ship together, so a daemon answering with another version is one left
+ * running from a previous install, and it is replaced here on the next call
+ * — the graceful `shutdown` request, a wait for its pid to exit, then the
+ * usual detached spawn. Its in-flight tickets are not handed over: the new
+ * daemon marks them `killed` with `orphaned by daemon restart` on its first
+ * ledger pass, exactly as `hauler daemon restart` does. The old daemon is
+ * never signalled past the request; one that outlives the grace fails this
+ * call as `DaemonNotReplaced` and keeps serving.
+ */
 export const ensureDaemonRunning = (
   config: DaemonConfigShape = resolveDaemonConfig(),
-  dependencies: EnsureDaemonDependencies = {
-    pingDaemon,
-    spawnDetachedDaemon,
-    waitForDaemon,
-  },
+  dependencies: EnsureDaemonDependencies = defaultEnsureDependencies,
 ): Effect.Effect<PongMessage, EnsureDaemonError> =>
   Effect.gen(function* () {
     const already = yield* dependencies.pingDaemon(config.socketPath, 500).pipe(
@@ -188,7 +217,18 @@ export const ensureDaemonRunning = (
       ),
     );
     if (already !== null) {
-      return already;
+      if (already.version === version) {
+        return already;
+      }
+      yield* dependencies.requestShutdown(config.socketPath);
+      const exited = yield* waitForExit(already.pid, dependencies);
+      if (!exited) {
+        return yield* new DaemonNotReplacedError({
+          daemon: { pid: already.pid, startedAtMs: already.startedAtMs, version: already.version },
+          graceMs: dependencies.exitGraceMs,
+          socketPath: config.socketPath,
+        });
+      }
     }
     yield* dependencies.spawnDetachedDaemon(config);
     return yield* dependencies.waitForDaemon(config.socketPath);

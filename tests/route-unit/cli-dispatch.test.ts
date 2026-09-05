@@ -48,7 +48,7 @@ describe('routed CLI', () => {
     expect(cliJson(json)).toMatchObject({ active: [], daemon: 'stopped', operation: 'status' });
   });
 
-  it('maps the legacy filter flags onto the status input', async () => {
+  it('maps the CLI filter flags onto the status input', async () => {
     const run = await invokeCli([
       'status',
       '--json',

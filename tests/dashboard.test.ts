@@ -22,6 +22,7 @@ import {
   frequencyTotal,
   handBackView,
   kacheColumns,
+  kachePressureModel,
   kachePressureView,
   kacheProfileGroups,
   laneIsActive,
@@ -41,13 +42,11 @@ import {
   remainingMinMs,
   resolveTicketDetail,
   rowSubcommand,
-  runMetricsView,
   sectionOrder,
   shortenPath,
   stalledHint,
   latencySavedStat,
   subcommandDisplayLabel,
-  subcommandMetricsView,
   subcommandTimings,
   summaryFirstLine,
   terminalStatuses,
@@ -174,9 +173,11 @@ describe('sectionOrder (stable layout)', () => {
 });
 
 describe('pickMetricsWindow (window toggle and fallback)', () => {
-  const windows = [
+  // Pure compiles: no leader carries the build-finished stamp, so no phase split.
+  const noHandBack = { leaders: 0, laneReleasedMs: 0 };
+  const windows: readonly DashboardMetricsWindow[] = [
     {
-      id: 'hour' as const,
+      id: 'hour',
       count: 3,
       done: 2,
       failed: 1,
@@ -186,10 +187,14 @@ describe('pickMetricsWindow (window toggle and fallback)', () => {
       runMeanMs: 1_050,
       waitP50Ms: 40,
       waitP95Ms: 110,
-      bySubcommand: [{ subcommand: 'check', count: 3, p50Ms: 900, maxMs: 1_800 }],
+      bySubcommand: [{ subcommand: 'check', count: 3, p50Ms: 900, maxMs: 1_800, phases: null }],
+      runTotalMs: 3_150,
+      waitTotalMs: 180,
+      waitSplit: { count: 3, laneBoundMs: 120, permitBoundMs: 0, otherMs: 60, permits: 5 },
+      handBack: noHandBack,
     },
     {
-      id: 'day' as const,
+      id: 'day',
       count: 12,
       done: 10,
       failed: 1,
@@ -199,10 +204,14 @@ describe('pickMetricsWindow (window toggle and fallback)', () => {
       runMeanMs: 1_600,
       waitP50Ms: 70,
       waitP95Ms: 300,
-      bySubcommand: [{ subcommand: 'check', count: 12, p50Ms: 1_200, maxMs: 2_700 }],
+      bySubcommand: [{ subcommand: 'check', count: 12, p50Ms: 1_200, maxMs: 2_700, phases: null }],
+      runTotalMs: 19_200,
+      waitTotalMs: 1_100,
+      waitSplit: { count: 12, laneBoundMs: 800, permitBoundMs: 100, otherMs: 200, permits: 5 },
+      handBack: noHandBack,
     },
     {
-      id: 'all' as const,
+      id: 'all',
       count: 55,
       done: 49,
       failed: 4,
@@ -212,7 +221,11 @@ describe('pickMetricsWindow (window toggle and fallback)', () => {
       runMeanMs: 2_300,
       waitP50Ms: 120,
       waitP95Ms: 480,
-      bySubcommand: [{ subcommand: 'check', count: 55, p50Ms: 1_600, maxMs: 5_000 }],
+      bySubcommand: [{ subcommand: 'check', count: 55, p50Ms: 1_600, maxMs: 5_000, phases: null }],
+      runTotalMs: 126_500,
+      waitTotalMs: 9_400,
+      waitSplit: { count: 55, laneBoundMs: 7_000, permitBoundMs: 1_400, otherMs: 1_000, permits: 5 },
+      handBack: noHandBack,
     },
   ];
 
@@ -222,25 +235,18 @@ describe('pickMetricsWindow (window toggle and fallback)', () => {
 
   it('returns the selected window when present', () => {
     const picked = pickMetricsWindow(windows, 'all');
-    expect(picked.source).toBe('ledger-windows');
     expect(picked.id).toBe('all');
     expect(picked.window?.count).toBe(55);
   });
 
   it('falls back to 24h when the selected id is missing', () => {
     const picked = pickMetricsWindow(windows.filter((window) => window.id !== 'all'), 'all');
-    expect(picked.source).toBe('ledger-windows');
     expect(picked.id).toBe('day');
     expect(picked.window?.count).toBe(12);
   });
 
-  it('falls back to daemon lifetime when windows are absent', () => {
-    const picked = pickMetricsWindow(undefined, 'day');
-    expect(picked).toEqual({
-      id: 'day',
-      source: 'daemon-lifetime',
-      window: null,
-    });
+  it('yields no window when the status carried no metrics (daemon stopped or unresponsive)', () => {
+    expect(pickMetricsWindow([], 'day')).toEqual({ id: 'day', window: null });
   });
 
   it('formats toggle labels', () => {
@@ -353,63 +359,6 @@ describe('kacheColumns (empty kache sub-panels collapse)', () => {
     expect(kacheColumns({ crates: 7, roots: 0 })).toEqual(['crates']);
     expect(kacheColumns({ crates: 0, roots: 2 })).toEqual(['roots']);
     expect(kacheColumns({ crates: 7, roots: 2 })).toEqual(['roots', 'crates']);
-  });
-});
-
-describe('runMetricsView (honest percentiles)', () => {
-  const smallHistogram = {
-    buckets: [
-      [60_000, 1],
-      [300_000, 3],
-    ],
-    count: 3,
-    max: 250_000,
-    min: 55_000,
-    sum: 439_000,
-  };
-
-  it('always reports n and hides p95 below the sample threshold', () => {
-    const view = runMetricsView(smallHistogram);
-    expect(view.count).toBe(3);
-    expect(view.p50Ms).toBe(300_000);
-    expect(view.p95Ms).toBeNull();
-    expect(view.meanMs).toBeCloseTo(439_000 / 3);
-  });
-
-  it('shows p95 once the histogram reaches the documented threshold', () => {
-    const histogram = {
-      buckets: [
-        [1_000, 6],
-        [5_000, percentileMinSamples],
-      ],
-      count: percentileMinSamples,
-      max: 4_200,
-      min: 300,
-      sum: 24_000,
-    };
-    const view = runMetricsView(histogram);
-    expect(view.p50Ms).toBe(1_000);
-    expect(view.p95Ms).toBe(5_000);
-  });
-
-  it('stays gated one run below the threshold', () => {
-    const histogram = {
-      buckets: [[5_000, percentileMinSamples - 1]],
-      count: percentileMinSamples - 1,
-      max: 4_000,
-      min: 100,
-      sum: 9_000,
-    };
-    expect(runMetricsView(histogram).p95Ms).toBeNull();
-  });
-
-  it('returns an all-null view before any runs are tracked', () => {
-    expect(runMetricsView(undefined)).toEqual({
-      count: 0,
-      meanMs: null,
-      p50Ms: null,
-      p95Ms: null,
-    });
   });
 });
 
@@ -692,7 +641,7 @@ describe('memoryStatView', () => {
     });
   });
 
-  it('keeps a stable placeholder for older daemons', () => {
+  it('keeps a stable placeholder when the host exposes no memory sample (no PSI, no MemAvailable)', () => {
     expect(memoryStatView({})).toEqual({
       clamp: 'none',
       label: 'mem free · psi —',
@@ -855,10 +804,6 @@ describe('subcommandTimings (metrics split by subcommand)', () => {
     ]);
     expect(timings.map(subcommandDisplayLabel)).toEqual(['cargo build', 'cargo build · perf']);
   });
-
-  it('shows a legacy path-shaped subcommand by its basename', () => {
-    expect(subcommandDisplayLabel({ subcommand: '/home/me/.cargo/bin/rustup' })).toBe('cargo rustup');
-  });
 });
 
 describe('latencySavedStat', () => {
@@ -875,99 +820,13 @@ describe('latencySavedStat', () => {
   });
 });
 
-describe('waitMetricsView (daemon summary + fallback)', () => {
-  it('prefers daemon summary quantiles when provided', () => {
-    const metrics = waitMetricsView(
-      {
-        count: 12,
-        max: 9_000,
-        quantiles: [
-          [0.5, 1_000],
-          [0.9, 4_000],
-          [0.95, 8_000],
-        ],
-      },
-      [400, 600, 800],
-    );
-    expect(metrics).toEqual({
-      source: 'daemon-1h',
-      count: 12,
-      p50Ms: 1_000,
-      p90Ms: 4_000,
-      p95Ms: 8_000,
-      maxMs: 9_000,
-    });
+describe('waitMetricsView (queue wait of the visible finished rows)', () => {
+  it('reports the sample size and its median, the wait tiles of a stopped daemon', () => {
+    expect(waitMetricsView([5_000, 1_000, 3_000])).toEqual({ count: 3, p50Ms: 3_000 });
   });
 
-  it('falls back to visible finished rows when summary is absent', () => {
-    const metrics = waitMetricsView(undefined, [5_000, 1_000, 3_000]);
-    expect(metrics).toEqual({
-      source: 'visible-window',
-      count: 3,
-      p50Ms: 3_000,
-      p90Ms: null,
-      p95Ms: null,
-      maxMs: 5_000,
-    });
-  });
-});
-
-describe('subcommandMetricsView (daemon-lifetime + fallback)', () => {
-  it('prefers daemon per-kind histograms when available', () => {
-    const view = subcommandMetricsView(
-      {
-        check: {
-          buckets: [
-            [1_000, 2],
-            [5_000, 3],
-          ],
-          count: 3,
-          min: 800,
-          max: 4_500,
-          sum: 8_000,
-        },
-        test: {
-          buckets: [
-            [60_000, 1],
-            [120_000, 1],
-          ],
-          count: 1,
-          min: 60_000,
-          max: 60_000,
-          sum: 60_000,
-        },
-      },
-      [{ argv: ['cargo', 'build'], runMs: 2_000 }],
-    );
-    expect(view.source).toBe('daemon-lifetime');
-    expect(view.rows).toEqual([
-      {
-        count: 3,
-        maxMs: 4_500,
-        meanMs: 8_000 / 3,
-        p50Ms: 1_000,
-        profile: 'dev',
-        subcommand: 'check',
-      },
-      {
-        count: 1,
-        maxMs: 60_000,
-        meanMs: 60_000,
-        p50Ms: 60_000,
-        profile: 'test',
-        subcommand: 'test',
-      },
-    ]);
-  });
-
-  it('falls back to visible-window subcommand timings for older daemons', () => {
-    const rows = [
-      { argv: ['cargo', 'check', '-p', 'aa'], runMs: 1_000 },
-      { argv: ['cargo', 'test', '-p', 'aa'], runMs: 60_000 },
-    ];
-    const view = subcommandMetricsView(undefined, rows);
-    expect(view.source).toBe('visible-window');
-    expect(view.rows).toEqual(subcommandTimings(rows));
+  it('is empty, not zero, without a finished row that recorded a wait', () => {
+    expect(waitMetricsView([])).toEqual({ count: 0, p50Ms: null });
   });
 });
 
@@ -1190,10 +1049,8 @@ describe('waitVsRunView (queue wait vs run, split by cause)', () => {
     expect(view.permitsNote).toContain('no permit count');
   });
 
-  it('is unavailable, with the reason, without a window or from an older daemon', () => {
+  it('is unavailable, with the reason, when the status carried no window', () => {
     expect(waitVsRunView(null)).toEqual({ kind: 'unavailable', reason: 'no-window' });
-    const { handBack: _handBack, runTotalMs: _run, waitSplit: _split, waitTotalMs: _wait, ...legacy } = window;
-    expect(waitVsRunView(legacy)).toEqual({ kind: 'unavailable', reason: 'older-daemon' });
   });
 
   it('summarises the lane time the hand-back released', () => {
@@ -1233,9 +1090,8 @@ describe('phaseSplitView (compile vs execution per command)', () => {
     ).toBe(`compile p50 n<${percentileMinSamples} · exec p50 n<${percentileMinSamples} (n=2)`);
   });
 
-  it('is null for pure compiles, empty splits and older daemons', () => {
+  it('is null for pure compiles and empty splits', () => {
     expect(phaseSplitView(null)).toBeNull();
-    expect(phaseSplitView(undefined)).toBeNull();
     expect(
       phaseSplitView({ count: 0, compileP50Ms: null, executeP50Ms: null, compileTotalMs: 0, executeTotalMs: 0 }),
     ).toBeNull();
@@ -1275,8 +1131,8 @@ describe('kache store pressure (widget adapter + panel model)', () => {
 
   it('warns when the store is over its limit and when the last GC skipped evictions', () => {
     const model = kachePressureView(pressure, nowMs);
-    expect(model.kind).toBe('available');
-    if (model.kind !== 'available') {
+    expect(model).not.toBeNull();
+    if (model === null) {
       return;
     }
     expect(model.store).toEqual({
@@ -1303,7 +1159,6 @@ describe('kache store pressure (widget adapter + panel model)', () => {
     expect(model).toEqual({
       gc: 'no GC recorded (gc_stats.json missing)',
       keyTiming: null,
-      kind: 'available',
       store: { limitSource: null, percent: null, text: '541.0 GB, limit unknown: local_max_size not set' },
       warnings: [],
     });
@@ -1316,8 +1171,8 @@ describe('kache store pressure (widget adapter + panel model)', () => {
       },
       nowMs,
     );
-    expect(declined.kind).toBe('available');
-    if (declined.kind !== 'available') {
+    expect(declined).not.toBeNull();
+    if (declined === null) {
       return;
     }
     expect(declined.store.text).toBe('size unknown (index has no blobs table) of 429.0 GB');
@@ -1327,7 +1182,22 @@ describe('kache store pressure (widget adapter + panel model)', () => {
     ]);
   });
 
-  it('is unavailable from an older daemon rather than an empty store', () => {
-    expect(kachePressureView(undefined, nowMs)).toEqual({ kind: 'unavailable', reason: 'older-daemon' });
+  it('projects a report onto exactly the four lines the panel prints', () => {
+    const model = kachePressureModel(
+      {
+        ...pressure,
+        limit: { bytes: pressure.limit.bytes, kind: 'known', source: pressure.limit.source },
+        gc: { ...pressure.gc, kind: 'ran' },
+      },
+      nowMs,
+    );
+    expect(Object.keys(model).sort()).toEqual(['gc', 'keyTiming', 'store', 'warnings']);
+    expect(model.store.percent).toBeCloseTo((541 / 429) * 100);
+    expect(model.warnings.map((warning) => warning.kind)).toEqual(['over-limit', 'gc-eviction-errors']);
+  });
+
+  it('is null, never an empty store, when the payload carries no report of the promised shape', () => {
+    expect(kachePressureView(undefined, nowMs)).toBeNull();
+    expect(kachePressureView({ storeBytes: 1 }, nowMs)).toBeNull();
   });
 });

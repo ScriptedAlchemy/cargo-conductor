@@ -47,7 +47,8 @@ const defaultOutputBufferOptions: ConnectionOutputBufferOptions = {
 /**
  * FIFO connection buffer with a bounded bulk-output portion. Control and
  * terminal messages are always retained; overflow replaces output with one
- * ordinary stderr output message so old clients display the truncation note.
+ * ordinary stderr output message, so the truncation note needs no message
+ * type of its own.
  */
 export class ConnectionOutputBuffer {
   readonly #options: ConnectionOutputBufferOptions;

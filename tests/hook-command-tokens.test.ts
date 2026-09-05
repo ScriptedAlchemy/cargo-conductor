@@ -19,7 +19,6 @@ describe('commandMentionsHauler', () => {
     ['CARGO_TARGET_DIR=/tmp/t cargo build', true],
     ['hauler status', true],
     ['hauler exec --session s --host claude -- cargo check', true],
-    ['conductor status', true],
     ['~/.cargo/bin/cargo test -p foo', true],
     ['/usr/bin/cargo.exe build', true],
     ['timeout 600 cargo nextest run', true],

@@ -13,7 +13,6 @@ import { kachePressureModel } from '../lib/kache-pressure-model.js';
 import type { KachePressureModel } from '../lib/kache-pressure-model.js';
 import type { StatusResult } from '../lib/protocol-schemas.js';
 import { countWord } from '../lib/text.js';
-import { cliVersion, versionSkewLine } from '../lib/version-skew.js';
 
 import { commandText, diagnosticCounts } from './headlines.js';
 
@@ -34,15 +33,11 @@ export interface DaemonBadgeModel {
   readonly state: DaemonHealth['state'];
   readonly headline: string;
   readonly detail: string | null;
-  /** The resolved state directory, so a reader sees which ledger and socket this is (#75). */
+  /** The resolved state directory, so a reader sees which ledger and socket this is. */
   readonly stateDir: string | null;
-  /** `daemon 0.4.2 ≠ cli 0.4.4 — restart it with …` when the running daemon is another build (#75). */
-  readonly skew: string | null;
 }
 
 export interface DaemonBadgeShell {
-  /** The version of the CLI/MCP build rendering the badge; defaults to this build's. */
-  readonly cliVersion?: string;
   readonly stateDir?: string;
 }
 
@@ -79,7 +74,6 @@ export const daemonBadgeModel = (
       return {
         detail: `${health.running}/${health.maxConcurrent} permits${riding}, ${health.queued} queued · ${lanes} · up since ${relativeTime(health.startedAtMs, nowMs)}`,
         headline: `daemon running (pid ${health.pid})`,
-        skew: versionSkewLine(health.version, shell.cliVersion ?? cliVersion),
         state: health.state,
         stateDir,
       };
@@ -90,7 +84,6 @@ export const daemonBadgeModel = (
           ? 'no socket; it starts on demand with the next cargo request'
           : 'socket present but connection refused; a stale socket from an earlier daemon',
         headline: 'daemon stopped',
-        skew: null,
         state: health.state,
         stateDir,
       };
@@ -98,7 +91,6 @@ export const daemonBadgeModel = (
       return {
         detail: unresponsiveDetail(health.reason, health.timeoutMs),
         headline: 'daemon unresponsive',
-        skew: null,
         state: health.state,
         stateDir,
       };
@@ -106,12 +98,11 @@ export const daemonBadgeModel = (
       return {
         detail: `socket present but could not be opened (${health.detail}); the daemon may be running — check permissions on the state directory`,
         headline: 'daemon unreachable',
-        skew: null,
         state: health.state,
         stateDir,
       };
     case 'unprobed':
-      return { detail: null, headline: 'daemon not probed on this surface', skew: null, state: health.state, stateDir };
+      return { detail: null, headline: 'daemon not probed on this surface', state: health.state, stateDir };
     default: {
       const exhaustive: never = health;
       return exhaustive;
@@ -152,13 +143,13 @@ export const laneBoardModel = (
     (lane) =>
       lane.queued > 0 ||
       lane.runningTicket !== null ||
-      (lane.executingTickets?.length ?? 0) > 0,
+      lane.executingTickets.length > 0,
   );
   return {
     idleLanes: lanes.length - busy.length,
     rows: busy.map((lane) => {
       const leader = lane.runningTicket === null ? undefined : byTicket.get(lane.runningTicket);
-      const executing = lane.executingTickets ?? [];
+      const executing = lane.executingTickets;
       return {
         executing: executing.length === 0 ? null : executing.join(', '),
         name: laneName(lane),
@@ -224,7 +215,7 @@ export type KacheModel =
       readonly summary: string;
       readonly freshness: string | null;
       readonly slowest: readonly { readonly crate: string; readonly profile: string; readonly ms: string }[];
-      /** Store size against its limit, last GC, and `key_ms` (#92); unavailable from older daemons. */
+      /** Store size against its limit, last GC, and `key_ms` (#92). */
       readonly pressure: KachePressureModel;
     };
 

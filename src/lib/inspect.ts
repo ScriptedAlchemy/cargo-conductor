@@ -16,8 +16,8 @@ export interface InspectOptions {
   readonly signal: AbortSignal;
 }
 
-// Through the ticket boundary runner: a daemon whose report this build cannot
-// read surfaces as the version-skew message, not a schema dump (#75).
+// Through the ticket boundary runner so MCP/CLI cancellation aborts the
+// socket wait; the snapshot itself never fails.
 const loadSnapshot = (limit: number, options: InspectOptions) =>
   runTicketEffect(
     loadHaulerSnapshot({
@@ -71,6 +71,6 @@ export const loadStatusResult = async (
     active: displayRequestRecords(active),
     operation: 'status',
     recent: displayRequestRecords(recent),
-    summary: statusSummary(snapshot.daemon, active, recent, { daemonVersion: snapshot.daemonVersion }),
+    summary: statusSummary(snapshot.daemon, active, recent),
   };
 };

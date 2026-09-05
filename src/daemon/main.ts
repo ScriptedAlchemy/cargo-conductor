@@ -47,7 +47,6 @@ const appLayer = (config: DaemonConfigShape) =>
 
 const minimumLogLevelLayer = Layer.unwrap(
   Config.logLevel('CARGO_HAULER_LOG_LEVEL').pipe(
-    Config.orElse(() => Config.logLevel('CARGO_CONDUCTOR_LOG_LEVEL')),
     Effect.orElseSucceed(() => 'Info' as const),
     Effect.map((level) => Layer.succeed(References.MinimumLogLevel, level)),
   ),
@@ -165,8 +164,8 @@ export const runDaemon = (
   Effect.scoped(
     Effect.gen(function* () {
       // The lock comes before the layers: building LedgerLive opens the
-      // database writable, migrates, and backfills, and BrokerLive drains
-      // the passthrough spool. A losing instance must do none of that, nor
+      // database writable and migrates, and BrokerLive drains the
+      // passthrough spool. A losing instance must do none of that, nor
       // race the live daemon's own drain. The lock's scope outlives the
       // layers, so it is released after the ledger closes.
       yield* acquireSingletonLockWith(config);

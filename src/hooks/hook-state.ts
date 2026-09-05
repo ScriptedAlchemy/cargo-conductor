@@ -6,10 +6,11 @@ import { isRecord } from '../lib/guards.js';
 import { resolveHookStateDir } from './paths.js';
 
 /**
- * On-disk shape of `hook-state.json`, shared by every session's hooks.
- * `cursors` and `denies` are the original flat maps; `denyOwners` (ticket →
- * session) was added so a session can prune the counters it created without
- * touching another session's. Older files without it still load.
+ * On-disk shape of `hook-state.json`, shared by every session's hooks:
+ * `cursors` (session → last event cursor), `denies` (ticket → stop denials),
+ * and `denyOwners` (ticket → session) so a session prunes only the counters
+ * it created. A file that is missing, unreadable, or not this shape reads as
+ * empty.
  */
 interface HookState {
   readonly cursors: Record<string, number>;
@@ -64,12 +65,8 @@ const saveState = (stateDir: string, state: HookState): void => {
   mkdirSync(stateDir, { recursive: true });
   const target = statePath(stateDir);
   const temp = `${target}.${process.pid}.${Math.random().toString(36).slice(2, 8)}.tmp`;
-  const serialized: Record<string, unknown> = { cursors: state.cursors, denies: state.denies };
-  if (Object.keys(state.denyOwners).length > 0) {
-    serialized.denyOwners = state.denyOwners;
-  }
   try {
-    writeFileSync(temp, `${JSON.stringify(serialized)}\n`);
+    writeFileSync(temp, `${JSON.stringify(state)}\n`);
     renameSync(temp, target);
   } catch (error) {
     rmSync(temp, { force: true });
@@ -93,17 +90,16 @@ export const writeCursor = (
 export const readDenyCount = (ticket: string, stateDir: string = resolveHookStateDir()): number =>
   loadState(stateDir).denies[ticket] ?? 0;
 
+/** Counts one more stop denial for `ticket` on behalf of `session`, which then owns the counter. */
 export const incrementDenyCount = (
   ticket: string,
+  session: string,
   stateDir: string = resolveHookStateDir(),
-  session?: string,
 ): number => {
   const state = loadState(stateDir);
   const next = (state.denies[ticket] ?? 0) + 1;
   state.denies[ticket] = next;
-  if (session !== undefined) {
-    state.denyOwners[ticket] = session;
-  }
+  state.denyOwners[ticket] = session;
   saveState(stateDir, state);
   return next;
 };
@@ -111,8 +107,7 @@ export const incrementDenyCount = (
 /**
  * Drop deny counters this session created for tickets that are no longer
  * pending (`keep` is the session's current hold-stop set). Counters owned by
- * other sessions are untouched; counters with no recorded owner predate
- * ownership tracking and are dropped once they fall outside `keep`.
+ * any other session are untouched.
  */
 export const pruneDenyCounts = (
   session: string,
@@ -123,8 +118,7 @@ export const pruneDenyCounts = (
   const kept = new Set(keep);
   let changed = false;
   for (const ticket of Object.keys(state.denies)) {
-    const owner = state.denyOwners[ticket];
-    if (kept.has(ticket) || (owner !== undefined && owner !== session)) {
+    if (kept.has(ticket) || state.denyOwners[ticket] !== session) {
       continue;
     }
     delete state.denies[ticket];

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'effect-rstest';
 
-import type { LaneStatus, RequestRecord } from '../src/daemon/protocol.js';
+import type { KacheStorePressureReport, LaneStatus, RequestRecord } from '../src/daemon/protocol.js';
 import {
   admissionModel,
   buildDiagnosticsModel,
@@ -44,6 +44,9 @@ const record = (overrides: Partial<RequestRecord> = {}): RequestRecord => ({
   outputTail: null,
   queuedAtMs: nowMs - 65_000,
   runMs: null,
+  savedComputeMs: null,
+  savedComputeSource: null,
+  savedLatencyMs: null,
   session: 'conv-1',
   signal: null,
   startedAtMs: nowMs - 60_000,
@@ -59,7 +62,7 @@ const record = (overrides: Partial<RequestRecord> = {}): RequestRecord => ({
 describe('daemonBadgeModel', () => {
   it('summarises a running daemon by permits, riders, queue, and lanes', () => {
     const model = daemonBadgeModel(
-      { busyLanes: 2, latencyMs: 3, maxConcurrent: 5, pid: 42, queued: 1, riding: 2, running: 3, startedAtMs: nowMs - 3_600_000, state: 'running' },
+      { busyLanes: 2, latencyMs: 3, maxConcurrent: 5, pid: 42, queued: 1, riding: 2, running: 3, startedAtMs: nowMs - 3_600_000, state: 'running', version: '0.5.0' },
       nowMs,
     );
     expect(model.headline).toBe('daemon running (pid 42)');
@@ -76,20 +79,16 @@ describe('daemonBadgeModel', () => {
     expect(daemonBadgeModel({ reason: 'event-surface', state: 'unprobed' }, nowMs)).toEqual({
       detail: null,
       headline: 'daemon not probed on this surface',
-      skew: null,
       state: 'unprobed',
       stateDir: null,
     });
   });
 
-  it('names the state directory it was given and warns when the daemon is another build (#75)', () => {
-    const running = { busyLanes: 0, latencyMs: 3, maxConcurrent: 5, pid: 42, queued: 0, riding: 0, running: 0, startedAtMs: nowMs, state: 'running' as const };
-    const model = daemonBadgeModel({ ...running, version: '0.4.2' }, nowMs, { cliVersion: '0.4.4', stateDir: '/fast/cache/cargo-hauler' });
+  it('names the state directory it was given', () => {
+    const running = { busyLanes: 0, latencyMs: 3, maxConcurrent: 5, pid: 42, queued: 0, riding: 0, running: 0, startedAtMs: nowMs, state: 'running' as const, version: '0.5.0' };
+    const model = daemonBadgeModel(running, nowMs, { stateDir: '/fast/cache/cargo-hauler' });
     expect(model.stateDir).toBe('/fast/cache/cargo-hauler');
-    expect(model.skew).toBe('daemon 0.4.2 ≠ cli 0.4.4 — restart it with `hauler daemon restart`');
-    expect(daemonBadgeModel({ ...running, version: '0.4.4' }, nowMs, { cliVersion: '0.4.4' }).skew).toBeNull();
-    // A daemon too old to state a version is not accused of anything.
-    expect(daemonBadgeModel(running, nowMs, { cliVersion: '0.4.4' }).skew).toBeNull();
+    expect(daemonBadgeModel(running, nowMs).stateDir).toBeNull();
   });
 });
 
@@ -213,8 +212,8 @@ describe('ticketCardModel', () => {
 
 describe('laneBoardModel and admissionModel', () => {
   const lanes: LaneStatus[] = [
-    { key: 'a', queued: 2, runningTicket: 'cc-7', targetDir: '/home/me/work/ws/target', workspaceRoot: '/home/me/work/ws' },
-    { key: 'b', queued: 0, runningTicket: null, targetDir: '/x/target', workspaceRoot: '/x' },
+    { executingTickets: [], key: 'a', queued: 2, runningTicket: 'cc-7', targetDir: '/home/me/work/ws/target', workspaceRoot: '/home/me/work/ws' },
+    { executingTickets: [], key: 'b', queued: 0, runningTicket: null, targetDir: '/x/target', workspaceRoot: '/x' },
   ];
 
   it('lists busy lanes with their leader and counts idle ones', () => {
@@ -262,9 +261,19 @@ describe('laneBoardModel and admissionModel', () => {
 });
 
 describe('kacheModel and lineageModel', () => {
+  /** What the daemon reports beside an index it could not open: no store size, and whatever the config and GC stats said. */
+  const absentIndexPressure: KacheStorePressureReport = {
+    gc: { kind: 'unavailable', reason: 'missing' },
+    keyTiming: null,
+    limit: { detail: 'no kache config.toml beside the index', kind: 'unknown', reason: 'config-missing' },
+    storeBytes: null,
+  };
+
   it('distinguishes an unreported kache field from a detected absence', () => {
     expect(kacheModel(undefined)).toEqual({ kind: 'unknown' });
-    expect(kacheModel({ available: false, distinctCrates: 0, entryCount: 0, eventsFreshMs: null, indexSizeBytes: 0, recentHeartbeatRoots: [], topCrates: [] })).toEqual({ kind: 'unavailable' });
+    expect(
+      kacheModel({ available: false, distinctCrates: 0, entryCount: 0, eventsFreshMs: null, indexSizeBytes: 0, pressure: absentIndexPressure, recentHeartbeatRoots: [], topCrates: [] }),
+    ).toEqual({ kind: 'unavailable' });
   });
 
   it('carries the store-pressure lines and warnings beside the index summary', () => {
@@ -308,7 +317,6 @@ describe('kacheModel and lineageModel', () => {
     expect(model.pressure).toEqual({
       gc: 'ran 2m ago in 1m 23s, 0 entries evicted, 2 blobs removed, 1.0 MB freed, 4 evictions skipped',
       keyTiming: 'key_ms mean 1.0s · p95 1.1s (n=3)',
-      kind: 'available',
       store: { limitSource: 'KACHE_MAX_SIZE', percent: (541 / 429) * 100, text: '541.0 GB of 429.0 GB (126%)' },
       warnings: [
         { kind: 'over-limit', text: 'store is over its limit (541.0 GB of 429.0 GB (126%)); kache GC is not keeping up' },
@@ -317,13 +325,34 @@ describe('kacheModel and lineageModel', () => {
     });
   });
 
-  it('marks store pressure unavailable for a daemon that predates the report', () => {
+  it('says what is unknown about store pressure when the store has never been GCed', () => {
     const model = kacheModel(
-      { available: true, distinctCrates: 1, entryCount: 1, eventsFreshMs: null, indexSizeBytes: 10, recentHeartbeatRoots: [], topCrates: [] },
+      {
+        available: true,
+        distinctCrates: 1,
+        entryCount: 1,
+        eventsFreshMs: null,
+        indexSizeBytes: 10,
+        pressure: {
+          gc: { kind: 'unavailable', reason: 'missing' },
+          keyTiming: null,
+          limit: { bytes: 2 * 1024 ** 2, kind: 'known', source: '/x/config.toml' },
+          storeBytes: 1024 ** 2,
+        },
+        recentHeartbeatRoots: [],
+        topCrates: [],
+      },
       5,
       nowMs,
     );
-    expect(model.kind === 'available' ? model.pressure : null).toEqual({ kind: 'unavailable', reason: 'older-daemon' });
+    expect(model.kind).toBe('available');
+    if (model.kind !== 'available') {
+      return;
+    }
+    expect(model.pressure.store).toEqual({ limitSource: '/x/config.toml', percent: 50, text: '1.0 MB of 2.0 MB (50%)' });
+    expect(model.pressure.gc).toBe('no GC recorded (gc_stats.json missing)');
+    expect(model.pressure.keyTiming).toBeNull();
+    expect(model.pressure.warnings).toEqual([]);
   });
 
   it('describes where a request sits in its conversation tree', () => {

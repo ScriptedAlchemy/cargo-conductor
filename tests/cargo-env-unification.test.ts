@@ -32,7 +32,6 @@ describe('cargo environment relevance', () => {
     });
     expect(isRelevantCargoEnvironmentVariable('CFLAGS')).toBe(true);
     expect(isRelevantCargoEnvironmentVariable('CC_aarch64_unknown_linux_gnu')).toBe(true);
-    expect(isRelevantCargoEnvironmentVariable('CARGO_CONDUCTOR_STATE_DIR')).toBe(false);
     expect(isRelevantCargoEnvironmentVariable('CARGO_HAULER_STATE_DIR')).toBe(false);
     expect(isRelevantCargoEnvironmentVariable('HOME')).toBe(false);
   });
@@ -52,7 +51,7 @@ describe('cargo environment relevance', () => {
   });
 
   it('keeps hauler-internal settings out of transport and identity', () => {
-    for (const name of ['CARGO_HAULER_STATE_DIR', 'CARGO_HAULER_CARGO_BIN', 'CARGO_CONDUCTOR_HOST']) {
+    for (const name of ['CARGO_HAULER_STATE_DIR', 'CARGO_HAULER_CARGO_BIN', 'CARGO_HAULER_HOST']) {
       expect(isHaulerInternalEnvironmentVariable(name)).toBe(true);
       expect(isTransportedEnvironmentVariable(name)).toBe(false);
       expect(isRelevantCargoEnvironmentVariable(name)).toBe(false);
