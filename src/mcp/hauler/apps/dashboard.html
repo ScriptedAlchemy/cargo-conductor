@@ -198,6 +198,46 @@
       }
       .mini-meter-fill { height: 100%; background: var(--accent); }
       .kache-section .stats { margin-bottom: 16px; }
+      .wait-vs-run { margin-top: 18px; }
+      .wait-vs-run .stats { margin-bottom: 10px; }
+      /* Queue wait by cause: one bar, three causes, so the lane/permit share
+         reads at a glance next to the totals above it. */
+      .wait-split {
+        display: flex;
+        height: 8px;
+        border-radius: 999px;
+        background: var(--line);
+        overflow: hidden;
+      }
+      .wait-split-fill.lane { background: var(--accent); }
+      .wait-split-fill.permit { background: var(--warn); }
+      .wait-split-fill.other { background: rgba(232, 228, 217, 0.28); }
+      .wait-legend {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 4px 18px;
+        margin-top: 6px;
+        color: var(--muted);
+        font-family: var(--mono);
+        font-size: 0.74rem;
+      }
+      .swatch {
+        display: inline-block;
+        width: 8px;
+        height: 8px;
+        margin-right: 6px;
+        border-radius: 2px;
+        vertical-align: -1px;
+      }
+      .swatch.lane { background: var(--accent); }
+      .swatch.permit { background: var(--warn); }
+      .swatch.other { background: rgba(232, 228, 217, 0.28); }
+      .phase-split { color: var(--muted); }
+      .warn-line {
+        margin: 0 0 8px;
+        color: var(--warn);
+        font-size: 0.84rem;
+      }
       .live-note {
         color: var(--warn);
         font-size: 0.74rem;

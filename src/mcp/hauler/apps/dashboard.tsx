@@ -23,8 +23,10 @@ import {
   formatMs,
   frequencyEntries,
   frequencyTotal,
+  handBackView,
   heavyAdmissionNote,
   kacheColumns,
+  kachePressureView,
   kacheProfileGroups,
   laneIsActive,
   metricsWindowIds,
@@ -33,6 +35,7 @@ import {
   outputTextFor,
   pathBasename,
   percentileMinSamples,
+  phaseSplitView,
   pickMetricsWindow,
   pollStatus,
   queuedWaitMs,
@@ -53,13 +56,19 @@ import {
   terminalStatuses,
   ticketDetailFrom,
   type RunHistogramShape,
+  type DashboardHandBack,
   type DashboardMetricsWindow,
+  type DashboardPhaseSplit,
   type DashboardSection,
   type DashboardMetricsWindowBySubcommand,
+  type DashboardWaitSplit,
+  type KachePressureModel,
   type MetricsWindowId,
   type StatusPoll,
   type TicketDetail,
+  type WaitVsRunView,
   waitMetricsView,
+  waitVsRunView,
 } from '../../../dashboard/lib.js';
 
 /**
@@ -142,6 +151,7 @@ interface StatusMetricsWindowBySubcommandShape {
   readonly count?: unknown;
   readonly p50Ms?: unknown;
   readonly maxMs?: unknown;
+  readonly phases?: unknown;
 }
 
 interface StatusMetricsWindowShape {
@@ -156,6 +166,10 @@ interface StatusMetricsWindowShape {
   readonly waitP50Ms?: unknown;
   readonly waitP95Ms?: unknown;
   readonly bySubcommand?: unknown;
+  readonly runTotalMs?: unknown;
+  readonly waitTotalMs?: unknown;
+  readonly waitSplit?: unknown;
+  readonly handBack?: unknown;
 }
 
 interface SavingsModeShape {
@@ -228,6 +242,7 @@ interface KacheShape {
   readonly indexSizeBytes?: unknown;
   readonly recentHeartbeatRoots?: unknown;
   readonly topCrates?: unknown;
+  readonly pressure?: unknown;
 }
 
 interface PendingRequest {
@@ -344,6 +359,64 @@ const arrayOrEmpty = <T,>(value: unknown): readonly T[] => (Array.isArray(value)
 const asMetricsWindowId = (value: unknown): MetricsWindowId | null =>
   value === 'hour' || value === 'day' || value === 'all' ? value : null;
 
+const numberOrNullField = (value: unknown): number | null =>
+  typeof value === 'number' ? value : null;
+
+const asFields = (value: unknown): Readonly<Record<string, unknown>> | null =>
+  value !== null && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Readonly<Record<string, unknown>>)
+    : null;
+
+/** `undefined` when the daemon predates the split, `null` when no leader handed back. */
+const asDashboardPhaseSplit = (value: unknown): DashboardPhaseSplit | null | undefined => {
+  if (value === undefined) {
+    return undefined;
+  }
+  const row = asFields(value);
+  if (
+    row === null ||
+    typeof row.count !== 'number' ||
+    typeof row.compileTotalMs !== 'number' ||
+    typeof row.executeTotalMs !== 'number'
+  ) {
+    return null;
+  }
+  return {
+    count: row.count,
+    compileP50Ms: numberOrNullField(row.compileP50Ms),
+    executeP50Ms: numberOrNullField(row.executeP50Ms),
+    compileTotalMs: row.compileTotalMs,
+    executeTotalMs: row.executeTotalMs,
+  };
+};
+
+const asDashboardWaitSplit = (value: unknown): DashboardWaitSplit | undefined => {
+  const row = asFields(value);
+  if (
+    row === null ||
+    typeof row.count !== 'number' ||
+    typeof row.laneBoundMs !== 'number' ||
+    typeof row.permitBoundMs !== 'number' ||
+    typeof row.otherMs !== 'number'
+  ) {
+    return undefined;
+  }
+  return {
+    count: row.count,
+    laneBoundMs: row.laneBoundMs,
+    otherMs: row.otherMs,
+    permitBoundMs: row.permitBoundMs,
+    permits: numberOrNullField(row.permits),
+  };
+};
+
+const asDashboardHandBack = (value: unknown): DashboardHandBack | undefined => {
+  const row = asFields(value);
+  return row === null || typeof row.leaders !== 'number' || typeof row.laneReleasedMs !== 'number'
+    ? undefined
+    : { laneReleasedMs: row.laneReleasedMs, leaders: row.leaders };
+};
+
 const asDashboardWindowBySubcommand = (
   value: unknown,
 ): DashboardMetricsWindowBySubcommand | null => {
@@ -358,12 +431,14 @@ const asDashboardWindowBySubcommand = (
   ) {
     return null;
   }
+  const phases = asDashboardPhaseSplit(row.phases);
   return {
     subcommand: row.subcommand,
     ...(typeof row.profile === 'string' ? { profile: row.profile } : {}),
     count: row.count,
     p50Ms: row.p50Ms ?? null,
     maxMs: row.maxMs ?? null,
+    ...(phases === undefined ? {} : { phases }),
   };
 };
 
@@ -386,6 +461,8 @@ const asDashboardWindow = (value: unknown): DashboardMetricsWindow | null => {
   ) {
     return null;
   }
+  const waitSplit = asDashboardWaitSplit(row.waitSplit);
+  const handBack = asDashboardHandBack(row.handBack);
   return {
     id,
     count: row.count,
@@ -400,6 +477,10 @@ const asDashboardWindow = (value: unknown): DashboardMetricsWindow | null => {
     bySubcommand: row.bySubcommand
       .map((entry) => asDashboardWindowBySubcommand(entry))
       .filter((entry): entry is DashboardMetricsWindowBySubcommand => entry !== null),
+    ...(typeof row.runTotalMs === 'number' ? { runTotalMs: row.runTotalMs } : {}),
+    ...(typeof row.waitTotalMs === 'number' ? { waitTotalMs: row.waitTotalMs } : {}),
+    ...(waitSplit === undefined ? {} : { waitSplit }),
+    ...(handBack === undefined ? {} : { handBack }),
   };
 };
 
@@ -1064,6 +1145,8 @@ const MetricsSection = ({
     count === 0 ? '—' : (count < percentileMinSamples || value === null)
       ? `n<${percentileMinSamples}`
       : formatMs(value);
+  const waitVsRun = waitVsRunView(window);
+  const handBack = handBackView(window);
 
   return (
     <section>
@@ -1173,6 +1256,11 @@ const MetricsSection = ({
           ) : null}
         </div>
       )}
+      <WaitVsRun
+        handBack={handBack}
+        view={waitVsRun}
+        windowLabel={window === null ? null : metricsWindowLabel(window.id)}
+      />
       <div className="subcommand-split">
         <h3>
           By command <span>({bySubcommandCaption} — separate populations, not the histogram above)</span>
@@ -1180,29 +1268,187 @@ const MetricsSection = ({
         {bySubcommandRows.length === 0 ? (
           <p className="empty">No command timings in this window.</p>
         ) : (
-          bySubcommandRows.map((timing) => (
-            <div className="compact-row" key={`${timing.subcommand}\0${timing.profile ?? ''}`}>
-              <span className="cmd">{subcommandDisplayLabel(timing)}</span>
-              <span className="row-value">
-                n={timing.count} · p50{' '}
-                {timing.count < percentileMinSamples
-                  ? `n<${percentileMinSamples}`
-                  : (timing.p50Ms === null ? '—' : formatMs(timing.p50Ms))}{' '}
-                · max {timing.maxMs === null ? '—' : formatMs(timing.maxMs)}
-              </span>
-            </div>
-          ))
+          bySubcommandRows.map((timing) => {
+            // Legacy (histogram / visible-window) rows carry no phase split.
+            const phases = phaseSplitView('phases' in timing ? timing.phases : undefined);
+            return (
+              <div className="compact-row" key={`${timing.subcommand}\0${timing.profile ?? ''}`}>
+                <span className="cmd">{subcommandDisplayLabel(timing)}</span>
+                <span className="row-value">
+                  n={timing.count} · p50{' '}
+                  {timing.count < percentileMinSamples
+                    ? `n<${percentileMinSamples}`
+                    : (timing.p50Ms === null ? '—' : formatMs(timing.p50Ms))}{' '}
+                  · max {timing.maxMs === null ? '—' : formatMs(timing.maxMs)}
+                  {phases === null ? null : (
+                    <>
+                      <br />
+                      <span
+                        className="phase-split"
+                        title={`leaders of this command that handed their lane back at Cargo's Finished line; compile is ${Math.round(phases.compilePercent)}% of their compile + execute time`}
+                      >
+                        {phases.text}
+                      </span>
+                    </>
+                  )}
+                </span>
+              </div>
+            );
+          })
         )}
       </div>
     </section>
   );
 };
 
-const KacheSection = ({ value }: { readonly value: unknown }): ReactNode => {
+/**
+ * Queue wait against run time for the selected window, with the wait split
+ * by cause as a stacked bar. Unavailable states name their reason: no ledger
+ * windows at all, or a daemon that predates the split.
+ */
+const WaitVsRun = ({
+  handBack,
+  view,
+  windowLabel,
+}: {
+  readonly handBack: ReturnType<typeof handBackView>;
+  readonly view: WaitVsRunView;
+  readonly windowLabel: string | null;
+}): ReactNode => {
+  switch (view.kind) {
+    case 'unavailable':
+      return (
+        <div className="wait-vs-run">
+          <h3>
+            Queue wait vs run <span>(where leaders waited)</span>
+          </h3>
+          <p className="empty">
+            {view.reason === 'no-window'
+              ? 'Unavailable: this daemon reports no ledger windows.'
+              : 'Unavailable: this daemon predates the wait split (upgrade to 0.5.1 or newer).'}
+          </p>
+        </div>
+      );
+    case 'available': {
+      const waited = view.parts.some((part) => part.ms > 0);
+      return (
+        <div className="wait-vs-run">
+          <h3>
+            Queue wait vs run{' '}
+            <span>
+              ({windowLabel === null ? 'window' : `${windowLabel} window`}, leaders only — {view.permitsNote})
+            </span>
+          </h3>
+          <div className="stats">
+            <Stat
+              label="queue wait (total)"
+              title={`sum of queued→started over the ${formatCompactNumber(view.count)} leaders classified in this window`}
+              value={formatMs(view.waitTotalMs)}
+            />
+            <Stat
+              label="run (total)"
+              title="sum of started→finished over the same leaders"
+              value={formatMs(view.runTotalMs)}
+            />
+            <Stat
+              label="wait ÷ run"
+              title="queue wait as a share of run time; above 100% leaders spent longer waiting for a lane or permit than running"
+              value={view.waitToRunPercent === null ? '—' : `${Math.round(view.waitToRunPercent)}%`}
+            />
+            <Stat
+              label="lane time released by hand-back"
+              title="execution phases (test/run after Cargo's Finished line) that ran with their lane already handed to the next compile"
+              value={handBack.kind === 'available' ? handBack.text : '—'}
+            />
+          </div>
+          {waited ? (
+            <>
+              <div className="wait-split" aria-label="queue wait by cause">
+                {view.parts.map((part) => (
+                  <div
+                    className={`wait-split-fill ${part.kind}`}
+                    key={part.kind}
+                    style={{ width: `${part.percent}%` }}
+                    title={`${part.label}: ${formatMs(part.ms)} — ${part.title}`}
+                  />
+                ))}
+              </div>
+              <div className="wait-legend">
+                {view.parts.map((part) => (
+                  <span key={part.kind} title={part.title}>
+                    <i className={`swatch ${part.kind}`} aria-hidden="true" />
+                    {part.label} {formatMs(part.ms)} ({Math.round(part.percent)}%)
+                  </span>
+                ))}
+              </div>
+            </>
+          ) : (
+            <p className="empty">No leader queued in this window.</p>
+          )}
+        </div>
+      );
+    }
+    default: {
+      const exhaustive: never = view;
+      return exhaustive;
+    }
+  }
+};
+
+/**
+ * Store size against kache's limit, the last GC, `key_ms`, and warnings when
+ * the store is over its limit or the last GC skipped evictions. A daemon that
+ * predates the report says so instead of showing zeros.
+ */
+const KachePressure = ({ pressure }: { readonly pressure: KachePressureModel }): ReactNode => {
+  switch (pressure.kind) {
+    case 'unavailable':
+      return (
+        <p className="empty">
+          Store pressure unavailable: this daemon predates the report (upgrade to 0.5.1 or newer).
+        </p>
+      );
+    case 'available':
+      return (
+        <>
+          <div className="stats">
+            <Stat
+              barPercent={pressure.store.percent ?? undefined}
+              label="store vs limit"
+              title={
+                pressure.store.limitSource === null
+                  ? 'blob bytes recorded in the kache index; the limit could not be read'
+                  : `blob bytes recorded in the kache index against local_max_size from ${pressure.store.limitSource}`
+              }
+              value={pressure.store.text}
+            />
+            <Stat label="last GC" title="from gc_stats.json beside the index; skips are gc: skipping eviction lines in kache's logs during that run" value={pressure.gc} />
+            <Stat
+              label="keying"
+              title="cache-key computation per rustc invocation (key_ms in events.jsonl), over the tail the daemon keeps"
+              value={pressure.keyTiming ?? '—'}
+            />
+          </div>
+          {pressure.warnings.map((warning) => (
+            <p className="warn-line" key={warning.kind}>
+              {warning.text}
+            </p>
+          ))}
+        </>
+      );
+    default: {
+      const exhaustive: never = pressure;
+      return exhaustive;
+    }
+  }
+};
+
+const KacheSection = ({ nowMs, value }: { readonly nowMs: number; readonly value: unknown }): ReactNode => {
   const kache = asRecord(value) as KacheShape | null;
   if (kache?.available !== true) {
     return null;
   }
+  const pressure = kachePressureView(kache.pressure, nowMs);
   const roots = arrayOrEmpty<KacheRootRow>(kache.recentHeartbeatRoots).filter(
     (row) => typeof row.root === 'string' && typeof row.count === 'number',
   );
@@ -1234,6 +1480,7 @@ const KacheSection = ({ value }: { readonly value: unknown }): ReactNode => {
           }
         />
       </div>
+      <KachePressure pressure={pressure} />
       <KacheColumns roots={roots} topCrates={topCrates} />
     </section>
   );
@@ -1481,7 +1728,7 @@ const DashboardContent = ({ structured }: { readonly structured: StructuredConte
           />
         );
       case 'kache':
-        return <KacheSection key="kache" value={structured?.kache} />;
+        return <KacheSection key="kache" nowMs={nowMs} value={structured?.kache} />;
       case 'lanes':
         return (
           <section key="lanes">

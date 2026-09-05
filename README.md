@@ -429,6 +429,17 @@ reports the slowest crates by profile (`<KacheStats>`). Without that index,
 estimates come from the daemon's EWMA history. A missing or incompatible index
 is reported as unavailable and never rejects a request.
 
+The same panel surfaces store pressure: blob bytes recorded in the index
+against kache's `local_max_size` (from `KACHE_MAX_SIZE` or
+`$XDG_CONFIG_HOME/kache/config.toml`; when neither applies the panel says
+"limit unknown" and why), the last GC from `gc_stats.json` beside the index
+— when it ran, how long it took, what it evicted, and any `gc: skipping
+eviction` warnings from kache's `auto-gc.log`/`daemon.log` during that run —
+and `key_ms` mean/p95 over the tail of the events sidecar. Warnings appear
+when the store is over its limit or the last GC declined or skipped evictions;
+a missing or unparsable file renders as unavailable with its reason, never as
+an empty store.
+
 ![cargo-hauler dashboard kache timing panel](docs/media/dashboard-kache.png)
 
 ## Install
@@ -752,6 +763,18 @@ resource URI it describes, so the document cannot drift from the surface.
 render MCP Apps. It shows contention and admission, in-flight and queued
 work, metrics windows, optional kache data, lanes, and history, with a live
 output drawer per ticket.
+
+Each metrics window also reports queue wait against run time for leaders,
+with the wait split by cause: *lane-bound* (a same-lane leader was still
+compiling — before its `Finished` line or exit), *permit-bound* (every
+admission permit was held and no same-lane compile was to blame), and *other*
+(admission holds, `--after` prerequisites, scheduling latency). The
+classification is a pure sweep over ledger rows (`src/daemon/wait-split.ts`)
+run once per status refresh against the daemon's current permit count, which
+the tile states; runs admitted under an earlier cap are classified against
+today's. With `buildFinishedAtMs` on the row, the by-command split adds
+compile vs execution time for test/run/bench leaders and the window reports
+the lane time the execution-phase hand-back released.
 
 ### Testing
 

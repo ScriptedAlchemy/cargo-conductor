@@ -24,11 +24,24 @@ import type {
   SavedComputeSource,
   SessionCompletedRecord,
   SessionPendingRecord,
+  StatusMetricsHandBack,
+  StatusMetricsPhaseSplit,
+  StatusMetricsWaitSplit,
   TransitionRecord,
 } from './protocol.js';
 import { passthroughSpoolFileName } from './protocol.js';
 import { calculateServedSavings } from './savings.js';
 import { sweepTicketLogs } from './ticket-log.js';
+import {
+  classifyWaits,
+  phaseSample,
+  summarizeHandBack,
+  summarizePhases,
+  sumWaitSplits,
+  type PhaseSample,
+  type WaitSplit,
+  type WaitSplitRow,
+} from './wait-split.js';
 
 export interface CreateRequestInput {
   readonly createdAtMs: number;
@@ -87,6 +100,8 @@ export interface MetricsWindowBySubcommand {
   readonly count: number;
   readonly p50Ms: number | null;
   readonly maxMs: number | null;
+  /** Compile/execution split of the leaders carrying a build-finished stamp; null when none do. */
+  readonly phases: StatusMetricsPhaseSplit | null;
 }
 
 export interface MetricsWindowReport {
@@ -100,6 +115,19 @@ export interface MetricsWindowReport {
   readonly waitP50Ms: number | null;
   readonly waitP95Ms: number | null;
   readonly bySubcommand: readonly MetricsWindowBySubcommand[];
+  readonly runTotalMs: number;
+  readonly waitTotalMs: number;
+  readonly waitSplit: StatusMetricsWaitSplit;
+  readonly handBack: StatusMetricsHandBack;
+}
+
+export interface CreateLedgerApiOptions {
+  /**
+   * Admission permits the wait-split classification assumes (#92). The live
+   * daemon passes its `maxConcurrent`; a read-only opener without one leaves
+   * permit-bound wait unclassified rather than guessing a count.
+   */
+  readonly permits?: number | null;
 }
 
 export interface MetricsWindowsReport {
@@ -614,7 +642,14 @@ const parsePassthroughSpoolRecord = (line: string): PassthroughSpoolRecord | nul
 };
 
 /** A failing ledger is a defect, not a recoverable condition, so nothing here has a typed error. */
-export const createLedgerApi = (db: DatabaseSync): LedgerApi => {
+export const createLedgerApi = (db: DatabaseSync, options: CreateLedgerApiOptions = {}): LedgerApi => {
+  const permits =
+    options.permits !== undefined &&
+    options.permits !== null &&
+    Number.isFinite(options.permits) &&
+    options.permits > 0
+      ? Math.floor(options.permits)
+      : null;
   const insertTransition = db.prepare(
     'INSERT INTO transitions (request_id, at_ms, from_status, to_status) VALUES (?, ?, ?, ?)',
   );
@@ -785,14 +820,21 @@ export const createLedgerApi = (db: DatabaseSync): LedgerApi => {
   const selectRecentStatusRequests = db.prepare(
     `SELECT ${statusRequestColumns} FROM requests ORDER BY created_at_ms DESC, id DESC LIMIT ?`,
   );
-  const selectMetricsWindowAll = db.prepare(
-    `SELECT
+  // The wait-split classification needs each leader's lane and its queued,
+  // started, build-finished, and finished stamps beside the run summary.
+  const metricsWindowColumns = `id,
+       lane_key,
        status,
+       queued_at_ms,
+       started_at_ms,
+       build_finished_at_ms,
        finished_at_ms,
        run_ms,
        wait_ms,
        COALESCE(json_extract(intent_json, '$.subcommand'), 'unknown') AS subcommand,
-       json_extract(intent_json, '$.profile') AS profile
+       json_extract(intent_json, '$.profile') AS profile`;
+  const selectMetricsWindowAll = db.prepare(
+    `SELECT ${metricsWindowColumns}
      FROM requests
      WHERE attached_to IS NULL
        AND run_ms IS NOT NULL
@@ -800,19 +842,23 @@ export const createLedgerApi = (db: DatabaseSync): LedgerApi => {
      LIMIT ?`,
   );
   const selectMetricsWindowSince = db.prepare(
-    `SELECT
-       status,
-       finished_at_ms,
-       run_ms,
-       wait_ms,
-       COALESCE(json_extract(intent_json, '$.subcommand'), 'unknown') AS subcommand,
-       json_extract(intent_json, '$.profile') AS profile
+    `SELECT ${metricsWindowColumns}
      FROM requests
      WHERE attached_to IS NULL
        AND run_ms IS NOT NULL
        AND finished_at_ms >= ?
      ORDER BY finished_at_ms DESC, id DESC
      LIMIT ?`,
+  );
+  // Leaders still running hold lanes and permits that the waits of already
+  // settled rows were bound by; without them a head that has not finished
+  // yet would make its followers' wait read as unexplained.
+  const selectRunningLeaders = db.prepare(
+    `SELECT id, lane_key, queued_at_ms, started_at_ms, build_finished_at_ms
+     FROM requests
+     WHERE status = 'running'
+       AND attached_to IS NULL
+       AND started_at_ms IS NOT NULL`,
   );
   const selectActiveRequests = db.prepare(
     `SELECT ${requestColumns} FROM requests
@@ -924,15 +970,42 @@ export const createLedgerApi = (db: DatabaseSync): LedgerApi => {
     return { byMode, totals: totalsFrom(byMode) };
   };
 
+  const toWaitSplitRow = (row: Row): WaitSplitRow => ({
+    id: toNumber(row.id),
+    laneKey: toText(row.lane_key),
+    queuedAtMs: toNullableNumber(row.queued_at_ms),
+    startedAtMs: toNullableNumber(row.started_at_ms),
+    buildFinishedAtMs: toNullableNumber(row.build_finished_at_ms),
+    finishedAtMs: toNullableNumber(row.finished_at_ms),
+  });
+
+  /**
+   * Wait attribution for the scanned rows, with the leaders still running as
+   * part of the picture: their lanes and permits bound the waits of rows
+   * that have since settled.
+   */
+  const classifyScannedWaits = (
+    scanned: readonly Row[],
+    nowMs: number,
+  ): ReadonlyMap<number, WaitSplit> => {
+    const running = (selectRunningLeaders.all() as readonly Row[]).map(toWaitSplitRow);
+    return classifyWaits([...scanned.map(toWaitSplitRow), ...running], { nowMs, permits });
+  };
+
   /**
    * Leader-only metrics for dashboard windows. Followers do not represent
    * spawned work, and rows without run_ms never actually started, so both are
    * excluded for honest run/wait distributions.
    */
-  const summarizeMetricsRows = (rows: readonly Row[]): MetricsWindowReport => {
+  const summarizeMetricsRows = (
+    rows: readonly Row[],
+    splits: ReadonlyMap<number, WaitSplit>,
+  ): MetricsWindowReport => {
     const runMs: number[] = [];
     const waitMs: number[] = [];
-    const bySubcommand = new Map<string, number[]>();
+    const bySubcommand = new Map<string, { readonly runs: number[]; readonly phases: PhaseSample[] }>();
+    const rowSplits: WaitSplit[] = [];
+    const phases: PhaseSample[] = [];
     let done = 0;
     let failed = 0;
     let killed = 0;
@@ -951,6 +1024,14 @@ export const createLedgerApi = (db: DatabaseSync): LedgerApi => {
         default:
           break;
       }
+      const split = splits.get(toNumber(row.id));
+      if (split !== undefined) {
+        rowSplits.push(split);
+      }
+      const phase = phaseSample(toWaitSplitRow(row));
+      if (phase !== null) {
+        phases.push(phase);
+      }
       const run = toNullableNumber(row.run_ms);
       if (run !== null) {
         runMs.push(run);
@@ -965,9 +1046,12 @@ export const createLedgerApi = (db: DatabaseSync): LedgerApi => {
             ? defaultCargoProfile(subcommand)
             : profileText;
         const populationKey = `${subcommand}\0${profile}`;
-        const samples = bySubcommand.get(populationKey) ?? [];
-        samples.push(run);
-        bySubcommand.set(populationKey, samples);
+        const population = bySubcommand.get(populationKey) ?? { phases: [], runs: [] };
+        population.runs.push(run);
+        if (phase !== null) {
+          population.phases.push(phase);
+        }
+        bySubcommand.set(populationKey, population);
       }
       const wait = toNullableNumber(row.wait_ms);
       if (wait !== null) {
@@ -977,15 +1061,16 @@ export const createLedgerApi = (db: DatabaseSync): LedgerApi => {
     runMs.sort((left, right) => left - right);
     waitMs.sort((left, right) => left - right);
     const bySubcommandRows = [...bySubcommand.entries()]
-      .map(([populationKey, samples]): MetricsWindowBySubcommand => {
+      .map(([populationKey, population]): MetricsWindowBySubcommand => {
         const [subcommand = 'unknown', profile] = populationKey.split('\0');
-        const sorted = [...samples].sort((left, right) => left - right);
+        const sorted = [...population.runs].sort((left, right) => left - right);
         return {
           subcommand,
           ...(profile === undefined ? {} : { profile }),
           count: sorted.length,
           p50Ms: percentileFromSorted(sorted, 0.5),
           maxMs: sorted.length === 0 ? null : sorted[sorted.length - 1] ?? null,
+          phases: summarizePhases(population.phases),
         };
       })
       .sort(
@@ -1005,15 +1090,21 @@ export const createLedgerApi = (db: DatabaseSync): LedgerApi => {
       waitP50Ms: percentileFromSorted(waitMs, 0.5),
       waitP95Ms: percentileFromSorted(waitMs, 0.95),
       bySubcommand: bySubcommandRows,
+      runTotalMs: runMs.reduce((sum, value) => sum + value, 0),
+      waitTotalMs: waitMs.reduce((sum, value) => sum + value, 0),
+      waitSplit: sumWaitSplits(rowSplits, permits),
+      handBack: summarizeHandBack(phases),
     };
   };
 
-  const metricsWindow = (sinceMs: number | null): MetricsWindowReport =>
-    summarizeMetricsRows(
-      (sinceMs === null
+  const metricsWindow = (sinceMs: number | null): MetricsWindowReport => {
+    const rows = (
+      sinceMs === null
         ? selectMetricsWindowAll.all(metricsWindowScanLimit)
-        : selectMetricsWindowSince.all(sinceMs, metricsWindowScanLimit)) as readonly Row[],
-    );
+        : selectMetricsWindowSince.all(sinceMs, metricsWindowScanLimit)
+    ) as readonly Row[];
+    return summarizeMetricsRows(rows, classifyScannedWaits(rows, Date.now()));
+  };
 
   let metricsWindowsCache:
     | { readonly expiresAtMs: number; readonly value: MetricsWindowsReport }
@@ -1023,13 +1114,17 @@ export const createLedgerApi = (db: DatabaseSync): LedgerApi => {
       return metricsWindowsCache.value;
     }
     const rows = selectMetricsWindowAll.all(metricsWindowScanLimit) as readonly Row[];
+    // One classification over the whole scan serves every window: a wait
+    // inside the hour window may have been bound by a head that finished
+    // before it.
+    const splits = classifyScannedWaits(rows, nowMs);
     const sinceHour = nowMs - 3_600_000;
     const sinceDay = nowMs - 86_400_000;
     const finishedAt = (row: Row): number => toNullableNumber(row.finished_at_ms) ?? 0;
     const value = {
-      hour: summarizeMetricsRows(rows.filter((row) => finishedAt(row) >= sinceHour)),
-      day: summarizeMetricsRows(rows.filter((row) => finishedAt(row) >= sinceDay)),
-      all: summarizeMetricsRows(rows),
+      hour: summarizeMetricsRows(rows.filter((row) => finishedAt(row) >= sinceHour), splits),
+      day: summarizeMetricsRows(rows.filter((row) => finishedAt(row) >= sinceDay), splits),
+      all: summarizeMetricsRows(rows, splits),
     };
     metricsWindowsCache = { expiresAtMs: nowMs + 5_000, value };
     return value;
@@ -1337,7 +1432,7 @@ export const LedgerLive: Layer.Layer<Ledger, never, DaemonConfig> = Layer.effect
           database.close();
         }),
     );
-    const ledger = createLedgerApi(db);
+    const ledger = createLedgerApi(db, { permits: config.maxConcurrent });
     // Retention runs once per daemon start; the ledger only grows between them.
     const pruned = yield* ledger.pruneRetention({
       nowMs: Date.now(),

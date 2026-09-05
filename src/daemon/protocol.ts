@@ -414,12 +414,57 @@ export interface StatusMetrics {
 
 export type StatusMetricsWindowId = 'hour' | 'day' | 'all';
 
+/**
+ * Compile versus execution time of the leaders whose `buildFinishedAtMs`
+ * stamp splits the two (test, nextest, bench, and run leaders since 0.5.0).
+ */
+export interface StatusMetricsPhaseSplit {
+  /** Leaders with a build-finished stamp; pure compiles never have one. */
+  readonly count: number;
+  readonly compileP50Ms: number | null;
+  readonly executeP50Ms: number | null;
+  readonly compileTotalMs: number;
+  readonly executeTotalMs: number;
+}
+
 export interface StatusMetricsWindowBySubcommand {
   readonly subcommand: string;
   readonly profile?: string;
   readonly count: number;
   readonly p50Ms: number | null;
   readonly maxMs: number | null;
+  /** Absent from daemons before 0.5.1; null when no leader of this population carries the stamp. */
+  readonly phases?: StatusMetricsPhaseSplit | null;
+}
+
+/**
+ * Where leaders' queue wait went (#92). Lane-bound: a leader in the same
+ * lane was still compiling (before its build-finished or finish stamp).
+ * Permit-bound: every admission permit was held by a running leader while
+ * no same-lane head compiled. Other: admission holds, `--after`
+ * prerequisites, and scheduling latency.
+ */
+export interface StatusMetricsWaitSplit {
+  /** Leaders in the window whose queued and started stamps bound a wait. */
+  readonly count: number;
+  readonly laneBoundMs: number;
+  readonly permitBoundMs: number;
+  readonly otherMs: number;
+  /**
+   * Admission permits the permit-bound classification assumed: the daemon's
+   * current `maxConcurrent`, which earlier rows may not have run under. Null
+   * when the ledger was opened without one, in which case nothing is
+   * permit-bound and that share is reported as other.
+   */
+  readonly permits: number | null;
+}
+
+/** Lane time the execution-phase hand-back gave to the next compile. */
+export interface StatusMetricsHandBack {
+  /** Leaders that handed their lane back before settling. */
+  readonly leaders: number;
+  /** Sum of those leaders' execution phases: lane time another compile could use. */
+  readonly laneReleasedMs: number;
 }
 
 export interface StatusMetricsWindow {
@@ -434,6 +479,12 @@ export interface StatusMetricsWindow {
   readonly waitP50Ms: number | null;
   readonly waitP95Ms: number | null;
   readonly bySubcommand: readonly StatusMetricsWindowBySubcommand[];
+  /** Sum of leader run time in the window; absent from daemons before 0.5.1. */
+  readonly runTotalMs?: number;
+  /** Sum of leader queue wait in the window; absent from daemons before 0.5.1. */
+  readonly waitTotalMs?: number;
+  readonly waitSplit?: StatusMetricsWaitSplit;
+  readonly handBack?: StatusMetricsHandBack;
 }
 
 export interface KacheHeartbeatRoot {
@@ -447,6 +498,80 @@ export interface KacheTopCrate {
   readonly ms: number;
 }
 
+/**
+ * kache's configured store budget (`[cache] local_max_size`, or the
+ * `KACHE_MAX_SIZE` environment override). Unknown is reported with why, never
+ * guessed: kache applies a disk-share default of its own when neither is set.
+ */
+export type KacheStoreLimitReport =
+  | {
+      readonly kind: 'known';
+      readonly bytes: number;
+      /** Where the value came from: the config file path or `KACHE_MAX_SIZE`. */
+      readonly source: string;
+    }
+  | {
+      readonly kind: 'unknown';
+      readonly reason:
+        | 'config-missing'
+        | 'not-configured'
+        | 'unparsable'
+        | 'store-mismatch';
+      readonly detail: string;
+    };
+
+/** The most recent kache garbage collection, from `gc_stats.json` beside the index. */
+export interface KacheGcRun {
+  readonly kind: 'ran';
+  readonly lastRunAtMs: number;
+  readonly durationMs: number | null;
+  readonly entriesEvicted: number | null;
+  /** Store-namespace bytes whose blob rows went away (not disk reclaimed). */
+  readonly bytesFreed: number | null;
+  readonly diskBytesReclaimed: number | null;
+  readonly blobsRemoved: number | null;
+  /** True when the run declined to evict because the store was under its trigger. */
+  readonly declined: boolean;
+  /** Victims left in place because a live build had just touched them. */
+  readonly entriesPinned: number | null;
+  /** Victims left in place because unlinking them would free no disk. */
+  readonly entriesUnreclaimable: number | null;
+  /**
+   * Evictions the run abandoned with an error (`gc: skipping eviction of …`
+   * in kache's `auto-gc.log` / `daemon.log` during the run); null when no
+   * log beside the index could be read.
+   */
+  readonly evictionErrors: number | null;
+  /** The error text those skips shared, e.g. `database is locked`. */
+  readonly evictionErrorSample: string | null;
+}
+
+export type KacheGcReport =
+  | { readonly kind: 'unavailable'; readonly reason: 'missing' | 'unparsable' }
+  | KacheGcRun;
+
+/** Cache-key computation time per rustc invocation (`key_ms` in the events sidecar). */
+export interface KacheKeyTiming {
+  /** Invocations sampled from the tail of `events.jsonl`. */
+  readonly count: number;
+  readonly meanMs: number;
+  readonly p95Ms: number;
+}
+
+/** Store pressure beside the index: size against budget, the last GC, and key cost (#92). */
+export interface KacheStorePressureReport {
+  /**
+   * kache's own store measure, `SUM(size)` over the index's `blobs` table
+   * (deduplicated blob bytes, what `local_max_size` bounds); null when the
+   * index has no readable blobs table.
+   */
+  readonly storeBytes: number | null;
+  readonly limit: KacheStoreLimitReport;
+  readonly gc: KacheGcReport;
+  /** Null until the events tail yields a `key_ms` sample. */
+  readonly keyTiming: KacheKeyTiming | null;
+}
+
 export interface KacheStatusReport {
   readonly available: boolean;
   readonly entryCount: number;
@@ -455,6 +580,8 @@ export interface KacheStatusReport {
   readonly eventsFreshMs: number | null;
   readonly recentHeartbeatRoots: readonly KacheHeartbeatRoot[];
   readonly topCrates: readonly KacheTopCrate[];
+  /** Absent from daemons before 0.5.1. */
+  readonly pressure?: KacheStorePressureReport;
 }
 
 export interface AttachmentSavingsModeReport {

@@ -1,5 +1,10 @@
 import { Effect, Schedule, Stream, type Duration } from 'effect';
 
+import type {
+  KacheGcReport,
+  KacheStoreLimitReport,
+  KacheStorePressureReport,
+} from '../daemon/protocol.js';
 import { cargoJsonDemuxFlag, defaultCargoProfile, namedPackagesInArgv } from '../lib/argv.js';
 import { isRecord } from '../lib/guards.js';
 import {
@@ -11,8 +16,12 @@ import {
   relativeTime,
   shortenPath,
 } from '../lib/format.js';
+import { kachePressureModel } from '../lib/kache-pressure-model.js';
+import type { KachePressureModel, KachePressureWarning } from '../lib/kache-pressure-model.js';
 
 export { formatBytes, formatMs, pathBasename, relativeTime, shortenPath };
+export { kachePressureModel };
+export type { KachePressureModel, KachePressureWarning };
 
 /**
  * Pure logic for the dashboard widget, kept DOM-free and compiler-free so unit
@@ -137,12 +146,37 @@ export const metricsWindowIds = ['hour', 'day', 'all'] as const;
 export type MetricsWindowId = (typeof metricsWindowIds)[number];
 export const defaultMetricsWindowId: MetricsWindowId = 'day';
 
+/** Compile vs execution phases of the leaders that handed their lane back (#92). */
+export interface DashboardPhaseSplit {
+  readonly count: number;
+  readonly compileP50Ms: number | null;
+  readonly executeP50Ms: number | null;
+  readonly compileTotalMs: number;
+  readonly executeTotalMs: number;
+}
+
 export interface DashboardMetricsWindowBySubcommand {
   readonly subcommand: string;
   readonly profile?: string;
   readonly count: number;
   readonly p50Ms: number | null;
   readonly maxMs: number | null;
+  /** Absent from daemons older than the phase split; null when no leader handed back. */
+  readonly phases?: DashboardPhaseSplit | null;
+}
+
+/** Queue wait of the window's leaders attributed to its cause (#92). */
+export interface DashboardWaitSplit {
+  readonly count: number;
+  readonly laneBoundMs: number;
+  readonly permitBoundMs: number;
+  readonly otherMs: number;
+  readonly permits: number | null;
+}
+
+export interface DashboardHandBack {
+  readonly leaders: number;
+  readonly laneReleasedMs: number;
 }
 
 export interface DashboardMetricsWindow {
@@ -157,6 +191,11 @@ export interface DashboardMetricsWindow {
   readonly waitP50Ms: number | null;
   readonly waitP95Ms: number | null;
   readonly bySubcommand: readonly DashboardMetricsWindowBySubcommand[];
+  /** The #92 additions; absent from daemons that predate them. */
+  readonly runTotalMs?: number;
+  readonly waitTotalMs?: number;
+  readonly waitSplit?: DashboardWaitSplit;
+  readonly handBack?: DashboardHandBack;
 }
 
 export interface PickedMetricsWindow {
@@ -295,6 +334,231 @@ export const waitMetricsView = (
     maxMs: sorted.length === 0 ? null : sorted[sorted.length - 1],
   };
 };
+
+// ---------------------------------------------------------------------------
+// Queue wait vs run, and where the wait went (#92)
+
+export type WaitSplitPartKind = 'lane' | 'permit' | 'other';
+
+export interface WaitSplitPart {
+  readonly kind: WaitSplitPartKind;
+  readonly label: string;
+  readonly ms: number;
+  /** Share of the classified wait, 0–100; every part is 0 when nothing waited. */
+  readonly percent: number;
+  readonly title: string;
+}
+
+export type WaitVsRunView =
+  | { readonly kind: 'unavailable'; readonly reason: 'no-window' | 'older-daemon' }
+  | {
+      readonly kind: 'available';
+      /** Leaders whose wait was classified (queued and started inside the scan). */
+      readonly count: number;
+      readonly waitTotalMs: number;
+      readonly runTotalMs: number;
+      /** Wait as a share of run time, e.g. 160 when leaders waited 1.6× as long as they ran; null without runs. */
+      readonly waitToRunPercent: number | null;
+      readonly parts: readonly WaitSplitPart[];
+      /** The permit assumption behind `permit-bound`, stated so the tile stays honest. */
+      readonly permitsNote: string;
+    };
+
+/**
+ * The per-window wait-vs-run tile. Lane-bound wait is time a same-lane leader
+ * was still compiling; permit-bound is time every admission permit was held
+ * (with no same-lane compile to blame); the rest is admission holds,
+ * `--after` prerequisites and scheduling latency. Older daemons send windows
+ * without the split, which renders as unavailable rather than as zero wait.
+ */
+export const waitVsRunView = (window: DashboardMetricsWindow | null): WaitVsRunView => {
+  if (window === null) {
+    return { kind: 'unavailable', reason: 'no-window' };
+  }
+  const split = window.waitSplit;
+  if (split === undefined || window.waitTotalMs === undefined || window.runTotalMs === undefined) {
+    return { kind: 'unavailable', reason: 'older-daemon' };
+  }
+  const classifiedMs = split.laneBoundMs + split.permitBoundMs + split.otherMs;
+  const share = (ms: number): number => (classifiedMs <= 0 ? 0 : (ms / classifiedMs) * 100);
+  const permitTitle =
+    split.permits === null
+      ? 'not classified: the daemon reported no permit count'
+      : `waited while all ${split.permits} admission permits were held and no same-lane leader was compiling`;
+  return {
+    kind: 'available',
+    count: split.count,
+    waitTotalMs: window.waitTotalMs,
+    runTotalMs: window.runTotalMs,
+    waitToRunPercent:
+      window.runTotalMs <= 0 ? null : (window.waitTotalMs / window.runTotalMs) * 100,
+    parts: [
+      {
+        kind: 'lane',
+        label: 'lane-bound',
+        ms: split.laneBoundMs,
+        percent: share(split.laneBoundMs),
+        title:
+          'waited while a leader in the same lane was still compiling (before its Finished line or exit)',
+      },
+      {
+        kind: 'permit',
+        label: 'permit-bound',
+        ms: split.permitBoundMs,
+        percent: share(split.permitBoundMs),
+        title: permitTitle,
+      },
+      {
+        kind: 'other',
+        label: 'other',
+        ms: split.otherMs,
+        percent: share(split.otherMs),
+        title:
+          'admission holds (memory, load, heavy cap), --after prerequisites and scheduling latency',
+      },
+    ],
+    permitsNote:
+      split.permits === null
+        ? 'permit-bound wait is not classified: the daemon reported no permit count'
+        : `permit-bound wait assumes the current ${split.permits}-permit cap; runs admitted under an earlier cap are classified against today's`,
+  };
+};
+
+export interface PhaseSplitView {
+  readonly count: number;
+  /** Compile share of compile + execute time, 0–100. */
+  readonly compilePercent: number;
+  /** `compile p50 12.0s · exec p50 3.1s (n=14)`, percentiles hidden below {@link percentileMinSamples}. */
+  readonly text: string;
+}
+
+/**
+ * Compile vs execution time for a by-command row, from the leaders that
+ * handed their lane back at Cargo's `Finished` line. Null when the daemon
+ * predates the split or no leader of this command handed back (pure compiles
+ * never do).
+ */
+export const phaseSplitView = (phases: DashboardPhaseSplit | null | undefined): PhaseSplitView | null => {
+  if (phases === undefined || phases === null || phases.count <= 0) {
+    return null;
+  }
+  const total = phases.compileTotalMs + phases.executeTotalMs;
+  const p50 = (value: number | null): string =>
+    phases.count < percentileMinSamples || value === null ? `n<${percentileMinSamples}` : formatMs(value);
+  return {
+    compilePercent: total <= 0 ? 0 : (phases.compileTotalMs / total) * 100,
+    count: phases.count,
+    text: `compile p50 ${p50(phases.compileP50Ms)} · exec p50 ${p50(phases.executeP50Ms)} (n=${phases.count})`,
+  };
+};
+
+export type HandBackView =
+  | { readonly kind: 'unavailable' }
+  | { readonly kind: 'available'; readonly leaders: number; readonly laneReleasedMs: number; readonly text: string };
+
+/** Lane time the execution-phase hand-back released: every test/run execution phase ran with its lane already free. */
+export const handBackView = (window: DashboardMetricsWindow | null): HandBackView => {
+  const handBack = window?.handBack;
+  if (handBack === undefined) {
+    return { kind: 'unavailable' };
+  }
+  return {
+    kind: 'available',
+    laneReleasedMs: handBack.laneReleasedMs,
+    leaders: handBack.leaders,
+    text:
+      handBack.leaders === 0
+        ? 'no leader handed back'
+        : `${formatMs(handBack.laneReleasedMs)} across ${handBack.leaders} leader${handBack.leaders === 1 ? '' : 's'}`,
+  };
+};
+
+// ---------------------------------------------------------------------------
+// Kache store pressure (#92)
+
+const finiteOrNull = (value: unknown): number | null =>
+  typeof value === 'number' && Number.isFinite(value) ? value : null;
+
+const asKacheStoreLimit = (value: unknown): KacheStoreLimitReport | null => {
+  if (!isRecord(value)) {
+    return null;
+  }
+  if (value.kind === 'known') {
+    return typeof value.bytes === 'number' && typeof value.source === 'string'
+      ? { bytes: value.bytes, kind: 'known', source: value.source }
+      : null;
+  }
+  if (value.kind === 'unknown') {
+    const reason = value.reason;
+    if (
+      reason === 'config-missing' ||
+      reason === 'not-configured' ||
+      reason === 'unparsable' ||
+      reason === 'store-mismatch'
+    ) {
+      return { detail: typeof value.detail === 'string' ? value.detail : '', kind: 'unknown', reason };
+    }
+  }
+  return null;
+};
+
+const asKacheGc = (value: unknown): KacheGcReport | null => {
+  if (!isRecord(value)) {
+    return null;
+  }
+  if (value.kind === 'unavailable') {
+    return value.reason === 'missing' || value.reason === 'unparsable'
+      ? { kind: 'unavailable', reason: value.reason }
+      : null;
+  }
+  if (value.kind === 'ran' && typeof value.lastRunAtMs === 'number') {
+    return {
+      kind: 'ran',
+      lastRunAtMs: value.lastRunAtMs,
+      durationMs: finiteOrNull(value.durationMs),
+      entriesEvicted: finiteOrNull(value.entriesEvicted),
+      bytesFreed: finiteOrNull(value.bytesFreed),
+      diskBytesReclaimed: finiteOrNull(value.diskBytesReclaimed),
+      blobsRemoved: finiteOrNull(value.blobsRemoved),
+      declined: value.declined === true,
+      entriesPinned: finiteOrNull(value.entriesPinned),
+      entriesUnreclaimable: finiteOrNull(value.entriesUnreclaimable),
+      evictionErrors: finiteOrNull(value.evictionErrors),
+      evictionErrorSample:
+        typeof value.evictionErrorSample === 'string' ? value.evictionErrorSample : null,
+    };
+  }
+  return null;
+};
+
+/**
+ * The daemon's `kache.pressure` report from the untyped status payload the
+ * widget receives; null when absent (an older daemon) or not the shape the
+ * protocol promises, so the panel can say so instead of inventing zeros.
+ */
+export const asKachePressure = (value: unknown): KacheStorePressureReport | null => {
+  if (!isRecord(value)) {
+    return null;
+  }
+  const limit = asKacheStoreLimit(value.limit);
+  const gc = asKacheGc(value.gc);
+  if (limit === null || gc === null) {
+    return null;
+  }
+  const timing = value.keyTiming;
+  const keyTiming =
+    isRecord(timing) &&
+    typeof timing.count === 'number' &&
+    typeof timing.meanMs === 'number' &&
+    typeof timing.p95Ms === 'number'
+      ? { count: timing.count, meanMs: timing.meanMs, p95Ms: timing.p95Ms }
+      : null;
+  return { gc, keyTiming, limit, storeBytes: finiteOrNull(value.storeBytes) };
+};
+
+/** The kache panel's pressure block from the untyped status payload. */
+export const kachePressureView = (value: unknown, nowMs: number): KachePressureModel =>
+  kachePressureModel(asKachePressure(value) ?? undefined, nowMs);
 
 export const frequencyEntries = (
   record: Readonly<Record<string, unknown>> | undefined,

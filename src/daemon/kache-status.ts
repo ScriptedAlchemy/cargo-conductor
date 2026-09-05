@@ -1,6 +1,7 @@
 import { closeSync, fstatSync, openSync, readSync, statSync } from 'node:fs';
-import { open, stat } from 'node:fs/promises';
+import { open, readFile, stat } from 'node:fs/promises';
 import type { FileHandle } from 'node:fs/promises';
+import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { performance } from 'node:perf_hooks';
 import { DatabaseSync } from 'node:sqlite';
@@ -11,9 +12,29 @@ import * as Layer from 'effect/Layer';
 import * as Predicate from 'effect/Predicate';
 
 import { DaemonConfig } from './config.js';
-import type { KacheStatusReport, KacheTopCrate } from './protocol.js';
+import {
+  countEvictionSkips,
+  gcLogWindow,
+  kacheConfigPathFor,
+  keyTimingFrom,
+  parseGcStats,
+  resolveKacheStoreLimit,
+} from './kache-pressure.js';
+import type {
+  KacheGcReport,
+  KacheKeyTiming,
+  KacheStatusReport,
+  KacheStorePressureReport,
+  KacheTopCrate,
+} from './protocol.js';
 
 const defaultEventTailBytes = 8 * 1024 * 1024;
+/** Most recent `key_ms` samples kept for the store-pressure panel. */
+const keyTimingSampleLimit = 4_096;
+/** Bytes read from the end of each kache log when matching eviction skips to the last GC. */
+const gcLogTailBytes = 1024 * 1024;
+/** kache logs beside the index that record GC eviction warnings. */
+const gcLogFileNames = ['auto-gc.log', 'daemon.log'] as const;
 const defaultTtlMs = 60_000;
 const heartbeatWindowMs = 5 * 60_000;
 /**
@@ -95,10 +116,12 @@ interface EventReadResult {
   readonly priors: KacheEventPriors;
   readonly eventsFreshMs: number | null;
   readonly recentHeartbeatRoots: KacheStatusReport['recentHeartbeatRoots'];
+  readonly keyTiming: KacheKeyTiming | null;
 }
 
 const emptyEventReadResult: EventReadResult = {
   eventsFreshMs: null,
+  keyTiming: null,
   recentHeartbeatRoots: [],
   priors: emptyEventPriors,
 };
@@ -120,6 +143,9 @@ class EventTailAggregator {
   #latestEventAtMs: number | null = null;
   #sampleCount = 0;
   #bytesRead = 0;
+  /** Ring of the newest `key_ms` samples; `#keyTimingStart` is the oldest slot once full. */
+  #keyTimingSamples: number[] = [];
+  #keyTimingStart = 0;
 
   reset(): void {
     this.#aggregates = new Map();
@@ -128,10 +154,21 @@ class EventTailAggregator {
     this.#latestEventAtMs = null;
     this.#sampleCount = 0;
     this.#bytesRead = 0;
+    this.#keyTimingSamples = [];
+    this.#keyTimingStart = 0;
   }
 
   addBytesRead(count: number): void {
     this.#bytesRead += count;
+  }
+
+  #recordKeyTiming(keyMs: number): void {
+    if (this.#keyTimingSamples.length < keyTimingSampleLimit) {
+      this.#keyTimingSamples.push(keyMs);
+      return;
+    }
+    this.#keyTimingSamples[this.#keyTimingStart] = keyMs;
+    this.#keyTimingStart = (this.#keyTimingStart + 1) % keyTimingSampleLimit;
   }
 
   ingest(line: string): void {
@@ -153,6 +190,9 @@ class EventTailAggregator {
         : null;
     if (eventAtMs !== null) {
       this.#latestEventAtMs = Math.max(this.#latestEventAtMs ?? eventAtMs, eventAtMs);
+    }
+    if (typeof parsed.key_ms === 'number' && Number.isFinite(parsed.key_ms) && parsed.key_ms >= 0) {
+      this.#recordKeyTiming(parsed.key_ms);
     }
     if (
       parsed.event === 'heartbeat' &&
@@ -220,6 +260,7 @@ class EventTailAggregator {
     return {
       eventsFreshMs:
         this.#latestEventAtMs === null ? null : Math.max(0, nowMs - this.#latestEventAtMs),
+      keyTiming: keyTimingFrom(this.#keyTimingSamples),
       recentHeartbeatRoots: [...heartbeatRoots]
         .map(([root, count]) => ({ root, count }))
         .sort((left, right) => right.count - left.count || left.root.localeCompare(right.root)),
@@ -315,6 +356,8 @@ interface IndexReadResult {
   readonly entryCount: number;
   readonly distinctCrates: number;
   readonly indexSizeBytes: number;
+  /** `SUM(blobs.size)`: the store size kache's GC budgets against; null when the table is absent. */
+  readonly storeBytes: number | null;
   readonly topCrates: readonly KacheTopCrate[];
   readonly priors: KacheIndexPriors;
 }
@@ -324,8 +367,20 @@ const unavailableIndex: IndexReadResult = {
   entryCount: 0,
   distinctCrates: 0,
   indexSizeBytes: 0,
+  storeBytes: null,
   topCrates: [],
   priors: emptyIndexPriors,
+};
+
+/** Blob bytes recorded in the index; null when this kache predates the `blobs` table. */
+const readStoreBytes = (database: DatabaseSync): number | null => {
+  try {
+    const row = database.prepare('SELECT SUM(size) AS total FROM blobs').get();
+    const total = Number(row?.total ?? 0);
+    return Number.isFinite(total) && total >= 0 ? total : null;
+  } catch {
+    return null;
+  }
 };
 
 /**
@@ -378,6 +433,7 @@ const readIndexAggregate = (indexPath: string): IndexReadResult => {
       entryCount,
       distinctCrates: crates.size,
       indexSizeBytes,
+      storeBytes: readStoreBytes(database),
       topCrates: cappedTopCrates,
       priors: {
         compileTimeMs: (crateName, profiles) => {
@@ -403,7 +459,17 @@ const readIndexAggregate = (indexPath: string): IndexReadResult => {
   }
 };
 
-const combineSnapshot = (index: IndexReadResult, events: EventReadResult): KacheStatusSnapshot => ({
+/** Everything on disk the pressure panel needs besides the index and events. */
+interface PressureSources {
+  readonly gc: KacheGcReport;
+  readonly limit: KacheStorePressureReport['limit'];
+}
+
+const combineSnapshot = (
+  index: IndexReadResult,
+  events: EventReadResult,
+  pressure: PressureSources,
+): KacheStatusSnapshot => ({
   status: {
     available: index.available,
     entryCount: index.entryCount,
@@ -412,10 +478,72 @@ const combineSnapshot = (index: IndexReadResult, events: EventReadResult): Kache
     eventsFreshMs: events.eventsFreshMs,
     recentHeartbeatRoots: events.recentHeartbeatRoots,
     topCrates: index.topCrates,
+    pressure: {
+      storeBytes: index.available ? index.storeBytes : null,
+      limit: pressure.limit,
+      gc: pressure.gc,
+      keyTiming: events.keyTiming,
+    },
   },
   indexPriors: index.priors,
   eventPriors: events.priors,
 });
+
+const readTextOrNull = async (path: string): Promise<string | null> => {
+  try {
+    return await readFile(path, 'utf8');
+  } catch {
+    return null;
+  }
+};
+
+/** The last `maxBytes` of a file as text; empty when missing or unreadable. */
+const readTailText = async (path: string, maxBytes: number): Promise<string> => {
+  let handle: FileHandle | undefined;
+  try {
+    handle = await open(path, 'r');
+    const { size } = await handle.stat();
+    const length = Math.min(size, maxBytes);
+    if (length <= 0) {
+      return '';
+    }
+    const buffer = Buffer.alloc(length);
+    const { bytesRead } = await handle.read(buffer, 0, length, size - length);
+    return buffer.subarray(0, bytesRead).toString('utf8');
+  } catch {
+    return '';
+  } finally {
+    await handle?.close().catch(() => undefined);
+  }
+};
+
+/**
+ * `gc_stats.json` beside the index, with the eviction skips kache only
+ * logged (never counted) matched to the run by timestamp across its GC logs.
+ */
+const readGcReport = async (indexDir: string): Promise<KacheGcReport> => {
+  const statsText = await readTextOrNull(join(indexDir, 'gc_stats.json'));
+  if (statsText === null) {
+    return { kind: 'unavailable', reason: 'missing' };
+  }
+  const parsed = parseGcStats(statsText);
+  if (parsed.kind !== 'ran') {
+    return parsed;
+  }
+  const window = gcLogWindow(parsed.lastRunAtMs, parsed.durationMs);
+  let evictionErrors = 0;
+  let evictionErrorSample: string | null = null;
+  for (const fileName of gcLogFileNames) {
+    const skips = countEvictionSkips(
+      await readTailText(join(indexDir, fileName), gcLogTailBytes),
+      window.fromMs,
+      window.toMs,
+    );
+    evictionErrors += skips.count;
+    evictionErrorSample ??= skips.sample;
+  }
+  return { ...parsed, evictionErrors, evictionErrorSample };
+};
 
 /**
  * Identity of the on-disk index: main file plus WAL, because kache commits
@@ -446,6 +574,10 @@ export interface CreateKacheSnapshotReaderOptions {
   readonly maxEventBytes?: number;
   /** Milliseconds of line parsing between event-loop yields. */
   readonly parseSliceMs?: number;
+  /** Environment consulted for `KACHE_CONFIG` / `KACHE_MAX_SIZE`; defaults to the daemon's. */
+  readonly env?: Readonly<Record<string, string | undefined>>;
+  /** Home directory for `~` and the default kache config location. */
+  readonly home?: string;
 }
 
 interface EventsCursor {
@@ -463,7 +595,11 @@ export const createKacheSnapshotReader = (
   indexPath: string,
   options: CreateKacheSnapshotReaderOptions = {},
 ): KacheSnapshotReader => {
-  const eventsPath = join(dirname(indexPath), 'events.jsonl');
+  const indexDir = dirname(indexPath);
+  const eventsPath = join(indexDir, 'events.jsonl');
+  const env = options.env ?? process.env;
+  const home = options.home ?? homedir();
+  const configPath = kacheConfigPathFor(env, home);
   const maxEventBytes =
     options.maxEventBytes !== undefined &&
     Number.isFinite(options.maxEventBytes) &&
@@ -580,10 +716,21 @@ export const createKacheSnapshotReader = (
     return result;
   };
 
+  const readPressure = async (): Promise<PressureSources> => {
+    const [gc, configContent] = await Promise.all([
+      readGcReport(indexDir),
+      readTextOrNull(configPath),
+    ]);
+    return {
+      gc,
+      limit: resolveKacheStoreLimit({ configContent, configPath, env, home, indexPath }),
+    };
+  };
+
   const readOnce = async (nowMs: number): Promise<KacheStatusSnapshot> => {
     const events = await readEvents(nowMs);
-    const index = await readIndex();
-    return combineSnapshot(index, events);
+    const [index, pressure] = await Promise.all([readIndex(), readPressure()]);
+    return combineSnapshot(index, events, pressure);
   };
 
   // The cursor and aggregator are shared state, so overlapping reads are

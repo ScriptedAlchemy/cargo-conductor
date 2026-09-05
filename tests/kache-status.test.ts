@@ -1,4 +1,12 @@
-import { appendFileSync, mkdtempSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs';
+import {
+  appendFileSync,
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  statSync,
+  utimesSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { performance } from 'node:perf_hooks';
@@ -55,9 +63,11 @@ describe('createKacheSnapshotReader', () => {
         ].join('\n')}\n`,
       );
 
-      const snapshot = await createKacheSnapshotReader(indexPath, { maxEventBytes: 2_048 }).read(
-        nowMs,
-      );
+      const snapshot = await createKacheSnapshotReader(indexPath, {
+        env: {},
+        home: root,
+        maxEventBytes: 2_048,
+      }).read(nowMs);
 
       expect(snapshot.status).toEqual({
         available: true,
@@ -65,6 +75,18 @@ describe('createKacheSnapshotReader', () => {
         entryCount: 4,
         eventsFreshMs: 1_000,
         indexSizeBytes: expect.any(Number),
+        pressure: {
+          // No `blobs` table, no gc_stats.json, no kache config: every part
+          // of the panel says why rather than reading as an empty store.
+          gc: { kind: 'unavailable', reason: 'missing' },
+          keyTiming: null,
+          limit: {
+            detail: expect.stringContaining('config.toml'),
+            kind: 'unknown',
+            reason: 'config-missing',
+          },
+          storeBytes: null,
+        },
         recentHeartbeatRoots: [
           { count: 2, root: '/work/a' },
           { count: 1, root: '/work/b' },
@@ -230,6 +252,116 @@ describe('createKacheSnapshotReader', () => {
 
       utimesSync(indexPath, pinnedAt, new Date(pinnedAt.getTime() + 5_000));
       expect((await reader.read(3_000)).status.entryCount).toBe(2);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('assembles the store-pressure panel from blobs, gc_stats.json, the GC logs and the config', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'cc-kache-status-pressure-'));
+    const storeDir = join(root, 'store');
+    const indexPath = join(storeDir, 'index.db');
+    const nowMs = Date.parse('2026-09-05T00:00:00.000Z');
+    const gcRanAt = '2026-09-04T23:55:41.264981906+00:00';
+    try {
+      mkdirSync(storeDir);
+      createIndex(indexPath, [['alpha', 'dev', 100]]);
+      const database = new DatabaseSync(indexPath);
+      // kache's `blobs` table: hash, size, refcount.
+      database.exec('CREATE TABLE blobs (hash TEXT PRIMARY KEY, size INTEGER NOT NULL, refcount INTEGER)');
+      database.prepare('INSERT INTO blobs VALUES (?, ?, 1)').run('a', 300 * 1024 ** 3);
+      database.prepare('INSERT INTO blobs VALUES (?, ?, 1)').run('b', 241 * 1024 ** 3);
+      database.close();
+      writeFileSync(
+        join(storeDir, 'gc_stats.json'),
+        JSON.stringify({
+          last_run: gcRanAt,
+          entries_evicted: 0,
+          bytes_freed: 1_050_074,
+          disk_bytes_reclaimed: 0,
+          blobs_removed: 2,
+          duration_ms: 83_000,
+        }),
+      );
+      // One skip inside the run, one from an older run, one in the other log.
+      writeFileSync(
+        join(storeDir, 'auto-gc.log'),
+        [
+          '2026-09-04T23:55:50.000000Z  WARN kache::gc: gc: skipping eviction of aaa: database is locked: Error code 5: The database file is locked',
+          '2026-09-01T00:00:00.000000Z  WARN kache::gc: gc: skipping eviction of bbb: database is locked',
+          '',
+        ].join('\n'),
+      );
+      writeFileSync(
+        join(storeDir, 'daemon.log'),
+        '\u001b[2m2026-09-04T23:56:10.000000Z\u001b[0m  WARN kache::gc: gc: skipping eviction of ccc: database is locked\n',
+      );
+      mkdirSync(join(root, 'config', 'kache'), { recursive: true });
+      writeFileSync(
+        join(root, 'config', 'kache', 'config.toml'),
+        `[cache]\nlocal_store = "${storeDir}"\nlocal_max_size = "429GiB"\n`,
+      );
+      const event = (offsetMs: number, value: Readonly<Record<string, unknown>>): string =>
+        JSON.stringify({ ts: new Date(nowMs - offsetMs).toISOString(), ...value });
+      writeFileSync(
+        join(storeDir, 'events.jsonl'),
+        `${[
+          event(3_000, { crate_name: 'alpha', profile: 'dev', compile_time_ms: 400, key_ms: 900 }),
+          event(2_000, { crate_name: 'beta', profile: 'dev', compile_time_ms: 400, key_ms: 1_100 }),
+          event(1_000, { crate_name: 'gamma', profile: 'dev', compile_time_ms: 400, key_ms: 4_000 }),
+        ].join('\n')}\n`,
+      );
+
+      const snapshot = await createKacheSnapshotReader(indexPath, {
+        env: { XDG_CONFIG_HOME: join(root, 'config') },
+        home: root,
+      }).read(nowMs);
+
+      expect(snapshot.status.pressure).toEqual({
+        gc: {
+          kind: 'ran',
+          lastRunAtMs: Date.parse(gcRanAt),
+          durationMs: 83_000,
+          entriesEvicted: 0,
+          bytesFreed: 1_050_074,
+          diskBytesReclaimed: 0,
+          blobsRemoved: 2,
+          declined: false,
+          entriesPinned: null,
+          entriesUnreclaimable: null,
+          evictionErrors: 2,
+          evictionErrorSample: 'database is locked',
+        },
+        // Same floor((n - 1) * p) rank as the ledger's percentiles.
+        keyTiming: { count: 3, meanMs: 2_000, p95Ms: 1_100 },
+        limit: {
+          bytes: 429 * 1024 ** 3,
+          kind: 'known',
+          source: join(root, 'config', 'kache', 'config.toml'),
+        },
+        storeBytes: 541 * 1024 ** 3,
+      });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('reports unparsable gc_stats.json and an older index without a blobs table honestly', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'cc-kache-status-pressure-degraded-'));
+    const indexPath = join(root, 'index.db');
+    try {
+      createIndex(indexPath, [['alpha', 'dev', 100]]);
+      writeFileSync(join(root, 'gc_stats.json'), '{"last_run": ');
+      const snapshot = await createKacheSnapshotReader(indexPath, { env: {}, home: root }).read(
+        1_000,
+      );
+      expect(snapshot.status.available).toBe(true);
+      expect(snapshot.status.pressure).toMatchObject({
+        gc: { kind: 'unavailable', reason: 'unparsable' },
+        keyTiming: null,
+        limit: { kind: 'unknown', reason: 'config-missing' },
+        storeBytes: null,
+      });
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

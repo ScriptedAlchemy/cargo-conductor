@@ -698,9 +698,15 @@ describe('metricsWindow', () => {
         waitP50Ms: 80,
         waitP95Ms: 80,
         bySubcommand: [
-          { subcommand: 'check', profile: 'perf', count: 1, p50Ms: 500, maxMs: 500 },
-          { subcommand: 'unknown', profile: 'dev', count: 1, p50Ms: 200, maxMs: 200 },
+          { subcommand: 'check', profile: 'perf', count: 1, p50Ms: 500, maxMs: 500, phases: null },
+          { subcommand: 'unknown', profile: 'dev', count: 1, p50Ms: 200, maxMs: 200, phases: null },
         ],
+        runTotalMs: 700,
+        waitTotalMs: 80,
+        // Nothing else ran while these waited and the ledger was opened
+        // without a permit count, so the whole wait is "other".
+        waitSplit: { count: 1, laneBoundMs: 0, permitBoundMs: 0, otherMs: 80, permits: null },
+        handBack: { leaders: 0, laneReleasedMs: 0 },
       });
 
       const allTime = yield* ledger.metricsWindow(null);
@@ -715,12 +721,82 @@ describe('metricsWindow', () => {
         waitP50Ms: 50,
         waitP95Ms: 50,
         bySubcommand: [
-          { subcommand: 'check', profile: 'dev', count: 1, p50Ms: 100, maxMs: 100 },
-          { subcommand: 'check', profile: 'perf', count: 1, p50Ms: 500, maxMs: 500 },
-          { subcommand: 'test', profile: 'test', count: 1, p50Ms: 300, maxMs: 300 },
-          { subcommand: 'unknown', profile: 'dev', count: 1, p50Ms: 200, maxMs: 200 },
+          { subcommand: 'check', profile: 'dev', count: 1, p50Ms: 100, maxMs: 100, phases: null },
+          { subcommand: 'check', profile: 'perf', count: 1, p50Ms: 500, maxMs: 500, phases: null },
+          { subcommand: 'test', profile: 'test', count: 1, p50Ms: 300, maxMs: 300, phases: null },
+          { subcommand: 'unknown', profile: 'dev', count: 1, p50Ms: 200, maxMs: 200, phases: null },
         ],
+        runTotalMs: 1_100,
+        waitTotalMs: 180,
+        waitSplit: { count: 3, laneBoundMs: 0, permitBoundMs: 0, otherMs: 180, permits: null },
+        handBack: { leaders: 0, laneReleasedMs: 0 },
       });
+    }));
+
+  it.effect('attributes queue wait to lane heads and held permits and splits compile from execution', () =>
+    Effect.gen(function* () {
+      const directory = yield* scopedTempDir('cc-ledger-split-');
+      const db = yield* scopedDatabase(() =>
+        openLedgerDatabase(join(directory, 'state', 'ledger.db')),
+      );
+      const ledger = createLedgerApi(db, { permits: 1 });
+      const leader = (laneKey: string, createdAtMs: number, intentJson: string) =>
+        ledger.createRequest(makeInput({ createdAtMs, intentJson, laneKey }));
+
+      // A: lane 1, admitted at once; compiles until 1_400, then tests until 1_600.
+      const a = yield* leader('/repo::/t1', 1_000, '{"subcommand":"test","profile":"test"}');
+      yield* ledger.markQueued(a.id, 1_000);
+      yield* ledger.markRunning(a.id, 1_000);
+      // B: same lane, waits behind A's compile and starts on the hand-back.
+      const b = yield* leader('/repo::/t1', 1_100, '{"subcommand":"check","profile":"dev"}');
+      yield* ledger.markQueued(b.id, 1_100);
+      // C: another lane, idle; waits only because the single permit is held.
+      const c = yield* leader('/repo::/t2', 1_200, '{"subcommand":"check","profile":"dev"}');
+      yield* ledger.markQueued(c.id, 1_200);
+      yield* ledger.markBuildFinished(a.id, 1_400);
+      yield* ledger.markRunning(b.id, 1_400);
+      yield* ledger.markFinished(a.id, { atMs: 1_600, status: 'done' });
+      yield* ledger.markFinished(b.id, { atMs: 1_700, status: 'done' });
+      yield* ledger.markRunning(c.id, 1_700);
+      yield* ledger.markFinished(c.id, { atMs: 1_800, status: 'done' });
+      // D: nothing running while it waits — scheduling latency, "other".
+      const d = yield* leader('/repo::/t2', 1_800, '{"subcommand":"check","profile":"dev"}');
+      yield* ledger.markQueued(d.id, 1_800);
+      yield* ledger.markRunning(d.id, 1_900);
+      yield* ledger.markFinished(d.id, { atMs: 2_000, status: 'done' });
+
+      const report = yield* ledger.metricsWindow(null);
+      expect(report.waitTotalMs).toBe(300 + 500 + 100);
+      expect(report.waitSplit).toEqual({
+        count: 4,
+        laneBoundMs: 300,
+        permitBoundMs: 500,
+        otherMs: 100,
+        permits: 1,
+      });
+      expect(report.handBack).toEqual({ leaders: 1, laneReleasedMs: 200 });
+      expect(report.bySubcommand).toEqual([
+        { subcommand: 'check', profile: 'dev', count: 3, p50Ms: 100, maxMs: 300, phases: null },
+        {
+          subcommand: 'test',
+          profile: 'test',
+          count: 1,
+          p50Ms: 600,
+          maxMs: 600,
+          phases: {
+            count: 1,
+            compileP50Ms: 400,
+            executeP50Ms: 200,
+            compileTotalMs: 400,
+            executeTotalMs: 200,
+          },
+        },
+      ]);
+
+      // The same attribution feeds every dashboard window from one scan.
+      const windows = yield* ledger.metricsWindows(2_500);
+      expect(windows.hour.waitSplit).toEqual(report.waitSplit);
+      expect(windows.all.handBack).toEqual(report.handBack);
     }));
 });
 

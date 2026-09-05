@@ -9,11 +9,16 @@ import type {
 } from '../daemon/protocol.js';
 import type { DaemonHealth } from '../lib/daemon-health.js';
 import { formatBytes, formatMs, heavyCapNote, pathBasename, relativeTime, shortenPath } from '../lib/format.js';
+import { kachePressureModel } from '../lib/kache-pressure-model.js';
+import type { KachePressureModel } from '../lib/kache-pressure-model.js';
 import type { StatusResult } from '../lib/protocol-schemas.js';
 import { countWord } from '../lib/text.js';
 import { cliVersion, versionSkewLine } from '../lib/version-skew.js';
 
 import { commandText, diagnosticCounts } from './headlines.js';
+
+export type { KachePressureModel, KachePressureWarning } from '../lib/kache-pressure-model.js';
+export { kachePressureModel } from '../lib/kache-pressure-model.js';
 
 /*
  * View-models: pure projections from daemon records and request context onto
@@ -219,9 +224,15 @@ export type KacheModel =
       readonly summary: string;
       readonly freshness: string | null;
       readonly slowest: readonly { readonly crate: string; readonly profile: string; readonly ms: string }[];
+      /** Store size against its limit, last GC, and `key_ms` (#92); unavailable from older daemons. */
+      readonly pressure: KachePressureModel;
     };
 
-export const kacheModel = (kache: KacheStatusReport | null | undefined, slowestLimit = 5): KacheModel => {
+export const kacheModel = (
+  kache: KacheStatusReport | null | undefined,
+  slowestLimit = 5,
+  nowMs: number = Date.now(),
+): KacheModel => {
   if (kache === undefined || kache === null) {
     return { kind: 'unknown' };
   }
@@ -231,6 +242,7 @@ export const kacheModel = (kache: KacheStatusReport | null | undefined, slowestL
   return {
     freshness: kache.eventsFreshMs === null ? null : `events ${formatMs(kache.eventsFreshMs)} old`,
     kind: 'available',
+    pressure: kachePressureModel(kache.pressure, nowMs),
     slowest: kache.topCrates.slice(0, slowestLimit).map((entry) => ({
       crate: entry.crate,
       ms: formatMs(entry.ms),
