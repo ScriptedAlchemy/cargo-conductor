@@ -21,7 +21,7 @@ export interface InspectOptions {
 }
 
 // Through the ticket boundary runner so MCP/CLI cancellation aborts the
-// socket wait; the snapshot itself never fails.
+// socket wait and replacement failures become clear transport diagnostics.
 const loadSnapshot = (limit: number, options: InspectOptions) =>
   runTicketEffect(
     loadHaulerSnapshot({

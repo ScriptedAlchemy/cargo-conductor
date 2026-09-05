@@ -1,5 +1,6 @@
 import { spawn, type ChildProcess, type SpawnOptions } from 'node:child_process';
-import { closeSync, mkdirSync, openSync } from 'node:fs';
+import { closeSync, existsSync, mkdirSync, openSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 
 import { version } from 'agent-bundle/meta';
 import * as Data from 'effect/Data';
@@ -31,12 +32,21 @@ export class SpawnDaemonError extends Data.TaggedError('SpawnDaemonError')<{
   readonly cause: unknown;
 }> {}
 
+export class DaemonReplacementFailedError extends Data.TaggedError('DaemonReplacementFailed')<{
+  readonly cause: WaitForDaemonError;
+  readonly socketPath: string;
+}> {}
+
 export type WaitForDaemonError =
   | DaemonUnreachableError
   | ControlTimeoutError
   | ConnectionClosedError;
 
-export type EnsureDaemonError = WaitForDaemonError | SpawnDaemonError | DaemonNotReplacedError;
+export type EnsureDaemonError =
+  | WaitForDaemonError
+  | SpawnDaemonError
+  | DaemonNotReplacedError
+  | DaemonReplacementFailedError;
 
 export interface EnsureDaemonDependencies extends ExitWaitOptions {
   readonly pingDaemon: (
@@ -85,12 +95,26 @@ export const waitForDaemon = (
 
 /**
  * The entry that understands `daemon run`: the artifact's `hauler.mjs` when
- * a host injected the plugin root (an MCP server or hook entry re-spawning
- * itself would not), otherwise the running executable.
+ * a host injected the plugin root, otherwise a package or checkout entry.
  */
 const defaultDaemonEntry = (): string => {
   const [, script] = resolveHaulerArgv();
-  return script ?? process.argv[1] ?? '';
+  if (script !== undefined) {
+    return script;
+  }
+  // Routed commands render in a generated flight worker, so process.argv[1]
+  // names `cargo-hauler-flight.mjs`, which is not an executable daemon entry.
+  // Resolve the sibling plain script from this bundled module instead.
+  for (const candidate of [
+    new URL('./hauler.js', import.meta.url),
+    new URL('../scripts/hauler.mjs', import.meta.url),
+  ]) {
+    const path = fileURLToPath(candidate);
+    if (existsSync(path)) {
+      return path;
+    }
+  }
+  return process.argv[1] ?? '';
 };
 
 const spawnEnvExactNames = new Set([
@@ -194,7 +218,9 @@ export const defaultEnsureDependencies: EnsureDaemonDependencies = {
 };
 
 /**
- * A daemon this build can talk to, started if none answers the socket.
+ * The version gate for every client read. A daemon of this build is returned,
+ * an absent daemon stays absent, and a daemon from another install is replaced
+ * before the caller can request or parse a versioned payload.
  *
  * One install, one version: the CLI, hooks, MCP server, and daemon always
  * ship together, so a daemon answering with another version is one left
@@ -208,30 +234,47 @@ export const defaultEnsureDependencies: EnsureDaemonDependencies = {
  * never signalled past the request; one that outlives the grace fails this
  * call as `DaemonNotReplaced` and keeps serving.
  */
-export const ensureDaemonRunning = (
+export const ensureDaemonVersion = (
   config: DaemonConfigShape = resolveDaemonConfig(),
   dependencies: EnsureDaemonDependencies = defaultEnsureDependencies,
-): Effect.Effect<PongMessage, EnsureDaemonError> =>
+  pingTimeoutMs = 500,
+): Effect.Effect<PongMessage | null, EnsureDaemonError> =>
   Effect.gen(function* () {
-    const already = yield* dependencies.pingDaemon(config.socketPath, 500).pipe(
+    const already = yield* dependencies.pingDaemon(config.socketPath, pingTimeoutMs).pipe(
       Effect.catchTag('DaemonUnreachable', (error) =>
         daemonIsAbsent(error.cause) ? Effect.succeed(null) : Effect.fail(error),
       ),
     );
-    if (already !== null) {
-      if (already.version === version) {
-        return already;
-      }
-      yield* dependencies.requestShutdown(config.socketPath);
-      const exited = yield* waitForExit(already.pid, dependencies);
-      if (!exited) {
-        return yield* new DaemonNotReplacedError({
-          daemon: { pid: already.pid, startedAtMs: already.startedAtMs, version: already.version },
-          graceMs: dependencies.exitGraceMs,
-          socketPath: config.socketPath,
-        });
-      }
+    if (already === null || already.version === version) {
+      return already;
+    }
+    yield* dependencies.requestShutdown(config.socketPath);
+    const exited = yield* waitForExit(already.pid, dependencies);
+    if (!exited) {
+      return yield* new DaemonNotReplacedError({
+        daemon: { pid: already.pid, startedAtMs: already.startedAtMs, version: already.version },
+        graceMs: dependencies.exitGraceMs,
+        socketPath: config.socketPath,
+      });
     }
     yield* dependencies.spawnDetachedDaemon(config);
-    return yield* dependencies.waitForDaemon(config.socketPath);
+    return yield* dependencies.waitForDaemon(config.socketPath).pipe(
+      Effect.mapError(
+        (cause) => new DaemonReplacementFailedError({ cause, socketPath: config.socketPath }),
+      ),
+    );
   });
+
+export const ensureDaemonRunning = (
+  config: DaemonConfigShape = resolveDaemonConfig(),
+  dependencies: EnsureDaemonDependencies = defaultEnsureDependencies,
+): Effect.Effect<PongMessage, EnsureDaemonError> =>
+  ensureDaemonVersion(config, dependencies).pipe(
+    Effect.flatMap((daemon) =>
+      daemon === null
+        ? dependencies.spawnDetachedDaemon(config).pipe(
+            Effect.andThen(dependencies.waitForDaemon(config.socketPath)),
+          )
+        : Effect.succeed(daemon),
+    ),
+  );

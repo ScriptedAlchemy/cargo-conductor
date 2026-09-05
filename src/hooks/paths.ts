@@ -5,7 +5,7 @@ import { daemonSocketPath, resolveStateDir } from '../status.js';
 /** Absolute `node …/hauler.mjs` when the plugin root is known; otherwise PATH `hauler`. */
 export const resolveHaulerArgv = (
   env: Readonly<Record<string, string | undefined>> = process.env,
-): readonly string[] => {
+): readonly [string, ...string[]] => {
   const pluginRoot =
     env.AGENT_BUNDLE_PLUGIN_ROOT ??
     env.CLAUDE_PLUGIN_ROOT ??

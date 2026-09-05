@@ -1,9 +1,12 @@
+import { spawn } from 'node:child_process';
 import { createConnection } from 'node:net';
+
+import { version } from 'agent-bundle/meta';
 
 import { socketErrorCode } from '../lib/socket-errors.js';
 
 import { asFinishedTicket, type FinishedTicket } from './finished-ticket.js';
-import { resolveHookSocketPath } from './paths.js';
+import { resolveHaulerArgv, resolveHookSocketPath } from './paths.js';
 import { isRecord } from './shared.js';
 
 export type { FinishedTicket };
@@ -51,6 +54,7 @@ export type RequestOutcome =
   | { readonly kind: 'closed' }
   | { readonly kind: 'malformed' }
   | { readonly kind: 'reply'; readonly message: Record<string, unknown> }
+  | { readonly detail: string; readonly kind: 'replacement-failed' }
   | { readonly kind: 'timeout' }
   | { readonly kind: 'unreachable'; readonly code: string | undefined };
 
@@ -69,8 +73,7 @@ const lineSplitter = (): ((chunk: string) => string[]) => {
   };
 };
 
-/** One-shot NDJSON request/response over the daemon socket, reporting how it ended. */
-export const requestOutcome = (
+const requestOnce = (
   message: Record<string, unknown>,
   socketPath: string,
   timeoutMs: number,
@@ -123,6 +126,75 @@ export const requestOutcome = (
     });
   });
 
+const replaceStaleDaemon = (): Promise<{ readonly detail: string; readonly replaced: boolean }> =>
+  new Promise((resolve) => {
+    const [command, ...args] = resolveHaulerArgv();
+    const child = spawn(command, [...args, 'daemon', 'start'], {
+      killSignal: 'SIGTERM',
+      stdio: ['ignore', 'pipe', 'pipe'],
+      timeout: 8_000,
+    });
+    let output = '';
+    child.stdout.on('data', (chunk: Buffer) => {
+      output += chunk.toString('utf8');
+    });
+    child.stderr.on('data', (chunk: Buffer) => {
+      output += chunk.toString('utf8');
+    });
+    child.once('error', (error) => {
+      resolve({ detail: error.message, replaced: false });
+    });
+    child.once('close', (code) => {
+      resolve({
+        detail: output.trim() || `hauler daemon start exited ${code ?? 1}`,
+        replaced: code === 0,
+      });
+    });
+  });
+
+export interface RequestOutcomeDependencies {
+  readonly replaceStaleDaemon: () => Promise<{
+    readonly detail: string;
+    readonly replaced: boolean;
+  }>;
+}
+
+const defaultRequestOutcomeDependencies: RequestOutcomeDependencies = {
+  replaceStaleDaemon,
+};
+
+/**
+ * One-shot hook request with the same one-version gate as the Effect client.
+ * Hook fast paths stay dependency-free on Effect: on skew they delegate the
+ * replacement to `hauler daemon start`, which owns the shutdown/wait/spawn
+ * lifecycle, then retry the requested operation once.
+ */
+export const requestOutcome = async (
+  message: Record<string, unknown>,
+  socketPath: string,
+  timeoutMs: number,
+  dependencies: RequestOutcomeDependencies = defaultRequestOutcomeDependencies,
+): Promise<RequestOutcome> => {
+  const ping = await requestOnce(
+    { id: `hook-version-${Date.now()}`, type: 'ping' },
+    socketPath,
+    timeoutMs,
+  );
+  if (ping.kind !== 'reply') {
+    return ping;
+  }
+  if (ping.message.type !== 'pong' || typeof ping.message.version !== 'string') {
+    return { kind: 'malformed' };
+  }
+  if (ping.message.version !== version) {
+    const replacement = await dependencies.replaceStaleDaemon();
+    if (!replacement.replaced) {
+      return { detail: replacement.detail, kind: 'replacement-failed' };
+    }
+  }
+  return requestOnce(message, socketPath, timeoutMs);
+};
+
 /** One-shot NDJSON request/response over the daemon socket; null on any failure. */
 export const requestJson = async (
   message: Record<string, unknown>,
@@ -137,7 +209,9 @@ export const recordDeniedAttempt = async (
   attempt: DeniedAttempt,
   socketPath: string = resolveHookSocketPath(),
 ): Promise<void> => {
-  await requestJson(
+  // Fire-and-forget write: it parses no versioned payload, and sending it
+  // directly preserves the 30 ms audit path when a busy daemon delays ping.
+  await requestOnce(
     {
       argv: [...attempt.argv],
       cwd: attempt.cwd,

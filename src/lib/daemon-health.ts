@@ -1,10 +1,20 @@
 import { statSync } from 'node:fs';
 
 import * as Effect from 'effect/Effect';
+import * as Schedule from 'effect/Schedule';
 
+import {
+  defaultEnsureDependencies,
+  ensureDaemonVersion,
+} from '../client/ensure-daemon.js';
 import type { DaemonConfigShape } from '../daemon/config.js';
-import { requestExpecting, type DaemonUnreachableError } from '../daemon/control.js';
+import {
+  pingDaemon,
+  requestExpecting,
+  type DaemonUnreachableError,
+} from '../daemon/control.js';
 import type { StatusResultMessage } from '../daemon/protocol.js';
+import { requestShutdown } from '../daemon/shutdown.js';
 import { isRecord } from './guards.js';
 import { shortId } from './id.js';
 import { socketErrorCode } from './socket-errors.js';
@@ -134,20 +144,49 @@ export const probeDaemonHealth = (
     return Promise.resolve({ reason: 'socket-missing', state: 'stopped' });
   }
   const timeoutMs = options.timeoutMs ?? healthProbeTimeoutMs;
+  const shutdownTimeoutMs = Math.min(timeoutMs, 500);
+  const exitGraceMs = Math.min(timeoutMs * 2, 1_500);
+  const bootWaitMs = Math.min(timeoutMs * 2, 1_250);
   const startedAt = Date.now();
-  const probe: Effect.Effect<DaemonHealth> = requestExpecting(
+  const probe: Effect.Effect<DaemonHealth> = ensureDaemonVersion(
+    config,
     {
-      message: { id: shortId(), limit: 1, type: 'status' },
-      openTimeoutMs: timeoutMs,
-      socketPath: config.socketPath,
-      timeoutMs,
+      ...defaultEnsureDependencies,
+      // The 5 s SessionStart envelope must cover ping + replacement + status.
+      // Exit gets enough time for normal teardown and boot gets margin over
+      // observed cold starts, while a genuinely stubborn daemon still fails
+      // within the host budget.
+      exitGraceMs,
+      requestShutdown: (socketPath) => requestShutdown(socketPath, shutdownTimeoutMs),
+      waitForDaemon: (socketPath) =>
+        pingDaemon(socketPath, Math.min(timeoutMs, 250)).pipe(
+          Effect.retry(
+            Schedule.spaced('50 millis').pipe(
+              Schedule.upTo({ duration: `${bootWaitMs} millis` }),
+            ),
+          ),
+        ),
     },
-    (message): message is StatusResultMessage => message.type === 'status-result',
+    timeoutMs,
   ).pipe(
-    Effect.map((message): DaemonHealth =>
-      message === undefined
-        ? { reason: 'connection-closed', state: 'unresponsive', timeoutMs }
-        : runningHealth(message, Date.now() - startedAt),
+    Effect.flatMap((daemon) =>
+      daemon === null
+        ? Effect.succeed<DaemonHealth>({ reason: 'connection-refused', state: 'stopped' })
+        : requestExpecting(
+            {
+              message: { id: shortId(), limit: 1, type: 'status' },
+              openTimeoutMs: timeoutMs,
+              socketPath: config.socketPath,
+              timeoutMs,
+            },
+            (message): message is StatusResultMessage => message.type === 'status-result',
+          ).pipe(
+            Effect.map((message): DaemonHealth =>
+              message === undefined
+                ? { reason: 'connection-closed', state: 'unresponsive', timeoutMs }
+                : runningHealth(message, Date.now() - startedAt),
+            ),
+          ),
     ),
     Effect.catchTags({
       ConnectionClosed: () =>
@@ -159,6 +198,24 @@ export const probeDaemonHealth = (
           timeoutMs,
         }),
       DaemonUnreachable: (error) => Effect.succeed<DaemonHealth>(unreachableHealth(error)),
+      DaemonNotReplaced: (error) =>
+        Effect.succeed<DaemonHealth>({
+          detail: error.message,
+          reason: 'open-failed',
+          state: 'unreachable',
+        }),
+      DaemonReplacementFailed: (error) =>
+        Effect.succeed<DaemonHealth>({
+          detail: `replacement daemon failed its version handshake (${error.cause._tag})`,
+          reason: 'open-failed',
+          state: 'unreachable',
+        }),
+      SpawnDaemonError: (error) =>
+        Effect.succeed<DaemonHealth>({
+          detail: `replacement daemon could not be started: ${error.cause instanceof Error ? error.cause.message : String(error.cause)}`,
+          reason: 'open-failed',
+          state: 'unreachable',
+        }),
     }),
   );
   return Effect.runPromise(probe, options.signal === undefined ? undefined : { signal: options.signal });

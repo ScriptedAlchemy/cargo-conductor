@@ -557,7 +557,7 @@ describe('program prefixes', () => {
   it('applies env assignments and -u to the surface: target dir, digest, and identity', () => {
     const plain = normalize(['cargo', 'build', '-p', 'alpha']);
     const retargeted = normalize(['env', 'CARGO_TARGET_DIR=alt', 'cargo', 'build', '-p', 'alpha']);
-    expect(retargeted.targetDir).toBe('/tmp/ws/alt');
+    expect(retargeted.targetDir).toBe(join(realpathSync('/tmp'), 'ws', 'alt'));
     expect(retargeted.key).not.toBe(plain.key);
 
     const flagged = normalize(['env', 'RUSTFLAGS=-Dwarnings', 'cargo', 'build', '-p', 'alpha']);

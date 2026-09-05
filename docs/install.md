@@ -12,6 +12,13 @@ The CLI entry point is `hauler` on PATH from `npm i -g cargo-hauler`. Never
 run `scripts/hauler.mjs` or a path under `.claude/plugins/cache`,
 `.codex/plugins/cache`, `.cursor/plugins`, or `artifact/<host>` directly.
 
+After an upgrade, every CLI command, MCP tool, dashboard read, and hook checks
+the daemon version before requesting a versioned payload. A daemon from the
+previous install is shut down and replaced, then the operation is tried once
+against the new daemon. If the old process does not exit within 5 seconds, the
+operation fails with one replacement diagnostic; it never parses the old
+payload or falls back to a compatibility schema.
+
 Supported platforms: Linux and macOS. Windows is experimental and untested
 (the daemon endpoint resolves to a named pipe, but the cargo PATH shim is
 POSIX-only and refuses to install). Node >= 22.19 is required (`node:sqlite`).

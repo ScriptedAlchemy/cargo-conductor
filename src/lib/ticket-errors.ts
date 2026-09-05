@@ -23,6 +23,14 @@ export const infraFailure = (error: TicketSocketError): Error => {
       return new Error(`hauler daemon rejected the request (${error.code}): ${error.message}`);
     case 'DaemonNotReplaced':
       return new Error(error.message);
+    case 'DaemonReplacementFailed':
+      return new Error(
+        `hauler replacement daemon failed its version handshake (${error.cause._tag}) at ${error.socketPath}`,
+      );
+    case 'SpawnDaemonError':
+      return new Error(
+        `hauler daemon could not be started: ${error.cause instanceof Error ? error.cause.message : String(error.cause)}`,
+      );
     default: {
       const exhaustive: never = error;
       return exhaustive;

@@ -45,6 +45,7 @@ const classifyOutcome = (outcome: RequestOutcome): DaemonProbe => {
     case 'timeout':
     case 'closed':
     case 'malformed':
+    case 'replacement-failed':
       return 'busy';
     case 'unreachable':
       // Permission or descriptor errors do not prove the daemon is gone; the

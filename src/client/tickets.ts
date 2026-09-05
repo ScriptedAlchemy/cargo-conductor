@@ -11,7 +11,6 @@ import type {
   ControlTimeoutError,
   DaemonUnreachableError,
 } from '../daemon/control.js';
-import type { DaemonNotReplacedError } from '../daemon/shutdown.js';
 import type {
   AckMessage,
   AwaitResultMessage,
@@ -25,7 +24,12 @@ import type {
 import { shortId } from '../lib/id.js';
 import { requestRecordSchema } from '../lib/protocol-schemas.js';
 
-import { ensureDaemonRunning, type EnsureDaemonError } from './ensure-daemon.js';
+import {
+  defaultEnsureDependencies,
+  ensureDaemonRunning,
+  ensureDaemonVersion,
+  type EnsureDaemonError,
+} from './ensure-daemon.js';
 import { formatDuration, formatProgressLine } from './progress.js';
 
 /** The daemon answered this request with an `error` line (malformed request, internal failure). */
@@ -44,7 +48,7 @@ export type TicketSocketError =
   | ConnectionClosedError
   | ControlTimeoutError
   | DaemonUnreachableError
-  | DaemonNotReplacedError
+  | EnsureDaemonError
   | DaemonRejectedError;
 
 const nullableRecordSchema = requestRecordSchema.nullable();
@@ -69,14 +73,19 @@ const requestReply = <T extends ServerMessage>(
   message: ClientMessage,
   timeoutMs: number,
   guard: (message: ServerMessage) => message is T,
+  ensure?: (config: DaemonConfigShape) => Effect.Effect<unknown, EnsureDaemonError>,
 ): Effect.Effect<T | undefined, TicketSocketError> =>
-  requestOverSocket({
-    isTerminal: (reply) =>
-      reply.id === message.id && (guard(reply) || reply.type === 'error'),
-    message,
-    socketPath: config.socketPath,
-    timeoutMs,
-  }).pipe(
+  (ensure ?? ((target) =>
+    ensureDaemonVersion(target, defaultEnsureDependencies, Math.min(timeoutMs, 5_000))))(config).pipe(
+    Effect.andThen(
+      requestOverSocket({
+        isTerminal: (reply) =>
+          reply.id === message.id && (guard(reply) || reply.type === 'error'),
+        message,
+        socketPath: config.socketPath,
+        timeoutMs,
+      }),
+    ),
     Effect.flatMap((replies) => {
       const rejected = replies.find(
         (reply): reply is ErrorMessage => reply.type === 'error' && reply.id === message.id,
@@ -302,34 +311,27 @@ export const submitBackgroundAck = (
   // Cold daemon must not mean "failed to submit": start it like exec does.
   // A daemon of another version that outlived the shutdown grace is the one
   // failure that must reach the caller — this build never submits to it.
-  ensure(config).pipe(
-    Effect.catchIf(
-      (error): error is Exclude<EnsureDaemonError, DaemonNotReplacedError> =>
-        error._tag !== 'DaemonNotReplaced',
-      () => Effect.void,
-    ),
-    Effect.andThen(
-      // No `holdStop`: the daemon's default for a background request is
-      // false, the same as `exec --bg --session`. Background tickets never
-      // hold a stop; the two entry points used to disagree.
-      requestReply(
-        config,
-        {
-          argv: [...input.argv],
-          background: true,
-          cwd: input.cwd,
-          id: shortId(),
-          type: 'exec',
-          ...(input.host === undefined ? {} : { host: input.host }),
-          ...(input.session === undefined ? {} : { session: input.session }),
-          ...(input.after === undefined || input.after.length === 0
-            ? {}
-            : { after: [...input.after] }),
-        },
-        5_000,
-        (message): message is AckMessage => message.type === 'ack',
-      ),
-    ),
+  // No `holdStop`: the daemon's default for a background request is false,
+  // the same as `exec --bg --session`. Background tickets never hold a stop;
+  // the two entry points used to disagree.
+  requestReply(
+    config,
+    {
+      argv: [...input.argv],
+      background: true,
+      cwd: input.cwd,
+      id: shortId(),
+      type: 'exec',
+      ...(input.host === undefined ? {} : { host: input.host }),
+      ...(input.session === undefined ? {} : { session: input.session }),
+      ...(input.after === undefined || input.after.length === 0
+        ? {}
+        : { after: [...input.after] }),
+    },
+    5_000,
+    (message): message is AckMessage => message.type === 'ack',
+    ensure,
+  ).pipe(
     Effect.map((message): BackgroundSubmitAck | null =>
       message === undefined
         ? null

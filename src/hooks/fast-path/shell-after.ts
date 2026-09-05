@@ -30,8 +30,9 @@ export interface AfterToolFastPath {
  * commands, the formatted context) is evaluated only when the daemon reports
  * finished tickets or the command itself names cargo or hauler;
  * a plain `ls -la` with nothing finished is `continue` right here. A daemon
- * that is down or slow answers `unavailable`, which is `continue` too:
- * quiet, and within the same 500 ms budget the hook has always used.
+ * that is down or slow answers `unavailable`, which is `continue` too. The
+ * normal path stays within 500 ms; a version mismatch may spend up to 8 s
+ * replacing the daemon, still inside the host's 10 s hook budget.
  */
 export const createAfterToolHandler = (fastPath: AfterToolFastPath): HookHandler<'afterTool'> => {
   const ping = fastPath.ping ?? pingSessionCompleted;

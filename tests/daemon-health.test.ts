@@ -94,6 +94,44 @@ describe('probeDaemonHealth', () => {
       expect(health).toEqual({ reason: 'answer-timeout', state: 'unresponsive', timeoutMs: 300 });
     }).pipe(Effect.scoped, Effect.runPromise), 10_000);
 
+  it('bounds replacement of a stale daemon within the health-probe budget', () =>
+    Effect.gen(function* () {
+      const root = yield* scopedTempDir('hauler-health-stale-');
+      const config = listenerConfig(root);
+      const calls: string[] = [];
+      const server = createServer((socket) => {
+        socket.setEncoding('utf8');
+        socket.on('data', (line: string) => {
+          const message = JSON.parse(line) as { readonly id: string; readonly type: string };
+          calls.push(message.type);
+          if (message.type === 'ping') {
+            socket.write(
+              `${JSON.stringify({
+                id: message.id,
+                pid: 1,
+                startedAtMs: 1,
+                type: 'pong',
+                version: '0.0.0-previous',
+              })}\n`,
+            );
+          } else if (message.type === 'shutdown') {
+            socket.write(`${JSON.stringify({ id: message.id, type: 'shutting-down' })}\n`);
+          }
+        });
+      });
+      yield* Effect.promise(() => listenOn(config.socketPath, server));
+      yield* Effect.addFinalizer(() => Effect.promise(() => closeServer(server)));
+
+      const startedAt = Date.now();
+      const health = yield* Effect.promise(() =>
+        probeDaemonHealth(config, { platform: 'linux', timeoutMs: 300 }),
+      );
+      expect(Date.now() - startedAt).toBeLessThan(1_500);
+      expect(calls).toEqual(['ping', 'shutdown']);
+      expect(health).toMatchObject({ reason: 'open-failed', state: 'unreachable' });
+      expect(health.state === 'unreachable' ? health.detail : '').toContain('not restarted');
+    }).pipe(Effect.scoped, Effect.runPromise), 10_000);
+
   it.skipIf(process.getuid?.() === 0)('reports a state directory it may not search as unreachable, not missing', () =>
     Effect.gen(function* () {
       const root = yield* scopedTempDir('hauler-health-');
@@ -132,7 +170,6 @@ describe('probeDaemonHealth', () => {
         riding: 0,
         running: 0,
         state: 'running',
-        // Straight off the status report: the probe is one round trip, never a follow-up ping.
         version,
       });
       expect(health.state === 'running' ? health.pid : -1).toBeGreaterThan(0);

@@ -141,16 +141,21 @@ describe('submitBackground', () => {
       expect(report.recent).toEqual([]);
     }));
 
-  it.live('still submits when starting a daemon failed for any other reason and one is listening', () =>
+  it.live('does not submit when the version gate cannot establish the replacement daemon', () =>
     Effect.gen(function* () {
       const fixture = yield* scopedDaemon(5);
       yield* scopedEnv({ CARGO_HAULER_CARGO_BIN: `${fixture.binDir}/cargo` });
-      const ack = yield* submitBackgroundAck(
-        { argv: ['cargo', 'build', '-p', 'after-spawn-failure'], cwd: fixture.ws1 },
-        fixture.config,
-        () => Effect.fail(new SpawnDaemonError({ cause: new Error('spawn refused') })),
+      const error = yield* Effect.flip(
+        submitBackgroundAck(
+          { argv: ['cargo', 'build', '-p', 'after-spawn-failure'], cwd: fixture.ws1 },
+          fixture.config,
+          () => Effect.fail(new SpawnDaemonError({ cause: new Error('spawn refused') })),
+        ),
       );
-      expect(ack?.ticket).toMatch(/^cc-\d+$/u);
+      expect(error._tag).toBe('SpawnDaemonError');
+      const report = yield* fetchReport(fixture);
+      expect(report.active).toEqual([]);
+      expect(report.recent).toEqual([]);
     }));
 
   it.live('does not hold the stop hook, like exec --bg with the same session', () =>
