@@ -29,7 +29,12 @@ const outcome = (record: RequestRecord, nowMs: number): string => {
     case 'running': {
       const estimate = record.estimateMs === null ? '' : ` / ~${formatMs(record.estimateMs)}`;
       const stalled = record.stall === undefined ? '' : ` · stalled ${formatMs(record.stall.idleMs)}`;
-      return `running${timing}${estimate}${stalled}`;
+      // Past the stall factor but still alive: background it, do not kill it (#91).
+      const overrun =
+        record.estimateState === 'overrun'
+          ? ` · overrun${record.p90Ms === undefined ? '' : ` (p90 ~${formatMs(record.p90Ms)})`}`
+          : '';
+      return `running${timing}${estimate}${stalled}${overrun}`;
     }
     case 'done':
       return record.attachedTo === null ? `done${timing}` : `done${timing} · rode ${record.attachedTo}`;

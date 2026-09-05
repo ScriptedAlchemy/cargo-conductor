@@ -215,10 +215,17 @@ describe('hauler daemon', () => {
         const firstQueued = advanced.active.find((record) => record.argv.includes('first-queued'));
         const quiet = advanced.active.find((record) => record.argv.includes('lane-head'));
         expect(delayed?.delayed).toBe(true);
-        // The overrunning head contributes zero remaining time; it must not
-        // cancel out the queued job still ahead of this one.
+        // Ten minutes into a two-minute estimate with no stall verdict, the
+        // head is flagged overrun (#91) — for itself and on the follower's
+        // queue context — and, past any history, still owes one estimate's
+        // worth: never a zero or negative that cancels the queued job ahead.
+        expect(quiet?.estimateState).toBe('overrun');
+        expect(quiet?.stall).toBeUndefined();
+        expect(delayed?.queue?.headEstimateState).toBe('overrun');
         expect(firstQueued?.estimateMs ?? 0).toBeGreaterThan(0);
-        expect(delayed?.queue?.waitEtaMs).toBe(firstQueued?.estimateMs);
+        expect(delayed?.queue?.waitEtaMs).toBeGreaterThanOrEqual(
+          (firstQueued?.estimateMs ?? 0) + (quiet?.estimateMs ?? 0),
+        );
         expect(quiet?.quietMs).toBeGreaterThan(300_000);
       } finally {
         Date.now = realNow;

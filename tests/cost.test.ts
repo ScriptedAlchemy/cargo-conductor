@@ -11,10 +11,14 @@ import * as Effect from 'effect/Effect';
 import * as Fiber from 'effect/Fiber';
 
 import {
+  assessOverrun,
   createCostModel,
   defaultEstimateFor,
+  durationPercentile,
+  laneWaitRemainingMs,
   openKacheReader,
   readKacheEventPriors,
+  singleIntegrationTestTarget,
 } from '../src/daemon/cost.js';
 import type { KacheIndexPriors } from '../src/daemon/cost.js';
 import { resolveDaemonConfig } from '../src/daemon/config.js';
@@ -711,4 +715,301 @@ describe('edit-aware estimates', () => {
       yield* model.recordOutcome(observed.key, 20_000, { editedRecently: true });
       expect(yield* model.estimate(sameClass)).toEqual({ estimateMs: 20_000, source: 'ewma' });
     }));
+});
+
+describe('phase estimates', () => {
+  it.effect('splits compile and execute once both phases have been observed', () =>
+    Effect.gen(function* () {
+      const model = createCostModel({
+        kacheReader: null,
+        seedDurations: () => Effect.succeed([]),
+      });
+      const scoped = intent(['cargo', 'test', '-p', 'alpha']);
+      yield* model.estimate(scoped);
+      yield* model.recordOutcome(scoped.key, 80_000, {
+        compileMs: 20_000,
+        editedRecently: false,
+        executeMs: 60_000,
+      });
+      expect(yield* model.estimate(scoped, [], { editedRecently: false })).toEqual({
+        compileEstimateMs: 20_000,
+        estimateMs: 80_000,
+        executeEstimateMs: 60_000,
+        source: 'ewma',
+      });
+    }));
+
+  it.effect('derives compile from the whole run when only the execute phase was timed', () =>
+    Effect.gen(function* () {
+      const model = createCostModel({
+        kacheReader: null,
+        seedDurations: () => Effect.succeed([]),
+      });
+      const scoped = intent(['cargo', 'test', '-p', 'alpha']);
+      yield* model.estimate(scoped);
+      yield* model.recordOutcome(scoped.key, 80_000, { editedRecently: false, executeMs: 60_000 });
+      // Whole run less execute is the compile evidence — not the whole run,
+      // which would count execution twice.
+      expect(yield* model.estimate(scoped, [], { editedRecently: false })).toEqual({
+        compileEstimateMs: 20_000,
+        estimateMs: 80_000,
+        executeEstimateMs: 60_000,
+        source: 'ewma',
+      });
+    }));
+
+  it.effect('keeps the single whole-run estimate when build_finished is missing', () =>
+    Effect.gen(function* () {
+      const model = createCostModel({
+        kacheReader: null,
+        seedDurations: () => Effect.succeed([]),
+      });
+      const scoped = intent(['cargo', 'test', '-p', 'alpha']);
+      yield* model.estimate(scoped);
+      yield* model.recordOutcome(scoped.key, 12_000, { editedRecently: false });
+      expect(yield* model.estimate(scoped, [], { editedRecently: false })).toEqual({
+        estimateMs: 12_000,
+        source: 'ewma',
+      });
+    }));
+
+  it.effect('treats a compile-only subcommand as a single estimate even when a split is supplied', () =>
+    Effect.gen(function* () {
+      const model = createCostModel({
+        kacheReader: null,
+        seedDurations: () => Effect.succeed([]),
+      });
+      const scoped = intent(['cargo', 'check', '-p', 'alpha']);
+      yield* model.estimate(scoped);
+      yield* model.recordOutcome(scoped.key, 8_000, {
+        compileMs: 8_000,
+        editedRecently: false,
+        executeMs: 0,
+      });
+      expect(yield* model.estimate(scoped, [], { editedRecently: false })).toEqual({
+        estimateMs: 8_000,
+        source: 'ewma',
+      });
+    }));
+
+  it.effect('floors an edited compile at the crate prior and adds execute history', () =>
+    Effect.gen(function* () {
+      const model = createCostModel({
+        kachePriors: { initial: indexPriors(() => 45_000) },
+        kacheReader: null,
+        seedDurations: () => Effect.succeed([]),
+      });
+      const scoped = intent(['cargo', 'test', '-p', 'alpha']);
+      yield* model.estimate(scoped);
+      yield* model.recordOutcome(scoped.key, 50_000, {
+        compileMs: 5_000,
+        editedRecently: false,
+        executeMs: 45_000,
+      });
+      expect(yield* model.estimate(scoped, [], { editedRecently: true })).toEqual({
+        compileEstimateMs: 45_000,
+        estimateMs: 90_000,
+        executeEstimateMs: 45_000,
+        source: 'ewma',
+      });
+    }));
+
+  it.effect('seeds compile and execute from ledger phase history', () =>
+    Effect.gen(function* () {
+      const model = createCostModel({
+        kacheReader: null,
+        seedDurations: () => Effect.succeed([]),
+        seedPhaseDurations: () =>
+          Effect.succeed([
+            { compileMs: 10_000, executeMs: 40_000 },
+            { compileMs: 10_000, executeMs: 40_000 },
+          ]),
+      });
+      const scoped = intent(['cargo', 'test', '-p', 'alpha']);
+      expect(yield* model.estimate(scoped)).toEqual({
+        compileEstimateMs: 10_000,
+        estimateMs: 50_000,
+        executeEstimateMs: 40_000,
+        source: 'ewma',
+      });
+    }));
+
+  it.effect('prefers a same-package --test neighbor over the crate-wide prior', () =>
+    Effect.gen(function* () {
+      const model = createCostModel({
+        kachePriors: { initial: indexPriors(() => 90_000) },
+        kacheReader: null,
+        seedDurations: () => Effect.succeed([]),
+        seedNeighborDurations: () => Effect.succeed([7_000, 7_000]),
+      });
+      const scoped = intent(['cargo', 'test', '-p', 'alpha', '--test', 'session_suite']);
+      expect(singleIntegrationTestTarget(scoped)).toBe('test:session_suite');
+      expect(yield* model.estimate(scoped)).toEqual({ estimateMs: 7_000, source: 'ewma' });
+    }));
+
+  it.effect('reports intent p90 from seeded whole-run history', () =>
+    Effect.gen(function* () {
+      const model = createCostModel({
+        kacheReader: null,
+        seedDurations: (intentKey) =>
+          Effect.succeed(intentKey === 'intent-a' ? [1_000, 2_000, 10_000, 3_000, 4_000] : []),
+      });
+      expect(yield* model.intentP90Ms('intent-a')).toBe(10_000);
+      expect(yield* model.intentP90Ms('empty')).toBeNull();
+    }));
+});
+
+describe('overrun assessment and lane wait', () => {
+  it('computes nearest-rank p90 and ignores non-positive samples', () => {
+    expect(durationPercentile([], 90)).toBeNull();
+    expect(durationPercentile([10, Number.NaN, -1], 90)).toBe(10);
+    expect(durationPercentile([1, 2, 3, 4, 5, 6, 7, 8, 9, 10], 90)).toBe(9);
+  });
+
+  it('does not flag overrun before the stall factor or when the head is stalled', () => {
+    expect(
+      assessOverrun({
+        elapsedMs: 20_000,
+        estimateMs: 10_000,
+        p90Ms: 60_000,
+        stallFactor: 3,
+        stalled: false,
+      }),
+    ).toEqual({ overrun: false, p90Ms: 60_000, remainingMs: 0 });
+    expect(
+      assessOverrun({
+        elapsedMs: 40_000,
+        estimateMs: 10_000,
+        p90Ms: 60_000,
+        stallFactor: 3,
+        stalled: true,
+      }).overrun,
+    ).toBe(false);
+  });
+
+  it('re-estimates remaining time from p90 once the stall factor is crossed', () => {
+    expect(
+      assessOverrun({
+        elapsedMs: 31_000,
+        estimateMs: 10_000,
+        p90Ms: 60_000,
+        stallFactor: 3,
+        stalled: false,
+      }),
+    ).toEqual({ overrun: true, p90Ms: 60_000, remainingMs: 29_000 });
+  });
+
+  it('floors an overrun past its p90, or without history, at one more estimate — never ~0', () => {
+    // Past the p90 as well: the follower must not read "any moment now" for
+    // the rest of a 10x overrun, so the head still owes an estimate's worth.
+    expect(
+      assessOverrun({
+        elapsedMs: 80_000,
+        estimateMs: 10_000,
+        p90Ms: 60_000,
+        stallFactor: 3,
+        stalled: false,
+      }),
+    ).toEqual({ overrun: true, p90Ms: 60_000, remainingMs: 10_000 });
+    // No finished runs at all: the flag is still raised, but no p90 is
+    // invented — the estimate is the only number the re-estimate can rest on.
+    expect(
+      assessOverrun({
+        elapsedMs: 40_000,
+        estimateMs: 10_000,
+        p90Ms: null,
+        stallFactor: 3,
+        stalled: false,
+      }),
+    ).toEqual({ overrun: true, p90Ms: null, remainingMs: 10_000 });
+  });
+
+  it('charges a queued ticket only its compile when overlap will hand the lane back', () => {
+    const queued = {
+      atMs: 5_000,
+      buildFinishedAtMs: null,
+      compileEstimateMs: 40_000,
+      estimateMs: 100_000,
+      executeEstimateMs: 60_000,
+      p90Ms: null,
+      stallFactor: 3,
+      stalled: false,
+      startedAtMs: null,
+    };
+    expect(laneWaitRemainingMs({ ...queued, overlapExecution: true })).toBe(40_000);
+    expect(laneWaitRemainingMs({ ...queued, overlapExecution: false })).toBe(100_000);
+    // No execute split known: the whole estimate is the lane's, overlap or not.
+    expect(
+      laneWaitRemainingMs({
+        ...queued,
+        compileEstimateMs: 100_000,
+        executeEstimateMs: null,
+        overlapExecution: true,
+      }),
+    ).toBe(100_000);
+  });
+
+  it('contributes remaining execute only, or zero when overlap has handed the lane back', () => {
+    const executing = {
+      atMs: 80_000,
+      buildFinishedAtMs: 50_000,
+      compileEstimateMs: 40_000,
+      estimateMs: 100_000,
+      executeEstimateMs: 60_000,
+      p90Ms: null,
+      stallFactor: 3,
+      stalled: false,
+      startedAtMs: 10_000,
+    };
+    expect(laneWaitRemainingMs({ ...executing, overlapExecution: false })).toBe(30_000);
+    expect(laneWaitRemainingMs({ ...executing, overlapExecution: true })).toBe(0);
+  });
+
+  it('adds remaining compile plus execute while compiling with overlap off', () => {
+    expect(
+      laneWaitRemainingMs({
+        atMs: 20_000,
+        buildFinishedAtMs: null,
+        compileEstimateMs: 40_000,
+        estimateMs: 100_000,
+        executeEstimateMs: 60_000,
+        overlapExecution: false,
+        p90Ms: null,
+        stallFactor: 3,
+        stalled: false,
+        startedAtMs: 0,
+      }),
+    ).toBe(80_000);
+    expect(
+      laneWaitRemainingMs({
+        atMs: 20_000,
+        buildFinishedAtMs: null,
+        compileEstimateMs: 40_000,
+        estimateMs: 100_000,
+        executeEstimateMs: 60_000,
+        overlapExecution: true,
+        p90Ms: null,
+        stallFactor: 3,
+        stalled: false,
+        startedAtMs: 0,
+      }),
+    ).toBe(20_000);
+  });
+
+  it('uses p90 remaining for an overrun-but-alive head instead of zero', () => {
+    expect(
+      laneWaitRemainingMs({
+        atMs: 40_000,
+        buildFinishedAtMs: null,
+        compileEstimateMs: 10_000,
+        estimateMs: 10_000,
+        executeEstimateMs: null,
+        overlapExecution: false,
+        p90Ms: 55_000,
+        stallFactor: 3,
+        stalled: false,
+        startedAtMs: 0,
+      }),
+    ).toBe(15_000);
+  });
 });

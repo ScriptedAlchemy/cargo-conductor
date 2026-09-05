@@ -36,6 +36,7 @@ import {
   pickMetricsWindow,
   pollStatus,
   queuedWaitMs,
+  queueHeadEstimateState,
   quietOutputHint,
   ranAsFor,
   relativeTime,
@@ -191,6 +192,7 @@ interface RequestRow {
   readonly startedAtMs?: unknown;
   readonly estimateMs?: unknown;
   readonly delayed?: unknown;
+  readonly queue?: unknown;
   readonly admissionHold?: unknown;
   readonly quietMs?: unknown;
   readonly stall?: unknown;
@@ -513,11 +515,12 @@ const waitingCell = (
   delayed: unknown,
   admissionHold: unknown,
   nowMs: number,
+  queue?: unknown,
 ): ReactNode => {
   if (typeof sinceMs !== 'number') {
     return '—';
   }
-  const cue = delayedWaitCue(delayed);
+  const cue = delayedWaitCue(delayed, queueHeadEstimateState(queue));
   const held = admissionHoldDetail(admissionHold);
   return (
     <>
@@ -538,7 +541,10 @@ const waitingCell = (
       {cue === null ? null : (
         <>
           {' '}
-          <span className="pill killed" title="queued longer than its estimate threshold; the lane is busy">
+          <span
+            className="pill killed"
+            title="queued longer than its estimate threshold, or the lane head is past its estimate but still alive"
+          >
             {cue}
           </span>
         </>
@@ -1449,7 +1455,14 @@ const DashboardContent = ({ structured }: { readonly structured: StructuredConte
               rows={queueRows.map((row) => ({
                 cells: [
                   ...requestCells(row),
-                  waitingCell(row.createdAtMs, row.estimateMs, row.delayed, row.admissionHold, nowMs),
+                  waitingCell(
+                    row.createdAtMs,
+                    row.estimateMs,
+                    row.delayed,
+                    row.admissionHold,
+                    nowMs,
+                    row.queue,
+                  ),
                   typeof row.attachedTo === 'string' ? <AttachChip row={row} /> : '—',
                 ],
                 onSelect: selectRow(row),

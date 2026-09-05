@@ -27,6 +27,7 @@ import {
   percentileMinSamples,
   pickMetricsWindow,
   pollStatus,
+  queueHeadEstimateState,
   queuedWaitMs,
   queuedWaitThresholdMs,
   quietOutputHint,
@@ -81,6 +82,17 @@ describe('long-wait and quiet-output cues', () => {
     expect(delayedWaitCue(true)).toBe('wait exceeds estimate');
     expect(delayedWaitCue(false)).toBeNull();
     expect(delayedWaitCue(undefined)).toBeNull();
+  });
+
+  it('names an overrunning lane head as the reason a queued row keeps waiting (#91)', () => {
+    // The follower's own wait may still be within its estimate: the head, not
+    // the follower, is what exceeded an estimate.
+    expect(delayedWaitCue(false, 'overrun')).toBe('head overrunning');
+    expect(delayedWaitCue(true, 'overrun')).toBe('wait exceeds estimate · head overrunning');
+    expect(delayedWaitCue(true, undefined)).toBe('wait exceeds estimate');
+    expect(queueHeadEstimateState({ headEstimateState: 'overrun', position: 1 })).toBe('overrun');
+    expect(queueHeadEstimateState({ position: 1 })).toBeNull();
+    expect(queueHeadEstimateState(undefined)).toBeNull();
   });
 
   it('formats quiet time with the documented diagnostic tooltip', () => {

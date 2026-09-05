@@ -1158,3 +1158,106 @@ describe('build-finished stamps and the saved-latency recompute', () => {
       expect(totals.totals.negativeLatencyRiders).toBe(0);
     }));
 });
+
+describe('per-phase history queries', () => {
+  it.effect('returns compile/execute splits and omits rows without build_finished', () =>
+    Effect.gen(function* () {
+      const ledger = yield* scopedLedger;
+      const split = yield* ledger.createRequest(
+        makeInput({
+          createdAtMs: 1_000,
+          intentJson: '{"subcommand":"test","packages":["alpha"],"targets":["test:session_suite"]}',
+          intentKey: 'intent-split',
+        }),
+      );
+      yield* ledger.markQueued(split.id, 1_050);
+      yield* ledger.markRunning(split.id, 1_100);
+      yield* ledger.markBuildFinished(split.id, 6_100);
+      yield* ledger.markFinished(split.id, { atMs: 21_100, status: 'done' });
+
+      const whole = yield* ledger.createRequest(
+        makeInput({
+          createdAtMs: 2_000,
+          intentJson: '{"subcommand":"test","packages":["alpha"]}',
+          intentKey: 'intent-split',
+        }),
+      );
+      yield* ledger.markQueued(whole.id, 2_050);
+      yield* ledger.markRunning(whole.id, 2_100);
+      yield* ledger.markFinished(whole.id, { atMs: 5_100, status: 'done' });
+
+      expect(yield* ledger.recentDurations('intent-split', 10)).toEqual([3_000, 20_000]);
+      expect(yield* ledger.recentPhaseDurations('intent-split', 10)).toEqual([
+        { compileMs: 5_000, executeMs: 15_000 },
+      ]);
+    }));
+
+  it.effect('finds a same-package --test neighbor and skips the excluded intent', () =>
+    Effect.gen(function* () {
+      const ledger = yield* scopedLedger;
+      const neighbor = yield* ledger.createRequest(
+        makeInput({
+          createdAtMs: 1_000,
+          intentJson:
+            '{"subcommand":"test","packages":["alpha"],"targets":["test:session_suite"]}',
+          intentKey: 'intent-neighbor',
+        }),
+      );
+      yield* ledger.markQueued(neighbor.id, 1_050);
+      yield* ledger.markRunning(neighbor.id, 1_100);
+      yield* ledger.markFinished(neighbor.id, { atMs: 8_100, status: 'done' });
+
+      const otherCrate = yield* ledger.createRequest(
+        makeInput({
+          createdAtMs: 1_200,
+          intentJson:
+            '{"subcommand":"test","packages":["beta"],"targets":["test:session_suite"]}',
+          intentKey: 'intent-other-crate',
+        }),
+      );
+      yield* ledger.markQueued(otherCrate.id, 1_250);
+      yield* ledger.markRunning(otherCrate.id, 1_300);
+      yield* ledger.markFinished(otherCrate.id, { atMs: 9_300, status: 'done' });
+
+      // A split neighbor lends only its compile phase: the shared binary's
+      // build, not the tests the other selection ran.
+      const splitNeighbor = yield* ledger.createRequest(
+        makeInput({
+          createdAtMs: 1_400,
+          intentJson:
+            '{"subcommand":"test","packages":["alpha"],"targets":["test:session_suite"]}',
+          intentKey: 'intent-neighbor-exact',
+        }),
+      );
+      yield* ledger.markQueued(splitNeighbor.id, 1_450);
+      yield* ledger.markRunning(splitNeighbor.id, 1_500);
+      yield* ledger.markBuildFinished(splitNeighbor.id, 4_500);
+      yield* ledger.markFinished(splitNeighbor.id, { atMs: 60_500, status: 'done' });
+
+      expect(
+        yield* ledger.recentNeighborDurations({
+          excludeIntentKey: 'intent-exact',
+          limit: 10,
+          packageName: 'alpha',
+          testTarget: 'test:session_suite',
+        }),
+      ).toEqual([3_000, 7_000]);
+      // The asking intent's own rows are never its neighbor.
+      expect(
+        yield* ledger.recentNeighborDurations({
+          excludeIntentKey: 'intent-neighbor',
+          limit: 10,
+          packageName: 'alpha',
+          testTarget: 'test:session_suite',
+        }),
+      ).toEqual([3_000]);
+      expect(
+        yield* ledger.recentNeighborDurations({
+          excludeIntentKey: 'intent-neighbor',
+          limit: 10,
+          packageName: 'alpha',
+          testTarget: 'test:other_suite',
+        }),
+      ).toEqual([]);
+    }));
+});

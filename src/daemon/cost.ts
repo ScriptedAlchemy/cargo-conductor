@@ -7,6 +7,7 @@ import * as Effect from 'effect/Effect';
 import * as Layer from 'effect/Layer';
 import * as SynchronizedRef from 'effect/SynchronizedRef';
 
+import { executionSubcommands } from './build-phase.js';
 import { DaemonConfig } from './config.js';
 import type { NormalizedCargoIntent } from './intent-normalizer.js';
 import {
@@ -22,6 +23,7 @@ import type {
   KachePriorSnapshot,
 } from './kache-status.js';
 import { Ledger } from './ledger.js';
+import type { NeighborDurationQuery, PhaseDurationSample } from './ledger.js';
 import type { EstimateSource, KacheStatusReport } from './protocol.js';
 
 export { readKacheEventPriors } from './kache-status.js';
@@ -30,6 +32,10 @@ export type { KacheEventPriors, KacheIndexPriors } from './kache-status.js';
 export interface CostEstimate {
   readonly estimateMs: number;
   readonly source: EstimateSource;
+  /** Present when compile and execute were estimated separately. */
+  readonly compileEstimateMs?: number;
+  /** Present for test/nextest/bench/run when execution history exists. */
+  readonly executeEstimateMs?: number;
 }
 
 export interface RecordOutcomeOptions {
@@ -50,6 +56,10 @@ export interface RecordOutcomeOptions {
    * no-ops, not compile cost.
    */
   readonly editedRecently?: boolean;
+  /** Compile-phase wall time (started → build-finished), when the split exists. */
+  readonly compileMs?: number;
+  /** Execution-phase wall time (build-finished → exit), when the split exists. */
+  readonly executeMs?: number;
 }
 
 export interface EstimateOptions {
@@ -69,6 +79,8 @@ export interface CostModelApi {
     runMs: number,
     options?: RecordOutcomeOptions,
   ) => Effect.Effect<void>;
+  /** Newest-first whole-run p90 for an intent; null when history is empty. */
+  readonly intentP90Ms: (intentKey: string) => Effect.Effect<number | null>;
 }
 
 export class CostModel extends Context.Service<CostModel, CostModelApi>()(
@@ -92,6 +104,8 @@ const fallbackDefaultMs = 60_000;
 const workspaceMultiplier = 2;
 const ewmaAlpha = 0.4;
 const ewmaSeedLimit = 5;
+const p90SampleLimit = 50;
+const p90CacheTtlMs = 5_000;
 const minimumEstimateMs = 100;
 const maximumEstimateMs = 24 * 60 * 60_000;
 const defaultEffectiveParallelism = 4;
@@ -249,7 +263,137 @@ export interface CreateCostModelOptions {
   readonly kacheReader: KacheReader | null;
   readonly now?: () => number;
   readonly seedDurations: (intentKey: string, limit: number) => Effect.Effect<readonly number[]>;
+  readonly seedPhaseDurations?: (
+    intentKey: string,
+    limit: number,
+  ) => Effect.Effect<readonly PhaseDurationSample[]>;
+  readonly seedNeighborDurations?: (
+    input: NeighborDurationQuery,
+  ) => Effect.Effect<readonly number[]>;
 }
+
+/**
+ * A `--test <name>` (or `--bench`) selection of a single integration-test
+ * binary on a single package. The intent key already includes that target;
+ * this helper is the neighbor-lookup key when the exact intent has no rows.
+ */
+export const singleIntegrationTestTarget = (intent: NormalizedCargoIntent): string | null => {
+  if (!executionSubcommands.has(intent.subcommand) || intent.packages.length !== 1) {
+    return null;
+  }
+  const named = intent.targets.filter(
+    (target) => target.startsWith('test:') || target.startsWith('bench:'),
+  );
+  return named.length === 1 ? (named[0] ?? null) : null;
+};
+
+/** Nearest-rank percentile of positive finite samples; null when none are usable. */
+export const durationPercentile = (
+  samples: readonly number[],
+  percentile: number,
+): number | null => {
+  const valid = samples
+    .map((value) => finitePositiveMs(value))
+    .filter((value): value is number => value !== null)
+    .sort((left, right) => left - right);
+  if (valid.length === 0) {
+    return null;
+  }
+  const clamped = Math.min(100, Math.max(0, percentile));
+  const rank = Math.min(valid.length - 1, Math.max(0, Math.ceil((clamped / 100) * valid.length) - 1));
+  return valid[rank] ?? null;
+};
+
+export interface OverrunAssessment {
+  readonly overrun: boolean;
+  readonly remainingMs: number;
+  /** The intent-history p90 the re-estimate rests on; null when the intent has no finished runs. */
+  readonly p90Ms: number | null;
+}
+
+/**
+ * A head past `stallFactor` × estimate that is still alive (not stalled) is
+ * re-estimated from its own p90 instead of contributing zero remaining time.
+ * Past the p90 as well — or with no history at all — nothing predicts the
+ * end, so one more estimate's worth is the floor: a follower's ETA must not
+ * read "any moment now" for the rest of a 10x overrun (#91).
+ */
+export const assessOverrun = (input: {
+  readonly elapsedMs: number;
+  readonly estimateMs: number;
+  readonly stallFactor: number;
+  readonly stalled: boolean;
+  readonly p90Ms: number | null;
+}): OverrunAssessment => {
+  const estimateMs = safeEstimateMs(input.estimateMs);
+  const elapsedMs = Math.max(0, input.elapsedMs);
+  const remainingMs = Math.max(0, estimateMs - elapsedMs);
+  if (input.stalled || elapsedMs <= input.stallFactor * estimateMs) {
+    return { overrun: false, remainingMs, p90Ms: input.p90Ms };
+  }
+  const p90Ms = input.p90Ms === null ? null : safeEstimateMs(input.p90Ms);
+  return {
+    overrun: true,
+    remainingMs: Math.max(estimateMs, (p90Ms ?? 0) - elapsedMs),
+    p90Ms,
+  };
+};
+
+export interface LaneWaitInput {
+  readonly startedAtMs: number | null;
+  readonly buildFinishedAtMs: number | null;
+  readonly estimateMs: number;
+  readonly compileEstimateMs: number;
+  readonly executeEstimateMs: number | null;
+  readonly atMs: number;
+  readonly overlapExecution: boolean;
+  readonly stalled: boolean;
+  readonly stallFactor: number;
+  readonly p90Ms: number | null;
+}
+
+/**
+ * Lane time a job still owes a follower's `queue.waitEtaMs`. A queued job
+ * owes its whole estimate — only its compile when overlap will hand the lane
+ * back at the build-finished line. An executing head contributes only
+ * remaining execute time — or 0 once overlap has handed the lane back. A
+ * compiling head contributes remaining compile plus (when overlap is off)
+ * execute. An overrun-but-alive head uses p90 remaining instead of zero.
+ */
+export const laneWaitRemainingMs = (input: LaneWaitInput): number => {
+  if (input.startedAtMs === null) {
+    return Math.max(
+      0,
+      input.overlapExecution && input.executeEstimateMs !== null
+        ? input.compileEstimateMs
+        : input.estimateMs,
+    );
+  }
+  const elapsedMs = Math.max(0, input.atMs - input.startedAtMs);
+  const executing = input.buildFinishedAtMs !== null;
+  if (executing && input.overlapExecution) {
+    return 0;
+  }
+  const overrun = assessOverrun({
+    elapsedMs,
+    estimateMs: input.estimateMs,
+    p90Ms: input.p90Ms,
+    stallFactor: input.stallFactor,
+    stalled: input.stalled,
+  });
+  if (overrun.overrun) {
+    return overrun.remainingMs;
+  }
+  if (executing) {
+    if (input.executeEstimateMs !== null && input.buildFinishedAtMs !== null) {
+      return Math.max(0, input.executeEstimateMs - Math.max(0, input.atMs - input.buildFinishedAtMs));
+    }
+    return Math.max(0, input.estimateMs - elapsedMs);
+  }
+  const remainingCompile = Math.max(0, input.compileEstimateMs - elapsedMs);
+  const remainingExecute = input.overlapExecution ? 0 : (input.executeEstimateMs ?? 0);
+  return remainingCompile + remainingExecute;
+};
 
 const subcommandClass = (subcommand: string): string => {
   if (subcommand === 'check' || subcommand === 'clippy') {
@@ -282,6 +426,13 @@ interface IntentEwma {
 }
 
 const emptyIntentEwma: IntentEwma = { clean: null, edited: null };
+
+interface PhaseEwma {
+  readonly compile: IntentEwma;
+  readonly execute: number | null;
+}
+
+const emptyPhaseEwma: PhaseEwma = { compile: emptyIntentEwma, execute: null };
 
 const blendEwma = (base: number | null, sample: number): number =>
   base === null ? sample : base + ewmaAlpha * (sample - base);
@@ -332,6 +483,8 @@ const lruSetMutable = <K, V>(map: Map<K, V>, key: K, value: V): void => {
 export const createCostModel = (options: CreateCostModelOptions): CostModelWithPrewarm => {
   /** intentKey -> per-mode EWMA of observed run durations (a seeded entry may hold nulls). */
   const ewma = SynchronizedRef.makeUnsafe<ReadonlyMap<string, IntentEwma>>(new Map());
+  const phaseEwma = SynchronizedRef.makeUnsafe<ReadonlyMap<string, PhaseEwma>>(new Map());
+  const p90Cache = new Map<string, { readonly atMs: number; readonly value: number | null }>();
   const crateObservations = new Map<string, number>();
   const intentContexts = new Map<string, IntentObservationContext>();
   const now = options.now ?? Date.now;
@@ -379,6 +532,75 @@ export const createCostModel = (options: CreateCostModelOptions): CostModelWithP
         }),
       );
     });
+
+  const seededPhaseEwma = (intentKey: string): Effect.Effect<PhaseEwma> =>
+    SynchronizedRef.modifyEffect(phaseEwma, (current) => {
+      const existing = current.get(intentKey);
+      if (existing !== undefined) {
+        return Effect.succeed([existing, lruSet(current, intentKey, existing)] as const);
+      }
+      const seed = options.seedPhaseDurations;
+      if (seed === undefined) {
+        return Effect.succeed([emptyPhaseEwma, lruSet(current, intentKey, emptyPhaseEwma)] as const);
+      }
+      return seed(intentKey, ewmaSeedLimit).pipe(
+        Effect.catchCause(() => Effect.succeed([])),
+        Effect.map((samples) => {
+          let compile: number | null = null;
+          let execute: number | null = null;
+          for (const sample of [...samples].reverse()) {
+            const compileMs = finitePositiveMs(sample.compileMs);
+            const executeMs = finitePositiveMs(sample.executeMs);
+            if (compileMs !== null) {
+              compile = blendEwma(compile, compileMs);
+            }
+            if (executeMs !== null) {
+              execute = blendEwma(execute, executeMs);
+            }
+          }
+          const seeded: PhaseEwma = { compile: { clean: compile, edited: null }, execute };
+          return [seeded, lruSet(current, intentKey, seeded)] as const;
+        }),
+      );
+    });
+
+  const seedNeighborIfEmpty = (intent: NormalizedCargoIntent): Effect.Effect<IntentEwma | null> => {
+    const target = singleIntegrationTestTarget(intent);
+    const seed = options.seedNeighborDurations;
+    const packageName = intent.packages[0];
+    if (target === null || seed === undefined || packageName === undefined) {
+      return Effect.succeed(null);
+    }
+    return SynchronizedRef.modifyEffect(ewma, (current) => {
+      const existing = current.get(intent.key);
+      if (existing !== undefined && (existing.clean !== null || existing.edited !== null)) {
+        return Effect.succeed([null, current] as const);
+      }
+      return seed({
+        excludeIntentKey: intent.key,
+        limit: ewmaSeedLimit,
+        packageName,
+        testTarget: target,
+      }).pipe(
+        Effect.catchCause(() => Effect.succeed([])),
+        Effect.map((durations) => {
+          let value: number | null = null;
+          for (const runMs of [...durations].reverse()) {
+            const validRunMs = finitePositiveMs(runMs);
+            if (validRunMs !== null) {
+              value = blendEwma(value, validRunMs);
+            }
+          }
+          if (value === null) {
+            return [null, current] as const;
+          }
+          // Same-package `--test <name>` neighbor, not the crate-wide prior.
+          const seeded: IntentEwma = { clean: value, edited: null };
+          return [seeded, lruSet(current, intent.key, seeded)] as const;
+        }),
+      );
+    });
+  };
 
   const refreshIndexPriors = (): Effect.Effect<void> =>
     Effect.suspend(() => {
@@ -465,14 +687,115 @@ export const createCostModel = (options: CreateCostModelOptions): CostModelWithP
         });
 
         const edited = estimateOptions.editedRecently === true;
-        const observed = yield* seededEwma(intent.key);
+        let observed = yield* seededEwma(intent.key);
+        // A `--test <name>` intent with no rows of its own borrows a
+        // same-package neighbor that selected that target. If none exists,
+        // the crate-wide kache prior (or the subcommand default) is the
+        // fallback — we do not invent a compile time from a different binary.
+        if (observed.clean === null && observed.edited === null) {
+          observed = (yield* seedNeighborIfEmpty(intent)) ?? observed;
+        }
+        const phases = yield* seededPhaseEwma(intent.key);
         const ownRunMs = observedRunMs(observed, edited);
+        const ownCompileMs = observedRunMs(phases.compile, edited);
+        const executeMs = phases.execute;
         // An intent's own mode predicts it best. An edited intent that has
         // only ever been timed cached falls through instead, to floor that
         // average at the crate compile priors: the rebuild the edit forces
         // is exactly what those measure.
         const needsCompileFloor =
-          edited && observed.edited === null && packageNames.length > 0;
+          edited &&
+          observed.edited === null &&
+          phases.compile.edited === null &&
+          packageNames.length > 0;
+
+        const crateFloor = Effect.gen(function* () {
+          if (packageNames.length === 0) {
+            return {
+              crateEstimateMs: defaultEstimateFor(intent),
+              hasCrateObservation: false,
+              hasKachePrior: false,
+            };
+          }
+          const sharedKache =
+            options.kacheSnapshot === undefined ? null : yield* options.kacheSnapshot;
+          const events =
+            sharedKache === null ? yield* currentEventPriors() : sharedKache.eventPriors;
+          const indexPriors =
+            sharedKache === null ? yield* currentIndexPriors() : sharedKache.indexPriors;
+          const profiles = kacheProfilesFor(intent.profile);
+          const fallback = defaultEstimateFor(intent);
+          let hasCrateObservation = false;
+          let hasKachePrior = false;
+          let maximum = 0;
+          let total = 0;
+          for (const { crateName, observationKey } of crates) {
+            const crateObserved = crateObservations.get(observationKey) ?? null;
+            const prior =
+              crateObserved === null
+                ? kacheEstimate(indexPriors, events, crateName, profiles)
+                : null;
+            const crateMs = crateObserved ?? prior ?? fallback;
+            hasCrateObservation ||= crateObserved !== null;
+            hasKachePrior ||= prior !== null;
+            maximum = Math.max(maximum, crateMs);
+            total += crateMs;
+          }
+          /**
+           * Cargo schedules independent crates concurrently. The largest crate
+           * approximates a minimum critical path, while total work divided by
+           * the cargo worker grant bounds throughput. Taking their maximum is
+           * conservative without incorrectly summing fully parallel work.
+           */
+          return {
+            crateEstimateMs: Math.max(maximum, total / parallelism),
+            hasCrateObservation,
+            hasKachePrior,
+          };
+        });
+
+        if (
+          executionSubcommands.has(intent.subcommand) &&
+          executeMs !== null &&
+          (ownCompileMs !== null || needsCompileFloor || packageNames.length > 0)
+        ) {
+          // Without a compile-phase average of its own, the whole-run average
+          // less the execute phase is the compile evidence; never the whole
+          // run, which would count execution twice.
+          const compileBase =
+            ownCompileMs ??
+            (ownRunMs === null ? null : Math.max(minimumEstimateMs, ownRunMs - executeMs));
+          if (compileBase !== null && !needsCompileFloor) {
+            return {
+              compileEstimateMs: safeEstimateMs(compileBase),
+              estimateMs: safeEstimateMs(compileBase + executeMs),
+              executeEstimateMs: safeEstimateMs(executeMs),
+              source: 'ewma' as const,
+            };
+          }
+          const floor = yield* crateFloor;
+          const compileMs =
+            compileBase !== null
+              ? floor.hasCrateObservation || floor.hasKachePrior
+                ? Math.max(compileBase, floor.crateEstimateMs)
+                : compileBase
+              : floor.crateEstimateMs;
+          const source =
+            compileBase !== null
+              ? ('ewma' as const)
+              : floor.hasCrateObservation
+                ? ('ewma' as const)
+                : floor.hasKachePrior
+                  ? ('kache' as const)
+                  : ('ewma' as const);
+          return {
+            compileEstimateMs: safeEstimateMs(compileMs),
+            estimateMs: safeEstimateMs(compileMs + executeMs),
+            executeEstimateMs: safeEstimateMs(executeMs),
+            source,
+          };
+        }
+
         if (ownRunMs !== null && !needsCompileFloor) {
           return { estimateMs: safeEstimateMs(ownRunMs), source: 'ewma' as const };
         }
@@ -482,53 +805,36 @@ export const createCostModel = (options: CreateCostModelOptions): CostModelWithP
             source: 'default' as const,
           };
         }
-        const sharedKache =
-          options.kacheSnapshot === undefined ? null : yield* options.kacheSnapshot;
-        const events =
-          sharedKache === null ? yield* currentEventPriors() : sharedKache.eventPriors;
-        const indexPriors =
-          sharedKache === null ? yield* currentIndexPriors() : sharedKache.indexPriors;
-        const profiles = kacheProfilesFor(intent.profile);
-        const fallback = defaultEstimateFor(intent);
-        let hasCrateObservation = false;
-        let hasKachePrior = false;
-        let maximum = 0;
-        let total = 0;
-        for (const { crateName, observationKey } of crates) {
-          const crateObserved = crateObservations.get(observationKey) ?? null;
-          const prior =
-            crateObserved === null
-              ? kacheEstimate(indexPriors, events, crateName, profiles)
-              : null;
-          const crateMs = crateObserved ?? prior ?? fallback;
-          hasCrateObservation ||= crateObserved !== null;
-          hasKachePrior ||= prior !== null;
-          maximum = Math.max(maximum, crateMs);
-          total += crateMs;
-        }
-        /**
-         * Cargo schedules independent crates concurrently. The largest crate
-         * approximates a minimum critical path, while total work divided by
-         * the cargo worker grant bounds throughput. Taking their maximum is
-         * conservative without incorrectly summing fully parallel work.
-         */
-        const crateEstimateMs = Math.max(maximum, total / parallelism);
+        const floor = yield* crateFloor;
         if (ownRunMs !== null) {
           // Only a real prior may raise the estimate: the cold default is
           // no evidence that this intent compiles for minutes.
           const floored =
-            hasCrateObservation || hasKachePrior
-              ? Math.max(ownRunMs, crateEstimateMs)
+            floor.hasCrateObservation || floor.hasKachePrior
+              ? Math.max(ownRunMs, floor.crateEstimateMs)
               : ownRunMs;
           return { estimateMs: safeEstimateMs(floored), source: 'ewma' as const };
         }
-        const estimateMs = safeEstimateMs(crateEstimateMs);
-        const source = hasCrateObservation
+        const estimateMs = safeEstimateMs(floor.crateEstimateMs);
+        const source = floor.hasCrateObservation
           ? ('ewma' as const)
-          : hasKachePrior
+          : floor.hasKachePrior
             ? ('kache' as const)
             : ('default' as const);
         return { estimateMs, source };
+      }),
+    intentP90Ms: (intentKey) =>
+      Effect.gen(function* () {
+        const cached = p90Cache.get(intentKey);
+        if (cached !== undefined && now() - cached.atMs < p90CacheTtlMs) {
+          return cached.value;
+        }
+        const durations = yield* options.seedDurations(intentKey, p90SampleLimit).pipe(
+          Effect.catchCause(() => Effect.succeed([])),
+        );
+        const value = durationPercentile(durations, 90);
+        lruSetMutable(p90Cache, intentKey, { atMs: now(), value });
+        return value;
       }),
     recordOutcome: (intentKey, runMs, recordOptions) =>
       Effect.gen(function* () {
@@ -536,6 +842,7 @@ export const createCostModel = (options: CreateCostModelOptions): CostModelWithP
         if (validRunMs === null) {
           return;
         }
+        p90Cache.delete(intentKey);
         const edited = recordOptions?.editedRecently;
         yield* SynchronizedRef.update(ewma, (current) => {
           const observed = current.get(intentKey) ?? emptyIntentEwma;
@@ -550,6 +857,27 @@ export const createCostModel = (options: CreateCostModelOptions): CostModelWithP
                 : { ...observed, clean: blendEwma(observed.clean, validRunMs) };
           return lruSet(current, intentKey, next);
         });
+        const compileMs = finitePositiveMs(recordOptions?.compileMs ?? Number.NaN);
+        const executeMs = finitePositiveMs(recordOptions?.executeMs ?? Number.NaN);
+        if (compileMs !== null || executeMs !== null) {
+          yield* SynchronizedRef.update(phaseEwma, (current) => {
+            const observed = current.get(intentKey) ?? emptyPhaseEwma;
+            const nextCompile: IntentEwma =
+              compileMs === null
+                ? observed.compile
+                : edited === undefined
+                  ? {
+                      clean: blendEwma(observed.compile.clean, compileMs),
+                      edited: blendEwma(observed.compile.edited, compileMs),
+                    }
+                  : edited
+                    ? { ...observed.compile, edited: blendEwma(observed.compile.edited, compileMs) }
+                    : { ...observed.compile, clean: blendEwma(observed.compile.clean, compileMs) };
+            const nextExecute =
+              executeMs === null ? observed.execute : blendEwma(observed.execute, executeMs);
+            return lruSet(current, intentKey, { compile: nextCompile, execute: nextExecute });
+          });
+        }
         const context = intentContexts.get(intentKey);
         if (
           recordOptions?.outcome === 'failed' ||
@@ -561,8 +889,13 @@ export const createCostModel = (options: CreateCostModelOptions): CostModelWithP
         }
         // Invert the same parallelism model used by estimate(): if N crates
         // produced this wall time, store the equal-work per-crate equivalent.
+        // Prefer the compile-phase sample when the run split is known.
+        const crateSampleMs = compileMs ?? (executeMs === null ? validRunMs : null);
+        if (crateSampleMs === null) {
+          return;
+        }
         const workFactor = Math.max(1, context.crateKeys.length / context.parallelism);
-        const sampleMs = validRunMs / workFactor;
+        const sampleMs = crateSampleMs / workFactor;
         for (const key of context.crateKeys) {
           const previous = crateObservations.get(key) ?? null;
           crateObservations.set(
@@ -590,6 +923,8 @@ export const CostModelLive: Layer.Layer<
       kacheSnapshot: kacheStatus.priors,
       kacheStatus: kacheStatus.current,
       seedDurations: (intentKey, limit) => ledger.recentDurations(intentKey, limit),
+      seedNeighborDurations: (input) => ledger.recentNeighborDurations(input),
+      seedPhaseDurations: (intentKey, limit) => ledger.recentPhaseDurations(intentKey, limit),
     });
   }),
 );

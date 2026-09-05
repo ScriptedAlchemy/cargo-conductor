@@ -30,7 +30,12 @@ import {
   waitMsSummary,
 } from './broker-metrics.js';
 import type { DaemonConfigShape } from './config.js';
-import type { CostEstimate, CostModelApi } from './cost.js';
+import {
+  assessOverrun,
+  laneWaitRemainingMs,
+  type CostEstimate,
+  type CostModelApi,
+} from './cost.js';
 import { isSchedulable } from './dependencies.js';
 import { executeCargo, TailBuffer } from './executor.js';
 import type { ExecutionResult } from './executor.js';
@@ -43,7 +48,6 @@ import {
   planDemux,
   quietMsSinceOutput,
   queuedWaitIsDelayed,
-  remainingEstimateMs,
   settlementStep,
 } from './job-state.js';
 import type { Attachment, Job, JobState, SubmitCallbacks, SubmitInput } from './job-state.js';
@@ -57,10 +61,12 @@ import {
 } from './pressure.js';
 import type {
   AdmissionHold,
+  EstimateState,
   FinishedStatus,
   HeavyAdmissionReport,
   LaneStatus,
   QueueContext,
+  RunPhase,
   StallReport,
 } from './protocol.js';
 import { ReplayBuffer } from './replay.js';
@@ -181,6 +187,11 @@ export interface LaneRuntime {
     readonly admissionHold?: AdmissionHold;
     readonly stall?: StallReport;
     readonly orphaned?: true;
+    readonly compileEstimateMs?: number;
+    readonly executeEstimateMs?: number;
+    readonly phase?: RunPhase;
+    readonly estimateState?: EstimateState;
+    readonly p90Ms?: number;
   }>;
   readonly interruptWorkers: () => Effect.Effect<void>;
   /** Heavy-cap state for status; null when the cap is disabled. */
@@ -260,6 +271,8 @@ export const makeLaneRuntime = (deps: LaneRuntimeDeps): Effect.Effect<LaneRuntim
           tail: new TailBuffer(config.outputTailBytes),
           log: null,
           estimateMs: estimate.estimateMs,
+          compileEstimateMs: estimate.compileEstimateMs ?? estimate.estimateMs,
+          executeEstimateMs: estimate.executeEstimateMs ?? null,
           estimateSource: estimate.source,
           startedAtMs: null,
           buildFinishedAtMs: null,
@@ -771,9 +784,15 @@ export const makeLaneRuntime = (deps: LaneRuntimeDeps): Effect.Effect<LaneRuntim
         // A compile error is still a measured build time; without it a broken
         // build would be re-estimated at the cold-start default on every retry.
         if (result.outcome !== 'killed') {
+          const compileMs =
+            job.buildFinishedAtMs === null ? undefined : job.buildFinishedAtMs - runStartedAtMs;
+          const executeMs =
+            job.buildFinishedAtMs === null ? undefined : finishedAtMs - job.buildFinishedAtMs;
           yield* costModel.recordOutcome(job.intent.key, finishedAtMs - runStartedAtMs, {
             outcome: result.outcome,
             editedRecently: job.editedRecently,
+            ...(compileMs === undefined ? {} : { compileMs }),
+            ...(executeMs === undefined ? {} : { executeMs }),
           });
         }
         // A broker-initiated kill (stall auto-kill) names its reason on the
@@ -1113,18 +1132,90 @@ export const makeLaneRuntime = (deps: LaneRuntimeDeps): Effect.Effect<LaneRuntim
       return ordered;
     };
 
+    const estimateFieldsFor = (
+      job: Job,
+      atMs: number,
+      p90Ms: number | null,
+    ): {
+      readonly compileEstimateMs: number;
+      readonly executeEstimateMs?: number;
+      readonly phase?: RunPhase;
+      readonly estimateState?: EstimateState;
+      readonly p90Ms?: number;
+    } => {
+      // A compile-only subcommand is in its compile phase for the whole run;
+      // an execution subcommand is only known to be compiling while the
+      // build-phase detector watches for Cargo's `Finished` line (overlap
+      // on). With overlap off the split is invisible, so no phase is claimed.
+      const phaseVisible =
+        !executionSubcommands.has(job.intent.subcommand) ||
+        (config.overlapExecution && job.demux === null);
+      const phase: RunPhase | undefined =
+        job.startedAtMs === null
+          ? undefined
+          : job.buildFinishedAtMs !== null
+            ? 'execute'
+            : phaseVisible
+              ? 'compile'
+              : undefined;
+      const overrun =
+        job.startedAtMs === null
+          ? { overrun: false as const, p90Ms }
+          : assessOverrun({
+              elapsedMs: Math.max(0, atMs - job.startedAtMs),
+              estimateMs: job.estimateMs,
+              p90Ms,
+              stallFactor: config.stallEstimateFactor,
+              stalled: job.stall !== null,
+            });
+      return {
+        compileEstimateMs: job.compileEstimateMs,
+        ...(job.executeEstimateMs === null ? {} : { executeEstimateMs: job.executeEstimateMs }),
+        ...(phase === undefined ? {} : { phase }),
+        ...(overrun.overrun
+          ? {
+              estimateState: 'overrun' as const,
+              ...(overrun.p90Ms === null ? {} : { p90Ms: overrun.p90Ms }),
+            }
+          : {}),
+      };
+    };
+
+    const waitContributionMs = (
+      job: Job,
+      atMs: number,
+      p90Ms: number | null,
+    ): number =>
+      laneWaitRemainingMs({
+        atMs,
+        buildFinishedAtMs: job.buildFinishedAtMs,
+        compileEstimateMs: job.compileEstimateMs,
+        estimateMs: job.estimateMs,
+        executeEstimateMs: job.executeEstimateMs,
+        overlapExecution: config.overlapExecution,
+        p90Ms,
+        stallFactor: config.stallEstimateFactor,
+        stalled: job.stall !== null,
+        startedAtMs: job.startedAtMs,
+      });
+
     const requestStatusFields: LaneRuntime['requestStatusFields'] = (ticket, atMs) =>
-      Effect.sync(() => {
+      Effect.gen(function* () {
         const entry = directory.get(ticket);
         if (entry === undefined) {
           return {};
         }
         const leader = entry.kind === 'leader' ? entry.job : entry.leader;
+        // Only a started run can overrun; a queued one needs no history lookup.
+        const p90Ms =
+          leader.startedAtMs === null ? null : yield* costModel.intentP90Ms(leader.intent.key);
+        const estimates = estimateFieldsFor(leader, atMs, p90Ms);
         if (leader.startedAtMs !== null) {
           const quietMs = quietMsSinceOutput(leader.lastOutputAtMs, atMs);
           // Riders share the leader's process, so its stall is theirs too;
           // orphaning is per ticket (only the leader's owner is tracked).
           return {
+            ...estimates,
             ...(quietMs === undefined ? {} : { quietMs }),
             ...(leader.stall === null ? {} : { stall: leader.stall }),
             ...(entry.kind === 'leader' && entry.job.ownerGone ? { orphaned: true } : {}),
@@ -1141,32 +1232,46 @@ export const makeLaneRuntime = (deps: LaneRuntimeDeps): Effect.Effect<LaneRuntim
           leader.admissionHold === null ? {} : { admissionHold: leader.admissionHold };
         const lane = lanes.get(leader.laneKey);
         if (lane === undefined) {
-          return delayed ? { delayed: true, ...held } : held;
+          return delayed ? { delayed: true, ...held, ...estimates } : { ...held, ...estimates };
         }
         const pending = orderedPending(lane, atMs);
         const targetIndex = pending.indexOf(leader);
         if (targetIndex === -1) {
-          return delayed ? { delayed: true, ...held } : held;
+          return delayed ? { delayed: true, ...held, ...estimates } : { ...held, ...estimates };
         }
 
         const ahead = pending.slice(0, targetIndex);
-        let waitEtaMs = ahead.reduce((total, job) => total + job.estimateMs, 0);
+        // Queued tickets ahead owe the lane their compile only when overlap
+        // will hand it back at their build-finished line; otherwise the whole run.
+        let waitEtaMs = ahead.reduce(
+          (total, job) => total + waitContributionMs(job, atMs, null),
+          0,
+        );
         const aheadTickets = ahead.map((job) => job.ticket);
         let position = ahead.length;
         let headFields: Partial<QueueContext> = {};
         // The lane head — running, or parked at the gate before its permit —
-        // runs before everything pending. An overrunning head contributes
-        // zero remaining time, never a negative that cancels queued work.
+        // runs before everything pending. An overrun-but-alive head contributes
+        // p90 remaining, never a negative that cancels queued work. A head
+        // already executing contributes only remaining execute time, or 0
+        // once overlap has handed the lane back.
         const head = lane.head;
         if (head !== null && head !== leader && Ref.getUnsafe(head.state) !== 'finished') {
           aheadTickets.unshift(head.ticket);
           position += 1;
-          waitEtaMs += remainingEstimateMs(head, atMs);
+          const headP90Ms =
+            head.startedAtMs === null ? null : yield* costModel.intentP90Ms(head.intent.key);
+          waitEtaMs += waitContributionMs(head, atMs, headP90Ms);
+          const headEstimates = estimateFieldsFor(head, atMs, headP90Ms);
           headFields = {
             ...(head.startedAtMs === null
               ? {}
               : { headElapsedMs: Math.max(0, atMs - head.startedAtMs) }),
             headEstimateMs: head.estimateMs,
+            ...(headEstimates.phase === undefined ? {} : { headPhase: headEstimates.phase }),
+            ...(headEstimates.estimateState === undefined
+              ? {}
+              : { headEstimateState: headEstimates.estimateState }),
             headTicket: head.ticket,
           };
         }
@@ -1176,7 +1281,9 @@ export const makeLaneRuntime = (deps: LaneRuntimeDeps): Effect.Effect<LaneRuntim
           waitEtaMs: Math.max(0, waitEtaMs),
           ...headFields,
         };
-        return delayed ? { delayed: true, queue } : { queue };
+        return delayed
+          ? { delayed: true, queue, ...held, ...estimates }
+          : { queue, ...held, ...estimates };
       });
 
     const interruptWorkers = (): Effect.Effect<void> =>
