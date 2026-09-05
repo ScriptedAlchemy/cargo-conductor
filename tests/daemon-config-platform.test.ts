@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'effect-rstest';
 
-import { resolveDaemonConfig, resolveDaemonConfigWithWarnings } from '../src/daemon/config.js';
+import {
+  defaultMaxConcurrentFor,
+  resolveDaemonConfig,
+  resolveDaemonConfigWithWarnings,
+} from '../src/daemon/config.js';
 
 describe('daemon config platform posture', () => {
   it('resolves a \\\\.\\pipe\\ named pipe on win32 instead of a filesystem .sock path', () => {
@@ -117,6 +121,7 @@ describe('daemon config platform posture', () => {
         CARGO_HAULER_LOAD_MIN: '1.5',
       },
       'linux',
+      8,
     );
     expect(config).toMatchObject({
       cpuStallThreshold: 75,
@@ -299,5 +304,49 @@ describe('daemon config platform posture', () => {
       CARGO_HAULER_MAX_CONCURRENT: '6',
     });
     expect(preferred.maxConcurrent).toBe(6);
+  });
+});
+
+describe('admission permit defaults', () => {
+  it('scales default permits with cores, one per eight, clamped between 5 and 16', () => {
+    expect(defaultMaxConcurrentFor(4)).toBe(5);
+    expect(defaultMaxConcurrentFor(40)).toBe(5);
+    expect(defaultMaxConcurrentFor(48)).toBe(6);
+    expect(defaultMaxConcurrentFor(96)).toBe(12);
+    expect(defaultMaxConcurrentFor(256)).toBe(16);
+    expect(defaultMaxConcurrentFor(Number.NaN)).toBe(5);
+  });
+
+  it('threads the core count into the default permits and the per-run jobs grant', () => {
+    const quiet = () => {};
+    const big = resolveDaemonConfig({ CARGO_HAULER_STATE_DIR: '/tmp/cc-test' }, 'linux', quiet, 96);
+    expect(big.maxConcurrent).toBe(12);
+    expect(big.jobsGrant).toBe(8);
+    const small = resolveDaemonConfig({ CARGO_HAULER_STATE_DIR: '/tmp/cc-test' }, 'linux', quiet, 8);
+    expect(small.maxConcurrent).toBe(5);
+    expect(small.jobsGrant).toBe(4);
+  });
+
+  it('lets CARGO_HAULER_MAX_CONCURRENT override the scaled default', () => {
+    const config = resolveDaemonConfig(
+      { CARGO_HAULER_MAX_CONCURRENT: '3', CARGO_HAULER_STATE_DIR: '/tmp/cc-test' },
+      'linux',
+      () => {},
+      96,
+    );
+    expect(config.maxConcurrent).toBe(3);
+    expect(config.jobsGrant).toBe(32);
+  });
+
+  it('overlaps execution phases by default and honors the opt-out', () => {
+    expect(resolveDaemonConfig({ CARGO_HAULER_STATE_DIR: '/tmp/cc-test' }).overlapExecution).toBe(true);
+    expect(
+      resolveDaemonConfig({ CARGO_HAULER_OVERLAP_EXECUTION: '0', CARGO_HAULER_STATE_DIR: '/tmp/cc-test' })
+        .overlapExecution,
+    ).toBe(false);
+    expect(
+      resolveDaemonConfig({ CARGO_HAULER_OVERLAP_EXECUTION: 'false', CARGO_HAULER_STATE_DIR: '/tmp/cc-test' })
+        .overlapExecution,
+    ).toBe(false);
   });
 });

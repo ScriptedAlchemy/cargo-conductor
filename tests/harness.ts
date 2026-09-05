@@ -33,6 +33,10 @@ if [ -n "\${FAKE_OUTPUT_COUNT:-}" ]; then
     fake_output_index=\$((fake_output_index + 1))
   done
 fi
+if [ -n "\${FAKE_FINISHED_AFTER:-}" ]; then
+  sleep "\$FAKE_FINISHED_AFTER"
+  echo "    Finished \\\`test\\\` profile [unoptimized + debuginfo] target(s) in 0.42s" >&2
+fi
 if [ -n "\${FAKE_SLEEP:-}" ]; then sleep "\$FAKE_SLEEP"; fi
 if [ -n "\${FAKE_LATE_OUT:-}" ]; then echo "\$FAKE_LATE_OUT"; fi
 exit "\${FAKE_EXIT:-0}"
@@ -103,9 +107,12 @@ export const scopedFixture = (
     (fixture) => Effect.sync(() => rmSync(fixture.root, { recursive: true, force: true })),
   );
 
-export const scopedDaemon = (maxConcurrent: number): Effect.Effect<Fixture, unknown, Scope.Scope> =>
+export const scopedDaemon = (
+  maxConcurrent: number,
+  env: Readonly<Record<string, string>> = {},
+): Effect.Effect<Fixture, unknown, Scope.Scope> =>
   Effect.gen(function* () {
-    const fixture = yield* scopedFixture(maxConcurrent);
+    const fixture = yield* scopedFixture(maxConcurrent, env);
     yield* Effect.forkScoped(runDaemon(fixture.config));
     yield* pingDaemon(fixture.config.socketPath, 500).pipe(
       Effect.retry(Schedule.spaced('50 millis').pipe(Schedule.upTo({ times: 100 }))),
@@ -180,6 +187,8 @@ export interface ExecOptions {
   readonly session?: string;
   readonly host?: string;
   readonly sleep?: string;
+  /** Seconds after which the fake cargo prints cargo's `Finished … target(s)` line to stderr. */
+  readonly finishedAfter?: string;
   readonly exit?: string;
   readonly lateOut?: string;
   readonly extraEnv?: Readonly<Record<string, string>>;
@@ -194,6 +203,9 @@ export const execRequest = (fixture: Fixture, options: ExecOptions) => {
   };
   if (options.sleep !== undefined) {
     env.FAKE_SLEEP = options.sleep;
+  }
+  if (options.finishedAfter !== undefined) {
+    env.FAKE_FINISHED_AFTER = options.finishedAfter;
   }
   if (options.exit !== undefined) {
     env.FAKE_EXIT = options.exit;

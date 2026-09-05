@@ -1076,3 +1076,85 @@ describe('ledger migrations', () => {
       );
     }));
 });
+
+describe('build-finished stamps and the saved-latency recompute', () => {
+  it.effect('stamps build_finished once on a running leader and the riders sharing its process', () =>
+    Effect.gen(function* () {
+      const ledger = yield* scopedLedger;
+      const leader = yield* ledger.createRequest(makeInput({ createdAtMs: 1_000 }));
+      yield* ledger.markQueued(leader.id, 1_050);
+      yield* ledger.markRunning(leader.id, 1_100);
+      const rider = yield* ledger.createRequest(makeInput({ createdAtMs: 1_200 }));
+      yield* ledger.markAttached(rider.id, {
+        atMs: 1_250,
+        leaderTicket: leader.ticket,
+        mode: 'identity',
+      });
+      yield* ledger.markRunning(rider.id, 1_100);
+      const queued = yield* ledger.createRequest(makeInput({ createdAtMs: 1_300 }));
+      yield* ledger.markQueued(queued.id, 1_300);
+
+      yield* ledger.markBuildFinished(leader.id, 1_500);
+      yield* ledger.markBuildFinished(leader.id, 1_600);
+      yield* ledger.markBuildFinished(queued.id, 1_700);
+
+      expect((yield* ledger.getRequest(leader.id))?.buildFinishedAtMs).toBe(1_500);
+      expect((yield* ledger.getRequest(rider.id))?.buildFinishedAtMs).toBe(1_500);
+      expect((yield* ledger.getRequest(queued.id))?.buildFinishedAtMs).toBeNull();
+
+      yield* ledger.markFinished(leader.id, { atMs: 2_000, status: 'done' });
+      yield* ledger.markBuildFinished(queued.id, 2_100);
+      expect((yield* ledger.getRequest(queued.id))?.buildFinishedAtMs).toBeNull();
+    }));
+
+  it.effect('recomputes saved latency from the leader start when upgrading a version-1 ledger', () =>
+    Effect.gen(function* () {
+      const directory = yield* scopedTempDir('cc-ledger-latency-recompute-');
+      const databasePath = join(directory, 'ledger.db');
+      const riderId = yield* Effect.scoped(
+        Effect.gen(function* () {
+          const initial = yield* scopedDatabase(() => openLedgerDatabase(databasePath));
+          const ledger = createLedgerApi(initial);
+          const leader = yield* ledger.createRequest(
+            makeInput({ createdAtMs: 1_000, estimateMs: 10_000 }),
+          );
+          yield* ledger.markQueued(leader.id, 1_050);
+          // A minute queued behind other work before the leader started.
+          yield* ledger.markRunning(leader.id, 61_000);
+          yield* ledger.markFinished(leader.id, { atMs: 71_000, status: 'done' });
+          const rider = yield* ledger.createRequest(
+            makeInput({ createdAtMs: 1_200, estimateMs: 10_000 }),
+          );
+          yield* ledger.markAttached(rider.id, {
+            atMs: 1_250,
+            leaderTicket: leader.ticket,
+            mode: 'identity',
+          });
+          yield* ledger.markRunning(rider.id, 61_000);
+          // A version-1 daemon charged the whole wait since creation to attaching.
+          yield* ledger.markFinished(rider.id, {
+            atMs: 71_000,
+            status: 'done',
+            savedComputeMs: 10_000,
+            savedComputeSource: 'exact',
+            savedLatencyMs: 10_000 - (71_000 - 1_200),
+          });
+          initial.exec('PRAGMA user_version = 1');
+          return rider.id;
+        }),
+      );
+      const reopened = yield* scopedDatabase(() => openLedgerDatabase(databasePath));
+      const record = yield* createLedgerApi(reopened).getRequest(riderId);
+      expect(record).toEqual(
+        expect.objectContaining({
+          savedComputeMs: 10_000,
+          savedComputeSource: 'exact',
+          savedLatencyMs: 0,
+        }),
+      );
+      expect(reopened.prepare('PRAGMA user_version').get()?.user_version).toBe(2);
+      const totals = yield* createLedgerApi(reopened).attachmentSavings();
+      expect(totals.totals.savedLatencyMs).toBe(0);
+      expect(totals.totals.negativeLatencyRiders).toBe(0);
+    }));
+});

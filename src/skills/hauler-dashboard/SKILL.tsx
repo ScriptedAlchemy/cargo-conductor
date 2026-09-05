@@ -53,7 +53,9 @@ export default () => (
       <li>
         <strong>Metrics:</strong> switch among <code>1h</code>, <code>24h</code>, and <code>all</code>. Run
         counts, outcomes, and percentiles use the selected window. Compute avoided, latency saved, and riders
-        served are all-time SQLite-ledger totals; negative latency is included.
+        served are all-time SQLite-ledger totals. Latency compares each rider's solo estimate with the time it
+        rode a started leader — waiting behind a leader that had not started yet is lane wait, not a cost of
+        attaching — and negative values (the leader ran longer than the rider alone would have) are included.
       </li>
       <li>
         <strong>Kache:</strong> optional machine-wide cache freshness, active compile roots, and slowest crates

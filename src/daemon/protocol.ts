@@ -118,6 +118,12 @@ export interface RequestRecord {
   readonly queuedAtMs: number | null;
   readonly startedAtMs: number | null;
   readonly finishedAtMs: number | null;
+  /**
+   * When cargo reported the build finished on a leader that goes on to run
+   * tests, benches, or a program; null before that, for pure compiles, and
+   * on rows older than the column. Riders share their leader's value.
+   */
+  readonly buildFinishedAtMs?: number | null;
   readonly waitMs: number | null;
   readonly runMs: number | null;
   readonly exitCode: number | null;
@@ -158,8 +164,10 @@ export interface RequestRecord {
   readonly savedComputeSource?: SavedComputeSource | null;
   /**
    * Counterfactual latency savings for the follower:
-   * `estimateMs - (settledAtMs - createdAtMs)`. Negative values are expected
-   * and honest: they mean the rider waited longer than its own solo estimate.
+   * `estimateMs - (settledAtMs - max(createdAtMs, leaderStartedAtMs))`: time
+   * queued behind a leader that had not started yet is lane wait the rider
+   * would have paid alone as well. Negative values are expected and honest:
+   * they mean the rider rode longer than its own solo run would have taken.
    */
   readonly savedLatencyMs?: number | null;
   /** The invocation actually spawned (demux flag, batch-folded -p packages); null until run. */
@@ -310,6 +318,12 @@ export interface LaneStatus {
   readonly targetDir: string;
   readonly queued: number;
   readonly runningTicket: string | null;
+  /**
+   * Leaders past their build that still execute (tests, benches, a program)
+   * in this lane while the next compile may already run; absent from older
+   * daemons.
+   */
+  readonly executingTickets?: readonly string[];
 }
 
 export interface HistogramMetricSnapshot {

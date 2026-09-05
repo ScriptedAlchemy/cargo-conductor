@@ -1040,9 +1040,11 @@ export const stalledHint = (
 export const laneIsActive = (lane: {
   readonly queued?: unknown;
   readonly runningTicket?: unknown;
+  readonly executingTickets?: unknown;
 }): boolean =>
   (typeof lane.queued === 'number' && lane.queued > 0) ||
-  typeof lane.runningTicket === 'string';
+  typeof lane.runningTicket === 'string' ||
+  (Array.isArray(lane.executingTickets) && lane.executingTickets.length > 0);
 
 /**
  * Time hauler's attach coalescing saved, from the rows on screen. This is

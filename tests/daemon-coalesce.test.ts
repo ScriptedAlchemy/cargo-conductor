@@ -83,8 +83,14 @@ describe('identity coalescing', () => {
         typeof followerRecord?.estimateMs === 'number' &&
         typeof followerRecord?.finishedAtMs === 'number'
       ) {
+        // The rider could not have started before its leader did, so the
+        // solo counterfactual begins at the later of the two.
+        const riddenFromMs = Math.max(
+          followerRecord.createdAtMs,
+          leaderRecord?.startedAtMs ?? followerRecord.createdAtMs,
+        );
         expect(followerRecord.savedLatencyMs).toBe(
-          followerRecord.estimateMs - (followerRecord.finishedAtMs - followerRecord.createdAtMs),
+          followerRecord.estimateMs - (followerRecord.finishedAtMs - riddenFromMs),
         );
       }
 

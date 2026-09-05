@@ -603,3 +603,112 @@ describe('real kache calibration', () => {
       }),
   );
 });
+
+describe('edit-aware estimates', () => {
+  it.effect('floors an edited intent that was only ever timed cached at the crate compile prior', () =>
+    Effect.gen(function* () {
+      const model = createCostModel({
+        kachePriors: { initial: indexPriors(() => 60_000) },
+        kacheReader: null,
+        seedDurations: () => Effect.succeed([]),
+      });
+      const scoped = intent(['cargo', 'test', '-p', 'alpha']);
+      yield* model.estimate(scoped);
+      yield* model.recordOutcome(scoped.key, 5_000, { editedRecently: false });
+      const cached = yield* model.estimate(scoped, [], { editedRecently: false });
+      const edited = yield* model.estimate(scoped, [], { editedRecently: true });
+      expect(cached).toEqual({ estimateMs: 5_000, source: 'ewma' });
+      expect(edited).toEqual({ estimateMs: 60_000, source: 'ewma' });
+    }));
+
+  it.effect('never floors at the cold default, only at a real prior', () =>
+    Effect.gen(function* () {
+      const model = createCostModel({
+        kacheReader: null,
+        seedDurations: () => Effect.succeed([]),
+      });
+      const scoped = intent(['cargo', 'test', '-p', 'alpha']);
+      yield* model.estimate(scoped);
+      yield* model.recordOutcome(scoped.key, 5_000, { editedRecently: false });
+      const edited = yield* model.estimate(scoped, [], { editedRecently: true });
+      expect(edited).toEqual({ estimateMs: 5_000, source: 'ewma' });
+    }));
+
+  it.effect('times edited and cached runs separately once both were observed', () =>
+    Effect.gen(function* () {
+      const model = createCostModel({
+        kachePriors: { initial: indexPriors(() => 60_000) },
+        kacheReader: null,
+        seedDurations: () => Effect.succeed([]),
+      });
+      const scoped = intent(['cargo', 'test', '-p', 'alpha']);
+      yield* model.estimate(scoped);
+      yield* model.recordOutcome(scoped.key, 5_000, { editedRecently: false });
+      yield* model.recordOutcome(scoped.key, 30_000, { editedRecently: true });
+      // Edited history exists now, so the prior no longer floors it.
+      expect(yield* model.estimate(scoped, [], { editedRecently: true })).toEqual({
+        estimateMs: 30_000,
+        source: 'ewma',
+      });
+      expect(yield* model.estimate(scoped, [], { editedRecently: false })).toEqual({
+        estimateMs: 5_000,
+        source: 'ewma',
+      });
+      // A mode without history borrows the other rather than a cold prior.
+      const other = intent(['cargo', 'test', '-p', 'beta']);
+      yield* model.estimate(other);
+      yield* model.recordOutcome(other.key, 40_000, { editedRecently: true });
+      expect(yield* model.estimate(other, [], { editedRecently: false })).toEqual({
+        estimateMs: 40_000,
+        source: 'ewma',
+      });
+    }));
+
+  it.effect('teaches both modes when the edit state is unknown', () =>
+    Effect.gen(function* () {
+      const model = createCostModel({
+        kachePriors: { initial: indexPriors(() => 60_000) },
+        kacheReader: null,
+        seedDurations: () => Effect.succeed([]),
+      });
+      const scoped = intent(['cargo', 'test', '-p', 'alpha']);
+      yield* model.estimate(scoped);
+      yield* model.recordOutcome(scoped.key, 20_000);
+      expect(yield* model.estimate(scoped, [], { editedRecently: true })).toEqual({
+        estimateMs: 20_000,
+        source: 'ewma',
+      });
+      expect(yield* model.estimate(scoped)).toEqual({ estimateMs: 20_000, source: 'ewma' });
+    }));
+
+  it.effect('seeds only the cached mode from ledger history, so a rebuild still floors', () =>
+    Effect.gen(function* () {
+      const model = createCostModel({
+        kachePriors: { initial: indexPriors(() => 60_000) },
+        kacheReader: null,
+        seedDurations: () => Effect.succeed([5_000, 4_000]),
+      });
+      const scoped = intent(['cargo', 'test', '-p', 'alpha']);
+      // Oldest-first seeding: 4s then 5s blends to 4.4s for the cached mode.
+      expect(yield* model.estimate(scoped)).toEqual({ estimateMs: 4_400, source: 'ewma' });
+      expect(yield* model.estimate(scoped, [], { editedRecently: true })).toEqual({
+        estimateMs: 60_000,
+        source: 'ewma',
+      });
+    }));
+
+  it.effect('unedited runs never teach the per-crate priors; edited ones do', () =>
+    Effect.gen(function* () {
+      const model = createCostModel({
+        kacheReader: null,
+        seedDurations: () => Effect.succeed([]),
+      });
+      const observed = intent(['cargo', 'check', '-p', 'alpha']);
+      const sameClass = intent(['cargo', 'clippy', '-p', 'alpha', '--all-features']);
+      yield* model.estimate(observed);
+      yield* model.recordOutcome(observed.key, 20_000, { editedRecently: false });
+      expect(yield* model.estimate(sameClass)).toEqual({ estimateMs: 150_000, source: 'default' });
+      yield* model.recordOutcome(observed.key, 20_000, { editedRecently: true });
+      expect(yield* model.estimate(sameClass)).toEqual({ estimateMs: 20_000, source: 'ewma' });
+    }));
+});

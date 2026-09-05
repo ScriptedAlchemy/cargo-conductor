@@ -199,7 +199,7 @@ describe('laneBoardModel and admissionModel', () => {
     const model = laneBoardModel(lanes, [record()], nowMs);
     expect(model.idleLanes).toBe(1);
     expect(model.rows).toEqual([
-      { name: 'ws (target)', queued: 2, running: 'cc-7', runningCommand: 'cargo check -p foo', runningFor: '1m', stalled: null },
+      { executing: null, name: 'ws (target)', queued: 2, running: 'cc-7', runningCommand: 'cargo check -p foo', runningFor: '1m', stalled: null },
     ]);
   });
 

@@ -75,7 +75,12 @@ const runningHealth = (
   const report = message.report;
   const running = report.active.filter((record) => record.status === 'running');
   return {
-    busyLanes: report.lanes.filter((lane) => lane.queued > 0 || lane.runningTicket !== null).length,
+    busyLanes: report.lanes.filter(
+      (lane) =>
+        lane.queued > 0 ||
+        lane.runningTicket !== null ||
+        (lane.executingTickets?.length ?? 0) > 0,
+    ).length,
     latencyMs,
     maxConcurrent: report.maxConcurrent,
     pid: report.pid,

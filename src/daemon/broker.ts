@@ -279,7 +279,12 @@ export const BrokerLive: Layer.Layer<
               normalized.workspaceRoot,
               normalized.packages,
             );
-            const estimate = yield* costModel.estimate(normalized, closure);
+            // Edited packages force a rebuild; the cost model times edited
+            // and cached runs of one intent separately.
+            const editedRecently = yield* topology
+              .editedRecently(normalized.workspaceRoot, normalized.packages)
+              .pipe(Effect.catchCause(() => Effect.succeed(false)));
+            const estimate = yield* costModel.estimate(normalized, closure, { editedRecently });
             const created = yield* ledger.createRequest({
               createdAtMs,
               session: input.session ?? null,
@@ -343,6 +348,7 @@ export const BrokerLive: Layer.Layer<
               callbacks,
               createdAtMs,
               estimate,
+              { editedRecently },
             );
             yield* Effect.sync(() => directory.setLeader(job));
             yield* ledger.markQueued(created.id, createdAtMs);
@@ -635,7 +641,10 @@ export const BrokerLive: Layer.Layer<
           systemIo.sample([
             config.stateDir,
             ...laneStatuses
-              .filter((lane) => lane.runningTicket !== null)
+              .filter(
+                (lane) =>
+                  lane.runningTicket !== null || (lane.executingTickets?.length ?? 0) > 0,
+              )
               .map((lane) => lane.targetDir),
           ]),
         );

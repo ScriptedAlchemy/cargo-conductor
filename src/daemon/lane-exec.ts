@@ -21,6 +21,7 @@ import {
   maxBatchPackages,
   withExtraPackages,
 } from './batch.js';
+import { createBuildPhaseDetector, executionSubcommands } from './build-phase.js';
 import {
   attachModeMetric,
   cargoRunByKindMetric,
@@ -83,7 +84,14 @@ export interface Lane {
   readonly pending: Job[];
   /** Capacity-one coalescing signal; the awakened worker drains pending jobs. */
   readonly wake: Queue.Queue<void>;
+  /** The leader whose cargo compiles here; null between jobs and once only execution phases remain. */
   running: string | null;
+  /**
+   * Leaders past their build whose tests, benches, or program still run in
+   * this lane. Cargo dropped the build-directory lock at that point, so they
+   * hold no lane slot — only their admission permit, until they settle.
+   */
+  readonly executing: Set<string>;
   /**
    * The job the worker took from `pending`, from the batch window through
    * settlement. While it is parked at the load gate or on the permit it is
@@ -121,6 +129,11 @@ export const cargoExecEnv = (
   return grantsJobs ? { ...input.env, CARGO_BUILD_JOBS: String(jobsGrant) } : input.env;
 };
 
+export interface MakeJobOptions {
+  /** Fail-fast signal the submitter already looked up; recomputed when absent. */
+  readonly editedRecently?: boolean;
+}
+
 export interface LaneRuntimeDeps {
   readonly config: DaemonConfigShape;
   readonly ledger: LedgerApi;
@@ -147,6 +160,7 @@ export interface LaneRuntime {
     callbacks: SubmitCallbacks,
     queuedAtMs: number,
     estimate: CostEstimate,
+    options?: MakeJobOptions,
   ) => Effect.Effect<Job>;
   readonly enqueueJob: (lane: Lane, job: Job) => Effect.Effect<number>;
   /**
@@ -206,14 +220,18 @@ export const makeLaneRuntime = (deps: LaneRuntimeDeps): Effect.Effect<LaneRuntim
       callbacks: SubmitCallbacks,
       queuedAtMs: number,
       estimate: CostEstimate,
+      options: MakeJobOptions = {},
     ): Effect.Effect<Job> =>
       Effect.gen(function* () {
         const killSignal = yield* Deferred.make<void>();
+        const laneReleased = yield* Deferred.make<void>();
         const state = yield* Ref.make<JobState>('queued');
         const plan = planDemux(intent, input.argv);
-        const editedRecently = yield* topology
-          .editedRecently(intent.workspaceRoot, intent.packages)
-          .pipe(Effect.catchCause(recoverDefect(false)));
+        const editedRecently =
+          options.editedRecently ??
+          (yield* topology
+            .editedRecently(intent.workspaceRoot, intent.packages)
+            .pipe(Effect.catchCause(recoverDefect(false))));
         // Looked up again rather than taken from the submit-time estimate: on a
         // cold workspace the first lookup answers with an empty set while the
         // metadata refresh runs, and this later one can see the filled cache.
@@ -244,6 +262,8 @@ export const makeLaneRuntime = (deps: LaneRuntimeDeps): Effect.Effect<LaneRuntim
           estimateMs: estimate.estimateMs,
           estimateSource: estimate.source,
           startedAtMs: null,
+          buildFinishedAtMs: null,
+          laneReleased,
           lastOutputAtMs: null,
           admissionHold: null,
           pid: null,
@@ -479,6 +499,37 @@ export const makeLaneRuntime = (deps: LaneRuntimeDeps): Effect.Effect<LaneRuntim
         yield* enqueueJob(lane, job);
       });
 
+    /**
+     * The leader's build is done and only its execution phase remains. Cargo
+     * released the build-directory lock with it, so the lane stops counting
+     * the job as running and the worker may take the next one; the job keeps
+     * its admission permit, since a test run is still machine load.
+     * Idempotent, and a leader that settles first simply never gets here.
+     */
+    const handBackLane = (lane: Lane, job: Job): Effect.Effect<void> =>
+      Effect.gen(function* () {
+        const atMs = Date.now();
+        const first = yield* Effect.sync(() => {
+          if (job.buildFinishedAtMs !== null) {
+            return false;
+          }
+          job.buildFinishedAtMs = atMs;
+          if (lane.running === job.ticket) {
+            lane.running = null;
+          }
+          lane.executing.add(job.ticket);
+          return true;
+        });
+        if (!first) {
+          return;
+        }
+        yield* ledger.markBuildFinished(job.id, atMs).pipe(Effect.ignoreCause);
+        yield* Effect.logDebug('build finished; lane handed to the next job', {
+          ticket: job.ticket,
+        });
+        yield* Deferred.succeed(job.laneReleased, undefined);
+      });
+
     const completeExit = (job: Job): Effect.Effect<void> =>
       Effect.gen(function* () {
         const lane = lanes.get(job.laneKey);
@@ -487,6 +538,7 @@ export const makeLaneRuntime = (deps: LaneRuntimeDeps): Effect.Effect<LaneRuntim
             if (lane.running === job.ticket) {
               lane.running = null;
             }
+            lane.executing.delete(job.ticket);
           });
         }
         yield* Effect.sync(() => directory.remove(job.ticket));
@@ -663,6 +715,16 @@ export const makeLaneRuntime = (deps: LaneRuntimeDeps): Effect.Effect<LaneRuntim
             }),
           { discard: true },
         );
+        // Test, bench, and run leaders drop cargo's build-directory lock once
+        // compiled; watching for cargo's build-finished line lets the lane
+        // admit its next compile while this one executes. Demuxed runs are
+        // pure compiles and never reach an execution phase.
+        const phase =
+          config.overlapExecution &&
+          job.demux === null &&
+          executionSubcommands.has(job.intent.subcommand)
+            ? createBuildPhaseDetector()
+            : null;
         const execEnv = cargoExecEnv(config.jobsGrant, job.input, isSharedJobserverArmed());
         const result: ExecutionResult = yield* executeCargo({
           argv: job.execArgv,
@@ -676,7 +738,16 @@ export const makeLaneRuntime = (deps: LaneRuntimeDeps): Effect.Effect<LaneRuntim
             Effect.sync(() => {
               job.pid = pid;
             }),
-          onOutput: (channel, data) => attachments.emitChunk(job, channel, data),
+          onOutput: (channel, data) =>
+            phase === null
+              ? attachments.emitChunk(job, channel, data)
+              : attachments.emitChunk(job, channel, data).pipe(
+                  Effect.andThen(
+                    Effect.suspend(() =>
+                      phase.feed(channel, data) ? handBackLane(lane, job) : Effect.void,
+                    ),
+                  ),
+                ),
           // The JSON demux owns stdout, so a merged pipe is only honoured for
           // runs that stream raw output (`cargo run`, `cargo test`, ...).
           mergeStderr: job.demux === null && job.input.mergeStderr === true,
@@ -695,6 +766,7 @@ export const makeLaneRuntime = (deps: LaneRuntimeDeps): Effect.Effect<LaneRuntim
         if (result.outcome !== 'killed') {
           yield* costModel.recordOutcome(job.intent.key, finishedAtMs - runStartedAtMs, {
             outcome: result.outcome,
+            editedRecently: job.editedRecently,
           });
         }
         // A broker-initiated kill (stall auto-kill) names its reason on the
@@ -906,16 +978,23 @@ export const makeLaneRuntime = (deps: LaneRuntimeDeps): Effect.Effect<LaneRuntim
           yield* Effect.sync(() => {
             lane.head = job;
           });
-          yield* processLaneJob(lane, job).pipe(
-            Effect.annotateLogs({ ticket: job.ticket, lane: lane.key }),
-            Effect.ensuring(
-              Effect.sync(() => {
-                if (lane.head === job) {
-                  lane.head = null;
-                }
-              }),
+          // The job runs as a child of the lane worker, so shutdown still
+          // interrupts it, while the worker waits only until the lane is free
+          // again: settlement, or the hand-back at the end of the build.
+          yield* Effect.forkChild(
+            processLaneJob(lane, job).pipe(
+              Effect.annotateLogs({ ticket: job.ticket, lane: lane.key }),
+              Effect.ensuring(
+                Effect.sync(() => {
+                  if (lane.head === job) {
+                    lane.head = null;
+                  }
+                }),
+              ),
+              Effect.ensuring(Deferred.succeed(job.laneReleased, undefined)),
             ),
           );
+          yield* Deferred.await(job.laneReleased);
         }
       });
 
@@ -949,6 +1028,7 @@ export const makeLaneRuntime = (deps: LaneRuntimeDeps): Effect.Effect<LaneRuntim
             pending: [],
             wake,
             running: null,
+            executing: new Set<string>(),
             head: null,
           };
           lanes.set(key, lane);
@@ -966,6 +1046,7 @@ export const makeLaneRuntime = (deps: LaneRuntimeDeps): Effect.Effect<LaneRuntim
           targetDir: lane.targetDir,
           queued: lane.pending.length,
           runningTicket: lane.running,
+          executingTickets: [...lane.executing],
         })),
       );
 

@@ -204,6 +204,7 @@ interface LaneRow {
   readonly workspaceRoot?: unknown;
   readonly queued?: unknown;
   readonly runningTicket?: unknown;
+  readonly executingTickets?: unknown;
 }
 
 interface KacheRootRow {
@@ -1474,13 +1475,16 @@ const DashboardContent = ({ structured }: { readonly structured: StructuredConte
             <h2>Lanes <span className="count">({laneCount})</span></h2>
             <Table
               empty="No active lanes."
-              headers={['workspace', 'running', 'queued']}
+              headers={['workspace', 'running', 'queued', 'executing']}
               numericColumns={[2]}
               rows={activeLanes.map((lane) => ({
                 cells: [
                   workspace(lane.workspaceRoot),
                   ticket(typeof lane.runningTicket === 'string' ? lane.runningTicket : null),
                   typeof lane.queued === 'number' ? String(lane.queued) : '—',
+                  Array.isArray(lane.executingTickets) && lane.executingTickets.length > 0
+                    ? lane.executingTickets.map(String).join(', ')
+                    : '—',
                 ],
               }))}
             />

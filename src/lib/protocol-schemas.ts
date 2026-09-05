@@ -110,6 +110,7 @@ const laneStatusSchema = z.object({
   key: z.string(),
   queued: z.number().int(),
   runningTicket: z.string().nullable(),
+  executingTickets: z.array(z.string()).optional(),
   targetDir: z.string(),
   workspaceRoot: z.string(),
 }) satisfies z.ZodType<LaneStatus>;
