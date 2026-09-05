@@ -138,9 +138,13 @@ export const serveDashboard = async ({
   helper.handOver();
   let exit: ServeAppExit;
   try {
-    // An abort that landed between the ready line and this hand-over already
-    // had the helper send the stop; a second `close()` would be a second
-    // SIGTERM, so that exit is simply awaited.
+    // `helper.signal` aborted and yet the App was served: the abort came
+    // before the ready line, the helper's SIGTERM was accepted (a refusal
+    // rejects `spawn` with `stop-failed`), and the child printed its ready
+    // line while dying. Its exit is on the way; a `close()` would be a second
+    // SIGTERM. An abort cannot land between the ready line and this point:
+    // the ready line settles `spawn` from a stdout event and this continuation
+    // runs in the microtasks after it, before any signal handler or timer.
     exit = helper.signal.aborted ? await served.closed : await exitOrStopFailure(served, signal);
   } catch (error) {
     if (error instanceof ServeAppCommandError) {

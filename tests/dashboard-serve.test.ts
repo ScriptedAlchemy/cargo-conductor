@@ -28,7 +28,14 @@ interface FakeHelper {
  * settling `closed` after it — and `close()` sends one too, resolving with
  * the exit or rejecting with `stop-failed` when the child refuses it.
  */
-const fakeHelper = (behaviour: { readonly refuseStop?: boolean; readonly readyAtOnce?: boolean } = {}): FakeHelper => {
+const fakeHelper = (
+  behaviour: {
+    readonly refuseStop?: boolean;
+    readonly readyAtOnce?: boolean;
+    /** The child prints its ready line while dying from the pre-ready stop: `spawn` resolves although the signal aborted. */
+    readonly readyWhileDying?: boolean;
+  } = {},
+): FakeHelper => {
   let seen: SpawnServeAppOptions | undefined;
   let stops = 0;
   let settledExit: ServeAppExit | undefined;
@@ -83,7 +90,12 @@ const fakeHelper = (behaviour: { readonly refuseStop?: boolean; readonly readyAt
           'abort',
           () => {
             const refused = stop();
-            if (!ready) reject(refused ?? new ServeAppCommandError('aborted', 'Serving hauler/dashboard was aborted before agent-bundle serve-app was ready.'));
+            if (ready) return;
+            if (refused === undefined && behaviour.readyWhileDying === true) {
+              announceReady();
+              return;
+            }
+            reject(refused ?? new ServeAppCommandError('aborted', 'Serving hauler/dashboard was aborted before agent-bundle serve-app was ready.'));
           },
           { once: true },
         );
@@ -231,6 +243,28 @@ describe('serveDashboard', () => {
       operation: 'dashboard',
       url: 'http://127.0.0.1:40577/',
     });
+  });
+
+  it('a pre-ready abort whose stop was accepted, with the ready line racing in, is not stopped again', async () => {
+    const controller = new AbortController();
+    const helper = fakeHelper({ readyAtOnce: false, readyWhileDying: true });
+    const pending = serve({ signal: controller.signal, spawn: helper.spawn });
+    await settled();
+    controller.abort();
+    const result = await pending;
+    expect(helper.stops()).toBe(1);
+    expect(result).toMatchObject({ exitCode: 128, message: expect.stringContaining('exited with SIGTERM'), url: 'http://127.0.0.1:40577/' });
+  });
+
+  it('a pre-ready abort whose stop was refused is the stop-failed result, not a hang', async () => {
+    const controller = new AbortController();
+    const helper = fakeHelper({ readyAtOnce: false, refuseStop: true });
+    const pending = serve({ signal: controller.signal, spawn: helper.spawn });
+    await settled();
+    controller.abort();
+    const result = await pending;
+    expect(helper.stops()).toBe(1);
+    expect(result).toMatchObject({ exitCode: 1, url: null, message: expect.stringContaining('could not be signalled to stop') });
   });
 
   it('a signal aborted before the spawn is handed to the helper, which rejects it', async () => {
