@@ -187,6 +187,13 @@ Within a lane, the daemon can reduce work in three ways:
 3. **Batch folding:** compatible queued compile or test requests are combined
    into one invocation.
 
+A leading `env NAME=value … cargo …` is folded into the request environment,
+so the cargo behind it is scheduled, estimated, attached, and phase-tracked
+as that cargo command (the assignments are part of its identity). A
+`bash -c` / `sh -c` script whose single cargo statement can be read is
+scheduled and estimated as that cargo command too, but never shared or
+folded: the rest of the script is opaque.
+
 A request that could not attach is logged at debug level with the gate that
 refused it (`subcommand`, `opaque-arguments`, `passthrough`,
 `compile-surface`, `packages`, `targets`, `channels`,

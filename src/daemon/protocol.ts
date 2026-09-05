@@ -52,6 +52,7 @@ export type AttachMode = (typeof attachModes)[number];
  * among the lane's leaders for each request that did not attach.
  */
 export const attachRejectionGates = [
+  'shell-wrapped',
   'subcommand',
   'opaque-arguments',
   'passthrough',

@@ -324,8 +324,11 @@ export const planDemux = (
   intent: NormalizedCargoIntent,
   argv: readonly string[],
 ): { readonly execArgv: readonly string[]; readonly demux: DemuxState | null } => {
+  // A shell-wrapped request's argv is the shell's, so the flag cannot be
+  // appended to it; the cargo inside streams raw output like a test run.
   const eligible =
     demuxSubcommands.has(intent.subcommand) &&
+    intent.shellScript === null &&
     !argv.some((argument) => argument.startsWith('--message-format'));
   if (!eligible) {
     return { execArgv: argv, demux: null };
