@@ -12,6 +12,7 @@ import { pingDaemon, requestOverSocket } from '../src/daemon/control.js';
 import { runDaemon } from '../src/daemon/main.js';
 import { orphanedByRestartError, toStatusRow, type RequestRecord } from '../src/daemon/protocol.js';
 import { loadLastResult, loadStatusResult } from '../src/lib/inspect.js';
+import { statusResultSchema } from '../src/lib/protocol-schemas.js';
 import { filterStatusRows, statusSummary } from '../src/lib/status-filter.js';
 import { fetchTicketResult } from '../src/lib/tickets.js';
 import { scopedEnv, scopedLedger, scopedTempDir } from './harness.js';
@@ -234,6 +235,24 @@ describe('loadHaulerSnapshot', () => {
       Effect.gen(function* () {
         const config = yield* isolatedConfig;
         mkdirSync(config.stateDir, { recursive: true });
+        yield* Effect.scoped(
+          Effect.gen(function* () {
+            const ledger = yield* scopedLedger(config);
+            yield* ledger.createRequest({
+              argv: ['cargo', 'check'],
+              createdAtMs: 1_000,
+              cwd: '/repo',
+              host: 'cursor',
+              intentJson: null,
+              intentKey: 'k',
+              laneKey: '/repo::/repo/target',
+              session: 's',
+              targetDir: '/repo/target',
+              workspaceRoot: '/repo',
+            });
+            yield* ledger.markFinished(1, { atMs: 2_000, exitCode: 0, outputTail: 'ok\n', status: 'done' });
+          }),
+        );
         const accepted = new Set<Socket>();
         yield* Effect.acquireRelease(
           Effect.callback<Server>((resume) => {
@@ -254,6 +273,12 @@ describe('loadHaulerSnapshot', () => {
         expect(snapshot.daemon).toBe('unresponsive');
         expect(snapshot.summary).toContain('did not answer within');
         expect(snapshot.summary).not.toContain('not running');
+        // `last` is a detail read; with no daemon answering it comes from the
+        // ledger, tail included, instead of failing the tool (#95).
+        const last = yield* Effect.promise((signal) => loadLastResult({ config, signal }));
+        expect(last.daemon).toBe('unresponsive');
+        expect(last.request?.ticket).toBe('cc-1');
+        expect(last.request?.outputTail).toBe('ok\n');
       }),
     15_000,
   );
@@ -276,7 +301,12 @@ describe('loadHaulerSnapshot', () => {
             targetDir: '/repo/target',
             workspaceRoot: '/repo',
           });
-          yield* ledger.markFinished(1, { atMs: 2_000, exitCode: 0, status: 'done' });
+          yield* ledger.markFinished(1, {
+            atMs: 2_000,
+            exitCode: 0,
+            outputTail: 'Finished dev profile\n',
+            status: 'done',
+          });
         }),
       );
 
@@ -286,6 +316,14 @@ describe('loadHaulerSnapshot', () => {
       expect(snapshot.recent[0]?.ticket).toBe('cc-1');
       expect(snapshot.recent[0]?.status).toBe('done');
       expect(snapshot.summary).toContain('1 recorded request');
+      // The ledger path lists the same bounded status rows as a live daemon:
+      // the settled tail stays behind `result` / `last` (#95).
+      expect(snapshot.recent[0]).not.toHaveProperty('outputTail');
+      expect(snapshot.recent[0]?.outputPreview).toBeNull();
+      const status = yield* Effect.promise((signal) => loadStatusResult({}, { config, signal }));
+      expect(statusResultSchema.parse(status).recent[0]).not.toHaveProperty('outputTail');
+      const last = yield* Effect.promise((signal) => loadLastResult({ config, signal }));
+      expect(last.request?.outputTail).toBe('Finished dev profile\n');
     }));
 
   it.live('keeps ESC out of structured operation results even under inherited FORCE_COLOR', () =>
@@ -378,6 +416,16 @@ describe('loadHaulerSnapshot', () => {
       expect(queued.request?.error).toBe(orphanedByRestartError);
       const snapshot = yield* loadHaulerSnapshot({ config });
       expect(snapshot.active).toEqual([]);
+      // With the daemon up, `last` reads the newest ticket through the daemon's
+      // detail contract: a full record (its `outputTail` key present), not the
+      // tail-less status row the listing carries (#95).
+      const last = yield* Effect.promise((signal) => loadLastResult({ config, signal }));
+      expect(last.daemon).toBe('running');
+      expect(last.request?.ticket).toBe('cc-2');
+      expect(last.request).toHaveProperty('outputTail');
+      expect(last.request?.error).toBe(orphanedByRestartError);
+      expect(last.summary).toBe('cc-2 killed');
+      expect(snapshot.recent[0]).not.toHaveProperty('outputTail');
     }),
     30_000,
   );
