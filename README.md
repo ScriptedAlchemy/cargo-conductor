@@ -429,9 +429,12 @@ When the daemon starts Cargo it sets `CARGO_HAULER_INSIDE=1`, and the shim then
 invokes the embedded Cargo directly, so the daemon's own Cargo never returns
 through the broker. The shim is POSIX-only; its directory must appear before
 rustup's Cargo directory on `PATH`; replacing an existing destination requires
-`--force`. `hauler install-shim` resolves the global `hauler` on PATH and
-embeds its realpath (an npm `dist/bin/hauler.js` entry embeds itself only when
-PATH has no `hauler`); it refuses to run from a plugin-local `scripts/hauler.mjs`.
+`--force`. `hauler install-shim` walks PATH for a `hauler` whose realpath is a
+regular `.js`, `.mjs`, or `.cjs` file outside any plugin copy and embeds that
+realpath (a version-manager shim such as `mise/shims/hauler`, which resolves to
+a native binary, does not count); an npm `dist/bin/hauler.js` entry embeds
+itself only when that walk finds nothing. It refuses to run from a plugin-local
+`scripts/hauler.mjs`.
 If a Node upgrade moves that global file, the shim runs Cargo directly until
 you re-run `hauler install-shim --force`.
 
