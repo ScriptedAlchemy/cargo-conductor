@@ -1,7 +1,7 @@
 /**
  * Pure lane-scheduling policy. Lower score runs first:
  *
- *   score = estimateMs * editFactor / ((1 + waiters) * (1 + ageMs / 30s))
+ *   score = estimateMs * editFactor * switchFactor / ((1 + waiters) * (1 + ageMs / 30s))
  *
  * - Shortest-job-first: cheap requests release their agents quickly (the
  *   mined traces show check p50 ~3min vs build p50 ~11min sharing one lane).
@@ -13,9 +13,18 @@
  *   cache the dependents will reuse.
  * - Fail-fast: packages edited in the last few minutes halve the score —
  *   the request most likely to surface a fresh failure runs sooner.
+ * - Surface affinity: a candidate whose compile surface (profile, features,
+ *   target, toolchain, environment) differs from the one the lane just built
+ *   is scored as 1.5× its estimate. Switching surfaces re-links or rebuilds
+ *   the crate under test; the ledger showed such runs taking 1.6–2.5× as
+ *   long as same-surface runs while 47% of consecutive leaders switched. So
+ *   the lane groups like with like unless the switch is clearly cheaper.
  * - Age escape: waiting 30s halves the effective score, so a broad workspace
  *   build cannot be starved forever by a stream of quick checks.
  */
+
+/** Estimate multiplier for a candidate that would change the lane's compile surface. */
+export const surfaceSwitchFactor = 1.5;
 
 import { parseCargoArgv } from './intent-normalizer.js';
 import type { ParsedCargoArgv } from './intent-normalizer.js';
@@ -33,13 +42,21 @@ export interface ScheduleCandidate {
   readonly unblocks: number;
   readonly ageMs: number;
   readonly editedRecently: boolean;
+  /**
+   * True when the lane last built a different compile surface than this
+   * candidate's; false when they match or the lane has built nothing yet.
+   */
+  readonly surfaceSwitch?: boolean;
 }
 
 export const scheduleScore = (candidate: ScheduleCandidate): number => {
   const editFactor = candidate.editedRecently ? 0.5 : 1;
+  const switchFactor = candidate.surfaceSwitch === true ? surfaceSwitchFactor : 1;
   const releaseFactor = 1 + Math.max(0, candidate.waiters) + Math.max(0, candidate.unblocks);
   const ageFactor = 1 + Math.max(0, candidate.ageMs) / 30_000;
-  return (Math.max(1, candidate.estimateMs) * editFactor) / (releaseFactor * ageFactor);
+  return (
+    (Math.max(1, candidate.estimateMs) * editFactor * switchFactor) / (releaseFactor * ageFactor)
+  );
 };
 
 export interface AdmissionLoadInput {

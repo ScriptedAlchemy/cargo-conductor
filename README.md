@@ -252,8 +252,11 @@ compile phase and an execution phase once the ledger has seen
 `buildFinishedAtMs` on that intent. It can also use
 per-crate timing data from kache. Lower-cost work, requests with more attached
 callers, dependency-unblocking work, and recently edited packages receive a
-lower scheduling score. Waiting time lowers the score further so broad work
-eventually runs.
+lower scheduling score. A request whose compile surface (profile, features,
+target, toolchain, compile-relevant environment) differs from the one the lane
+just built is scored as 1.5× its estimate, so like work runs back to back
+instead of alternating test and dev profiles or flipping feature sets on every
+ticket. Waiting time lowers the score further so broad work eventually runs.
 
 Admission within a lane is therefore cost-ordered, not first-in-first-out: a
 queued `cargo test -p foo` (a cheap estimate) normally starts before a queued
