@@ -30,7 +30,7 @@ describe('hauler entry location', () => {
       mkdirSync(join(root, 'bin'), { recursive: true });
       writeFileSync(entry, '');
       writeFileSync(join(root, 'bin', 'cargo-hauler.mjs'), '');
-      expect(haulerEntryLocation(entry)).toEqual({ kind: 'host-plugin', path: entry });
+      expect(haulerEntryLocation(entry)).toEqual({ kind: 'host-plugin', path: realpathSync(entry) });
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -45,8 +45,8 @@ describe('hauler entry location', () => {
       });
       writeFileSync(entry, '');
       const location = haulerEntryLocation(entry);
-      expect(location).toEqual({ kind: 'npm-bin', path: entry });
-      expect(globalHaulerArgv(location, { PATH: '' })).toEqual([process.execPath, entry]);
+      expect(location).toEqual({ kind: 'npm-bin', path: realpathSync(entry) });
+      expect(globalHaulerArgv(location, { PATH: '' })).toEqual([process.execPath, realpathSync(entry)]);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -67,7 +67,7 @@ describe('hauler entry location', () => {
       writeFileSync(globalEntry, '');
       symlinkSync(globalEntry, join(binDir, 'hauler'));
       const location = haulerEntryLocation(checkoutEntry);
-      expect(location).toEqual({ kind: 'npm-bin', path: checkoutEntry });
+      expect(location).toEqual({ kind: 'npm-bin', path: realpathSync(checkoutEntry) });
       expect(globalHaulerArgv(location, { PATH: binDir })).toEqual([
         process.execPath,
         realpathSync(globalEntry),
