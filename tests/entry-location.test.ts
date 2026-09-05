@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
@@ -36,7 +36,7 @@ describe('hauler entry location', () => {
     }
   });
 
-  it('detects the npm bin and embeds its own realpath', () => {
+  it('detects the npm bin and embeds its own realpath only when PATH has no hauler', () => {
     const root = mkdtempSync(join(tmpdir(), 'cc-entry-npm-'));
     try {
       const entry = join(root, 'lib', 'node_modules', 'cargo-hauler', 'dist', 'bin', 'hauler.js');
@@ -50,5 +50,36 @@ describe('hauler entry location', () => {
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
+  });
+
+  it('prefers the hauler on PATH over a checkout dist/bin/hauler.js', () => {
+    const root = mkdtempSync(join(tmpdir(), 'cc-entry-checkout-'));
+    try {
+      const checkoutEntry = join(root, 'checkout', 'dist', 'bin', 'hauler.js');
+      const globalEntry = join(root, 'lib', 'node_modules', 'cargo-hauler', 'dist', 'bin', 'hauler.js');
+      const binDir = join(root, 'bin');
+      mkdirSync(join(root, 'checkout', 'dist', 'bin'), { recursive: true });
+      mkdirSync(join(root, 'lib', 'node_modules', 'cargo-hauler', 'dist', 'bin'), {
+        recursive: true,
+      });
+      mkdirSync(binDir);
+      writeFileSync(checkoutEntry, '');
+      writeFileSync(globalEntry, '');
+      symlinkSync(globalEntry, join(binDir, 'hauler'));
+      const location = haulerEntryLocation(checkoutEntry);
+      expect(location).toEqual({ kind: 'npm-bin', path: checkoutEntry });
+      expect(globalHaulerArgv(location, { PATH: binDir })).toEqual([
+        process.execPath,
+        realpathSync(globalEntry),
+      ]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('fails with install guidance when neither PATH nor the entry is a global hauler', () => {
+    expect(() => globalHaulerArgv({ kind: 'other', path: '/tmp/anything.js' }, { PATH: '' })).toThrow(
+      'npm i -g cargo-hauler',
+    );
   });
 });

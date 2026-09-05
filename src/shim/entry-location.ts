@@ -43,17 +43,15 @@ export const haulerEntryLocation = (
 };
 
 /**
- * Absolute node + global `hauler` script for a PATH shim. The npm bin can
- * embed itself; every other accepted caller resolves and canonicalizes the
- * `hauler` command found on PATH.
+ * Absolute node + global `hauler` script for a PATH shim: the canonical path
+ * of the `hauler` command found on PATH, whatever entry is running. Only when
+ * PATH has none does an npm bin embed itself (a checkout's `dist/bin/hauler.js`
+ * is also an npm-shaped bin, so it never shadows an installed global).
  */
 export const globalHaulerArgv = (
   location: HaulerEntryLocation,
   env: Readonly<Record<string, string | undefined>> = process.env,
 ): readonly string[] => {
-  if (location.kind === 'npm-bin') {
-    return [process.execPath, location.path];
-  }
   for (const entry of (env.PATH ?? '').split(delimiter)) {
     if (entry.length === 0) {
       continue;
@@ -62,6 +60,9 @@ export const globalHaulerArgv = (
     if (existsSync(candidate)) {
       return [process.execPath, realpathSync(candidate)];
     }
+  }
+  if (location.kind === 'npm-bin') {
+    return [process.execPath, location.path];
   }
   throw new Error(
     'could not resolve `hauler` on PATH; install it with `npm i -g cargo-hauler`',

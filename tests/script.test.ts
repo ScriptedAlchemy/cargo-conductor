@@ -317,13 +317,34 @@ describe('hauler script', () => {
   it('installs a shim that falls back to cargo when its hauler entry is gone, and says so', async () => {
     const root = mkdtempSync(join(tmpdir(), 'cc-script-shim-'));
     try {
-      const result = await run(['install-shim', '--dir', root, '--real-cargo', '/usr/bin/cargo']);
+      // An npm bin with no other `hauler` on PATH embeds itself; the embedded
+      // file does not exist here, which is exactly the post-Node-upgrade state.
+      const goneEntry = join(root, 'lib', 'node_modules', 'cargo-hauler', 'dist', 'bin', 'hauler.js');
+      const result = await run(['install-shim', '--dir', root, '--real-cargo', '/usr/bin/cargo'], {
+        entryPath: goneEntry,
+        env: { PATH: '' },
+      });
       expect(result.code).toBe(0);
       expect(result.text).toContain(`Installed cargo shim at ${join(root, 'cargo')}`);
       // A Node upgrade that moves the global entry must not turn every `cargo`
       // on PATH into "No such file"; the operator has to re-run this.
       expect(result.text).toContain('hauler install-shim --force');
       expect(readFileSync(join(root, 'cargo'), 'utf8')).toContain('|| exec /usr/bin/cargo "$@"');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('fails install-shim with install guidance when no global hauler exists', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'cc-script-shim-none-'));
+    try {
+      const result = await run(['install-shim', '--dir', root, '--real-cargo', '/usr/bin/cargo'], {
+        entryPath: join(root, 'somewhere', 'hauler.mjs'),
+        env: { PATH: '' },
+      });
+      expect(result.code).toBe(1);
+      expect(result.text).toContain('npm i -g cargo-hauler');
+      expect(existsSync(join(root, 'cargo'))).toBe(false);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

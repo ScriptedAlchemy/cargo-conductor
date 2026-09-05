@@ -158,8 +158,10 @@ installing and warns when `cargo` still resolves elsewhere.
 
 The generated shim is self-contained
 ([issue #2](https://github.com/ScriptedAlchemy/cargo-hauler/issues/2)): it
-embeds the absolute `node <script>` invocation of the CLI that ran
-`install-shim` and an absolute real-cargo path (the `~/.cargo/bin/cargo` link,
+embeds the absolute `node <script>` invocation of the `hauler` found on PATH
+(only an npm bin with no PATH `hauler` embeds itself; a checkout's
+`dist/bin/hauler.js` never shadows an installed global) and an absolute
+real-cargo path (the `~/.cargo/bin/cargo` link,
 not its canonical rustup target — rustup dispatches on `argv[0]`). It submits
 with `--host shim`, and passes daemon-spawned cargo straight through
 (`CARGO_HAULER_INSIDE=1`). On the daemon side, bare `cargo` argv never
