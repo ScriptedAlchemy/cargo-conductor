@@ -167,7 +167,7 @@ const runInstallShim = (
     write(`Installed cargo shim at ${installed.path}\n`);
     write(`${describeShimPathStatus(shimPathStatus(installed.path), destDir)}\n`);
     write(
-      `The shim embeds the global hauler entry: ${installed.haulerScript}. If a Node upgrade moves or replaces that file, the shim runs ${installed.realCargo} directly until you re-run \`hauler install-shim --force\`.\n`,
+      `The shim embeds the hauler entry ${installed.haulerScript}. If a Node upgrade moves or replaces that file, the shim runs ${installed.realCargo} directly until you re-run \`hauler install-shim --force\`.\n`,
     );
     return 0;
   } catch (error) {

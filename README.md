@@ -431,7 +431,9 @@ through the broker. The shim is POSIX-only; its directory must appear before
 rustup's Cargo directory on `PATH`; replacing an existing destination requires
 `--force`. `hauler install-shim` resolves the global `hauler` on PATH and
 embeds its realpath (an npm `dist/bin/hauler.js` entry embeds itself only when
-PATH has no `hauler`); it refuses to run from a plugin-local `scripts/hauler.mjs`.
+no `hauler` on PATH resolves to a `.js` script — a version-manager shim such as
+`mise/shims/hauler` does not count); it refuses to run from a plugin-local
+`scripts/hauler.mjs`.
 If a Node upgrade moves that global file, the shim runs Cargo directly until
 you re-run `hauler install-shim --force`.
 
