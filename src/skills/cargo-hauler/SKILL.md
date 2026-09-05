@@ -66,17 +66,23 @@ clippy, fmt, nextest) or is waiting on someone else's cargo.
 - If a shell command was auto-backgrounded while its stdout was redirected
   (`cargo test > out.log` exited 75), the file holds only the notice: the
   output is in the ticket log, `hauler result cc-N --full`.
-- Folded test runs share one process. Queued `cargo test` /
-  `cargo nextest run` requests with the same test selection (targets,
-  filters, arguments after `--`, filterset) but different packages may fold
-  into one composite run over the union of their packages with
-  `--no-fail-fast`; every participant gets the composite's full output. A
-  passing composite is everyone's pass. If it fails, a participant that did
-  not name every package in the composite is requeued and runs its own
+- Folded test runs share one process. Queued `cargo test` requests with the
+  same `--test` / `--lib` selection and harness flags (`--test-threads=N`,
+  `--nocapture`, `--quiet` only) may fold across different packages, with
+  different bare name filters, into one composite run over the union of
+  both, with `--no-fail-fast`; requests naming the same packages fold only
+  on the same filters, and `cargo nextest run` requests only on an identical
+  filterset. Every participant gets the composite's full output,
+  so it may show tests another participant selected. A passing composite is
+  everyone's pass. If it fails, a participant that did not ask for every
+  package and every filter in the composite is requeued and runs its own
   request alone, so the result it reports is its own. The leader ticket
   keeps the composite exit: if it failed but your own tests look green in
-  the output, check whether a co-batched package failed before touching
-  your code.
+  the output, check whether a co-batched package or filter failed before
+  touching your code. Compile batches likewise keep a shared `--` trailer
+  (`cargo clippy … -- -D warnings`) once; a participant whose own units
+  compiled cleanly is released as done even when another's warnings fail
+  the composite.
   The lane briefly holds a batchable head (150ms by default) so requests
   launched together can fold before the first process starts; set
   `CARGO_HAULER_BATCH_WINDOW_MS=0` to disable that window.

@@ -5,8 +5,11 @@ import {
   batchCompatibleFor,
   batchFailureOwned,
   batchKindFor,
+  classifyTestTrailer,
   composeTestFoldArgv,
   compositePackages,
+  compositeSelection,
+  compositeTestFilters,
   extraPackagesFor,
   maxBatchPackages,
   withExtraPackages,
@@ -81,9 +84,97 @@ describe('batchCompatible', () => {
       ),
     ).toBe(false);
   });
+
+  it('merges compile intents whose `--` trailers are byte-equal (#86)', () => {
+    const trailer = ['--', '-D', 'warnings'];
+    expect(
+      batchCompatible(
+        intent(['cargo', 'clippy', '--all-targets', '-p', 'alpha', ...trailer]),
+        intent(['cargo', 'clippy', '--all-targets', '-p', 'beta', ...trailer]),
+      ),
+    ).toBe(true);
+    expect(
+      batchKindFor(intent(['cargo', 'clippy', '-p', 'alpha', ...trailer])),
+    ).toBe('compile');
+  });
+
+  it('refuses trailers that differ, are one-sided, or ride a different surface (#86)', () => {
+    expect(
+      batchCompatible(
+        intent(['cargo', 'clippy', '-p', 'alpha', '--', '-D', 'warnings']),
+        intent(['cargo', 'clippy', '-p', 'beta', '--', '-W', 'clippy::pedantic']),
+      ),
+    ).toBe(false);
+    expect(
+      batchCompatible(
+        intent(['cargo', 'clippy', '-p', 'alpha', '--', '-D', 'warnings']),
+        intent(['cargo', 'clippy', '-p', 'beta']),
+      ),
+    ).toBe(false);
+    expect(
+      batchCompatible(
+        intent(['cargo', 'clippy', '-p', 'alpha']),
+        intent(['cargo', 'clippy', '-p', 'beta', '--', '-D', 'warnings']),
+      ),
+    ).toBe(false);
+    // The observed pair from #86: same trailer, but the composite would
+    // lint more targets and features than each asked for.
+    expect(
+      batchCompatible(
+        intent(['cargo', 'clippy', '--all-targets', '-p', 'alpha', '--', '-D', 'warnings']),
+        intent([
+          'cargo',
+          'clippy',
+          '-p',
+          'beta',
+          '--features',
+          'test-helpers',
+          '--tests',
+          '--',
+          '-D',
+          'warnings',
+        ]),
+      ),
+    ).toBe(false);
+    expect(
+      batchCompatible(
+        intent(['cargo', 'clippy', '--all-targets', '-p', 'alpha', '--', '-D', 'warnings']),
+        intent(['cargo', 'clippy', '--tests', '-p', 'beta', '--', '-D', 'warnings']),
+      ),
+    ).toBe(false);
+  });
 });
 
 describe('withExtraPackages', () => {
+  it('inserts -p flags before both the demux flag and the `--` trailer of a demuxed clippy', () => {
+    expect(
+      withExtraPackages(
+        [
+          'cargo',
+          'clippy',
+          '-p',
+          'alpha',
+          '--message-format=json-diagnostic-rendered-ansi',
+          '--',
+          '-D',
+          'warnings',
+        ],
+        ['beta'],
+      ),
+    ).toEqual([
+      'cargo',
+      'clippy',
+      '-p',
+      'alpha',
+      '-p',
+      'beta',
+      '--message-format=json-diagnostic-rendered-ansi',
+      '--',
+      '-D',
+      'warnings',
+    ]);
+  });
+
   it('appends missing -p flags before a message-format rewrite or passthrough', () => {
     expect(withExtraPackages(['cargo', 'check', '-p', 'alpha'], ['beta', 'gamma'])).toEqual([
       'cargo',
@@ -147,6 +238,9 @@ describe('batchKindFor', () => {
       batchKindFor(intent(['cargo', 'test', '-p', 'alpha', '--test', 'contract', 'a_filter'])),
     ).toBe('test');
     expect(batchKindFor(intent(['cargo', 'test', '-p', 'alpha', '--', 'a_filter']))).toBe('test');
+    // `--lib` selects each package's own unit tests, like `--test NAME`
+    // selects its own integration test (#87).
+    expect(batchKindFor(intent(['cargo', 'test', '-p', 'alpha', '--lib']))).toBe('test');
     expect(
       batchKindFor(intent(['cargo', 'nextest', 'run', '-p', 'alpha', '-E', 'test(x)'])),
     ).toBe('nextest');
@@ -165,12 +259,44 @@ describe('batchKindFor', () => {
     expect(batchKindFor(intent(['cargo', 'test']))).toBe(null);
     // Unmodeled cargo flags.
     expect(batchKindFor(intent(['cargo', 'test', '-p', 'alpha', '--no-run']))).toBe(null);
-    // Target narrowing not expressible as --test flags.
-    expect(batchKindFor(intent(['cargo', 'test', '-p', 'alpha', '--lib']))).toBe(null);
-    // Harness flags change filter semantics for the whole run.
+    // Target narrowing other than --test / --lib.
+    expect(batchKindFor(intent(['cargo', 'test', '-p', 'alpha', '--doc']))).toBe(null);
+    expect(batchKindFor(intent(['cargo', 'test', '-p', 'alpha', '--bins']))).toBe(null);
+    expect(batchKindFor(intent(['cargo', 'test', '-p', 'alpha', '--lib', '--bin', 'cli']))).toBe(
+      null,
+    );
+    // Harness flags that change which tests run, or how names match,
+    // neither lead nor join (#87).
     expect(
       batchKindFor(intent(['cargo', 'test', '-p', 'alpha', '--', '--exact', 'a_filter'])),
     ).toBe(null);
+    expect(
+      batchKindFor(intent(['cargo', 'test', '-p', 'alpha', '--', 'a_filter', '--skip', 'slow'])),
+    ).toBe(null);
+    expect(batchKindFor(intent(['cargo', 'test', '-p', 'alpha', '--', '--ignored']))).toBe(null);
+    expect(
+      batchKindFor(intent(['cargo', 'test', '-p', 'alpha', '--', '--include-ignored'])),
+    ).toBe(null);
+    expect(batchKindFor(intent(['cargo', 'test', '-p', 'alpha', '--', '--list']))).toBe(null);
+    expect(
+      batchKindFor(intent(['cargo', 'test', '-p', 'alpha', '--', '--format', 'json'])),
+    ).toBe(null);
+    expect(
+      batchKindFor(intent(['cargo', 'test', '-p', 'alpha', '--', '--logfile', 'out.log'])),
+    ).toBe(null);
+    expect(batchKindFor(intent(['cargo', 'test', '-p', 'alpha', '--', '-Z', 'unstable-options']))).toBe(
+      null,
+    );
+  });
+
+  it('lets a test run lead with foldable harness flags after `--` (#87)', () => {
+    expect(
+      batchKindFor(intent(['cargo', 'test', '-p', 'alpha', '--', 'a_filter', '--test-threads=4'])),
+    ).toBe('test');
+    expect(
+      batchKindFor(intent(['cargo', 'test', '-p', 'alpha', '--', '--test-threads', '4', '--nocapture'])),
+    ).toBe('test');
+    expect(batchKindFor(intent(['cargo', 'test', '-p', 'alpha', '--', '-q']))).toBe('test');
     // Only `nextest run` folds, without positional filters, and never
     // without explicit packages (build scope would not be a superset).
     expect(batchKindFor(intent(['cargo', 'nextest', 'list', '-p', 'alpha']))).toBe(null);
@@ -223,10 +349,9 @@ describe('batchCompatibleFor', () => {
     ).toBe(true);
   });
 
-  it('refuses test intents whose --test targets, name filters, or trailing arguments differ', () => {
-    // The old superset composite (#53) ran every participant's targets and
-    // filters for every package, so a follower could fail on tests it never
-    // asked for. Only the package set may differ now.
+  it('refuses test intents whose --test targets differ', () => {
+    // The old superset composite (#53) ran every participant's targets for
+    // every package, so a follower could fail on tests it never asked for.
     expect(
       batchCompatibleFor(
         'test',
@@ -241,13 +366,81 @@ describe('batchCompatibleFor', () => {
         intent(['cargo', 'test', '-p', 'beta']),
       ),
     ).toBe(false);
+  });
+
+  it('folds filtered test runs across packages with a union of bare name filters (#87)', () => {
     expect(
       batchCompatibleFor(
         'test',
         intent(['cargo', 'test', '-p', 'alpha', 'f1']),
         intent(['cargo', 'test', '-p', 'beta', 'f2']),
       ),
+    ).toBe(true);
+    // The observed pair from #87, minus its shared --test-threads.
+    expect(
+      batchCompatibleFor(
+        'test',
+        intent(['cargo', 'test', '-p', 'alpha', '--lib', '--', 'f1', 'f2']),
+        intent(['cargo', 'test', '-p', 'beta', '--lib', '--', 'f3', 'f4', 'f5', 'f6']),
+      ),
+    ).toBe(true);
+    expect(
+      batchCompatibleFor(
+        'test',
+        intent(['cargo', 'test', '-p', 'alpha', '--test', 't1', '--', 'f1', 'f2']),
+        intent(['cargo', 'test', '-p', 'beta', '--test', 't1', '--', 'f3']),
+      ),
+    ).toBe(true);
+    // Target selection still matches exactly.
+    expect(
+      batchCompatibleFor(
+        'test',
+        intent(['cargo', 'test', '-p', 'alpha', '--lib', '--', 'f1']),
+        intent(['cargo', 'test', '-p', 'beta', '--', 'f2']),
+      ),
     ).toBe(false);
+    // A positional filter and the same name after `--` reach libtest the
+    // same way; the union of filters is {f1} either way.
+    expect(
+      batchCompatibleFor(
+        'test',
+        intent(['cargo', 'test', '-p', 'alpha', 'f1']),
+        intent(['cargo', 'test', '-p', 'beta', '--', 'f1']),
+      ),
+    ).toBe(true);
+  });
+
+  it('keeps the identical-selection rule for runs naming the same packages (#53)', () => {
+    // Same package set, different filters: no compile is shared, and each
+    // would run (and see) the other's tests in its own package.
+    expect(
+      batchCompatibleFor(
+        'test',
+        intent(['cargo', 'test', '-p', 'alpha', '--', 'alpha_only']),
+        intent(['cargo', 'test', '-p', 'alpha', '--', 'beta_only']),
+      ),
+    ).toBe(false);
+    expect(
+      batchCompatibleFor(
+        'test',
+        intent(['cargo', 'test', '-p', 'alpha', '-p', 'beta', '--', 'f1']),
+        intent(['cargo', 'test', '-p', 'beta', '-p', 'alpha', '--', 'f1', 'f2']),
+      ),
+    ).toBe(false);
+    // Same selection in another spelling or order still folds (an identity
+    // attach would have caught byte-equal argv earlier).
+    expect(
+      batchCompatibleFor(
+        'test',
+        intent(['cargo', 'test', '-p', 'alpha', 'f1', '--', 'f2']),
+        intent(['cargo', 'test', '-p', 'alpha', '--', 'f2', 'f1']),
+      ),
+    ).toBe(true);
+  });
+
+  it('never folds an unfiltered test run with a filtered one', () => {
+    // The unfiltered run asked for every test in its packages; any filter
+    // would narrow it, and dropping the filter would widen the other.
     expect(
       batchCompatibleFor(
         'test',
@@ -255,13 +448,73 @@ describe('batchCompatibleFor', () => {
         intent(['cargo', 'test', '-p', 'beta']),
       ),
     ).toBe(false);
-    // A positional filter and the same name after `--` reach libtest the
-    // same way, but the composite is the leader's argv, so they must match
-    // byte for byte.
     expect(
       batchCompatibleFor(
         'test',
-        intent(['cargo', 'test', '-p', 'alpha', 'f1']),
+        intent(['cargo', 'test', '-p', 'alpha']),
+        intent(['cargo', 'test', '-p', 'beta', 'f2']),
+      ),
+    ).toBe(false);
+  });
+
+  it('folds identical foldable harness flags and refuses mismatched ones (#87)', () => {
+    expect(
+      batchCompatibleFor(
+        'test',
+        intent(['cargo', 'test', '-p', 'alpha', '--', 'f1', '--test-threads=4']),
+        intent(['cargo', 'test', '-p', 'beta', '--', 'f2', '--test-threads=4']),
+      ),
+    ).toBe(true);
+    // Spelling does not matter: the set is compared in canonical form.
+    expect(
+      batchCompatibleFor(
+        'test',
+        intent(['cargo', 'test', '-p', 'alpha', '--', '--test-threads', '4', '-q', 'f1']),
+        intent(['cargo', 'test', '-p', 'beta', '--', 'f2', '--quiet', '--test-threads=4']),
+      ),
+    ).toBe(true);
+    expect(
+      batchCompatibleFor(
+        'test',
+        intent(['cargo', 'test', '-p', 'alpha', '--', 'f1', '--test-threads=4']),
+        intent(['cargo', 'test', '-p', 'beta', '--', 'f2', '--test-threads=2']),
+      ),
+    ).toBe(false);
+    expect(
+      batchCompatibleFor(
+        'test',
+        intent(['cargo', 'test', '-p', 'alpha', '--', 'f1', '--test-threads=4']),
+        intent(['cargo', 'test', '-p', 'beta', '--', 'f2']),
+      ),
+    ).toBe(false);
+    expect(
+      batchCompatibleFor(
+        'test',
+        intent(['cargo', 'test', '-p', 'alpha', '--', 'f1', '--nocapture']),
+        intent(['cargo', 'test', '-p', 'beta', '--', 'f2', '--nocapture', '--quiet']),
+      ),
+    ).toBe(false);
+  });
+
+  it('never folds an --exact participant, as leader or follower', () => {
+    expect(
+      batchCompatibleFor(
+        'test',
+        intent(['cargo', 'test', '-p', 'alpha', '--', 'f1', '--exact']),
+        intent(['cargo', 'test', '-p', 'beta', '--', 'f1', '--exact']),
+      ),
+    ).toBe(false);
+    expect(
+      batchCompatibleFor(
+        'test',
+        intent(['cargo', 'test', '-p', 'alpha', '--', 'f1']),
+        intent(['cargo', 'test', '-p', 'beta', '--', 'f1', '--exact']),
+      ),
+    ).toBe(false);
+    expect(
+      batchCompatibleFor(
+        'test',
+        intent(['cargo', 'test', '-p', 'alpha', '--', 'f1', '--exact']),
         intent(['cargo', 'test', '-p', 'beta', '--', 'f1']),
       ),
     ).toBe(false);
@@ -327,22 +580,54 @@ describe('compositePackages', () => {
   });
 });
 
+describe('compositeTestFilters', () => {
+  it('unions positional and post-`--` name filters, leader first, without duplicates', () => {
+    expect(
+      compositeTestFilters(intent(['cargo', 'test', '-p', 'alpha', 'f1']), [
+        intent(['cargo', 'test', '-p', 'beta', '--', 'f2', 'f1']),
+        intent(['cargo', 'test', '-p', 'gamma', '--', 'f3', '--test-threads=4']),
+      ]),
+    ).toEqual(['f1', 'f2', 'f3']);
+    expect(
+      compositeTestFilters(intent(['cargo', 'nextest', 'run', '-p', 'alpha']), [
+        intent(['cargo', 'nextest', 'run', '-p', 'beta']),
+      ]),
+    ).toEqual([]);
+  });
+});
+
 describe('batchFailureOwned', () => {
   it('lets a test participant own the failure only when it named every composite package', () => {
     const leader = intent(['cargo', 'test', '-p', 'alpha', '--', 'f1']);
     const follower = intent(['cargo', 'test', '-p', 'beta', '--', 'f1']);
     const wide = intent(['cargo', 'test', '-p', 'alpha', '-p', 'beta', '--', 'f1']);
-    const composite = compositePackages(leader, [follower, wide]);
+    const composite = compositeSelection(leader, [follower, wide]);
     // beta's tests may have passed while alpha's failed: not beta's failure.
     expect(batchFailureOwned(leader, composite, follower)).toBe(false);
     // The wide participant asked for exactly what the composite ran.
     expect(batchFailureOwned(leader, composite, wide)).toBe(true);
   });
 
+  it('also requires the participant to have asked for every filter the composite ran (#87)', () => {
+    const leader = intent(['cargo', 'test', '-p', 'alpha', '--', 'f1']);
+    const follower = intent(['cargo', 'test', '-p', 'alpha', '-p', 'beta', '--', 'f2']);
+    const composite = compositeSelection(leader, [follower]);
+    expect(composite).toEqual({ packages: ['alpha', 'beta'], filters: ['f1', 'f2'] });
+    // Every package, but f1's tests may be the failing ones: not f2's failure.
+    expect(batchFailureOwned(leader, composite, follower)).toBe(false);
+    expect(
+      batchFailureOwned(
+        leader,
+        composite,
+        intent(['cargo', 'test', '-p', 'alpha', '-p', 'beta', 'f2', '--', 'f1']),
+      ),
+    ).toBe(true);
+  });
+
   it('applies to nextest composites and never to compile batches', () => {
     const nextestLeader = intent(['cargo', 'nextest', 'run', '-p', 'alpha']);
     const nextestFollower = intent(['cargo', 'nextest', 'run', '-p', 'beta']);
-    const nextestComposite = compositePackages(nextestLeader, [nextestFollower]);
+    const nextestComposite = compositeSelection(nextestLeader, [nextestFollower]);
     expect(batchFailureOwned(nextestLeader, nextestComposite, nextestFollower)).toBe(false);
     expect(
       batchFailureOwned(
@@ -357,14 +642,109 @@ describe('batchFailureOwned', () => {
     expect(
       batchFailureOwned(
         checkLeader,
-        compositePackages(checkLeader, [checkFollower]),
+        compositeSelection(checkLeader, [checkFollower]),
         checkFollower,
       ),
     ).toBe(false);
   });
 });
 
+describe('classifyTestTrailer', () => {
+  it('splits bare filters from foldable harness flags in canonical form', () => {
+    expect(classifyTestTrailer([])).toEqual({ filters: [], harness: [] });
+    expect(classifyTestTrailer(['f1', 'f2'])).toEqual({ filters: ['f1', 'f2'], harness: [] });
+    expect(
+      classifyTestTrailer(['f1', '--test-threads=4', 'f2', '--nocapture', '-q']),
+    ).toEqual({
+      filters: ['f1', 'f2'],
+      harness: ['--nocapture', '--quiet', '--test-threads=4'],
+    });
+    // Two-token --test-threads and --quiet spell the same set.
+    expect(classifyTestTrailer(['--quiet', '--test-threads', '4', 'f1'])).toEqual({
+      filters: ['f1'],
+      harness: ['--quiet', '--test-threads=4'],
+    });
+  });
+
+  it('rejects flags that change which tests run or what the run produces', () => {
+    for (const trailer of [
+      ['f1', '--exact'],
+      ['--skip', 'slow'],
+      ['--ignored'],
+      ['--include-ignored'],
+      ['--list'],
+      ['--format', 'json'],
+      ['--format=terse'],
+      ['--logfile', 'out.log'],
+      ['--report-time'],
+      ['--show-output'],
+      ['-Z', 'unstable-options'],
+      ['--color', 'never'],
+      ['--test-threads'],
+      ['--test-threads', '--nocapture'],
+      ['--test-threads='],
+      ['--nocapture=1'],
+    ]) {
+      expect(classifyTestTrailer(trailer)).toBeNull();
+    }
+  });
+});
+
 describe('composeTestFoldArgv', () => {
+  it('unions the followers\' filters after the leader\'s trailer, leader first (#87)', () => {
+    const leader = intent(['cargo', 'test', '-p', 'alpha', '--lib', '--', 'f1', '--test-threads=4']);
+    expect(
+      composeTestFoldArgv(
+        ['cargo', 'test', '-p', 'alpha', '--lib', '--', 'f1', '--test-threads=4'],
+        leader,
+        [
+          intent(['cargo', 'test', '-p', 'beta', '--lib', '--', 'f2', 'f1', '--test-threads=4']),
+          intent(['cargo', 'test', '-p', 'gamma', '--lib', '--', 'f3', '--test-threads=4']),
+        ],
+      ),
+    ).toEqual([
+      'cargo',
+      'test',
+      '-p',
+      'alpha',
+      '--lib',
+      '-p',
+      'beta',
+      '-p',
+      'gamma',
+      '--no-fail-fast',
+      '--',
+      'f1',
+      '--test-threads=4',
+      'f2',
+      'f3',
+    ]);
+  });
+
+  it('opens a `--` trailer for follower filters when the leader has none', () => {
+    const leader = intent(['cargo', 'test', '-p', 'alpha', 'f1']);
+    expect(
+      composeTestFoldArgv(['cargo', 'test', '-p', 'alpha', 'f1'], leader, [
+        intent(['cargo', 'test', '-p', 'beta', '--', 'f2']),
+        // f1 already reaches libtest through the leader's positional.
+        intent(['cargo', 'test', '-p', 'gamma', '--', 'f1']),
+      ]),
+    ).toEqual([
+      'cargo',
+      'test',
+      '-p',
+      'alpha',
+      'f1',
+      '-p',
+      'beta',
+      '-p',
+      'gamma',
+      '--no-fail-fast',
+      '--',
+      'f2',
+    ]);
+  });
+
   it('adds the followers\' packages and --no-fail-fast to the leader argv', () => {
     const leaderArgv = [
       'cargo',
@@ -387,7 +767,7 @@ describe('composeTestFoldArgv', () => {
       'torn_durable_store_is_quarantined_and_rebuilt',
     ]);
 
-    expect(composeTestFoldArgv(leaderArgv, [follower])).toEqual([
+    expect(composeTestFoldArgv(leaderArgv, intent(leaderArgv), [follower])).toEqual([
       'cargo',
       'test',
       '-p',
@@ -405,7 +785,7 @@ describe('composeTestFoldArgv', () => {
   it('keeps the leader\'s trailing harness arguments after the added flags', () => {
     const leaderArgv = ['cargo', '+nightly', 'test', '-p', 'alpha', '--release', '--', 'f1', 'f2'];
     expect(
-      composeTestFoldArgv(leaderArgv, [
+      composeTestFoldArgv(leaderArgv, intent(leaderArgv), [
         intent(['cargo', '+nightly', 'test', '-p', 'beta', '-p', 'gamma', '--release', '--', 'f1', 'f2']),
       ]),
     ).toEqual([
@@ -429,14 +809,16 @@ describe('composeTestFoldArgv', () => {
   it('does not duplicate packages or an existing --no-fail-fast', () => {
     const leaderArgv = ['cargo', 'test', '-p', 'alpha', '--no-fail-fast'];
     expect(
-      composeTestFoldArgv(leaderArgv, [intent(['cargo', 'test', '-p', 'alpha', '-p', 'beta'])]),
+      composeTestFoldArgv(leaderArgv, intent(leaderArgv), [
+        intent(['cargo', 'test', '-p', 'alpha', '-p', 'beta']),
+      ]),
     ).toEqual(['cargo', 'test', '-p', 'alpha', '--no-fail-fast', '-p', 'beta']);
   });
 
   it('extends a nextest run the same way, keeping the shared filterset once', () => {
     const leaderArgv = ['cargo', 'nextest', 'run', '-p', 'alpha', '-E', 'test(torn)'];
     expect(
-      composeTestFoldArgv(leaderArgv, [
+      composeTestFoldArgv(leaderArgv, intent(leaderArgv), [
         intent(['cargo', 'nextest', 'run', '-p', 'beta', '-p', 'gamma', '-E', 'test(torn)']),
       ]),
     ).toEqual([
